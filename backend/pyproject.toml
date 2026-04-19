@@ -1,0 +1,112 @@
+[project]
+name = "butler-backend"
+version = "0.1.0"
+description = "Butler AI - Personal AI system backend"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "Butler Team", email = "team@butler.lasmoid.ai"}
+]
+
+dependencies = [
+    # Core web
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic[email]>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "python-multipart>=0.0.9",
+    # Auth & security
+    "pyjwt[crypto]>=2.8.0",
+    "argon2-cffi>=23.1.0",
+    "cryptography>=42.0.0",
+    "webauthn>=2.2.0",
+    "authlib>=1.3.0",
+    # Database
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+    "pgvector>=0.2.5",
+    # Cache / async
+    "redis>=5.0.0",
+    # Observability
+    "structlog>=24.1.0",
+    "opentelemetry-api>=1.24.0",
+    "opentelemetry-sdk>=1.24.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24.0",
+    "opentelemetry-instrumentation-fastapi>=0.45b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.45b0",
+    "opentelemetry-instrumentation-redis>=0.45b0",
+    # Content extraction (Phase 4 - Search)
+    "trafilatura>=1.9.0",
+    "beautifulsoup4>=4.12.0",
+    # Search providers (Phase 6c)
+    "duckduckgo-search>=5.0.0",
+    # JSON schema validation (Phase 4 - Tools)
+    "jsonschema>=4.21.0",
+    # Utilities
+    "typing-extensions>=4.9.0",
+    "numpy>=2.4.4",
+    "sentence-transformers>=5.4.1",
+    "websockets>=16.0",
+    "deepgram-sdk>=3.0.0",
+    "google-api-python-client>=2.120.0",
+    "google-auth-oauthlib>=1.2.0",
+    "youtube-transcript-api>=0.6.0",
+    "httpx>=0.27.0",
+    "soundfile>=0.12.1",
+    "ffmpeg-python>=0.2.0",
+    "noisereduce>=3.0.0",
+    "onnxruntime>=1.17.0",
+    "pyacoustid>=1.3.0",
+    # Memory Graph & Vector (Phase 11+)
+    "neo4j>=5.14.0",
+    "qdrant-client>=1.7.0",
+    "openai>=1.12.0",
+]
+
+[project.optional-dependencies]
+ml = [
+    # ML / embeddings (Phase 5 - ML Service)
+    "sentence-transformers>=2.6.0",
+    "numpy>=1.26.0",
+    # Cold-tier vector index (Phase 11 - Memory Hardening)
+    "faiss-cpu>=1.7.4",  # prefer faiss-gpu in GPU environments
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+    "pyright>=1.1.0",
+    "httpx>=0.26.0",
+    "fakeredis>=2.21.0",
+    "factory-boy>=3.3.0",
+]
+
+[project.scripts]
+butler-server = "main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "A", "PIE", "RSE", "RET", "SIM", "T20"]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "N805",   # first arg of method not self (pydantic validators)
+    "A002",   # shadowing builtin (type arg in Problem.__init__)
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.hatch.build.targets.wheel]
+packages = ["api", "core", "domain", "infrastructure", "services"]

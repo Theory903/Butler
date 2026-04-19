@@ -1,0 +1,173 @@
+import asyncio
+import base64
+import logging
+import time
+from typing import AsyncGenerator, Optional, List
+
+from .models import (
+    AudioModelProxy, 
+    TranscribeResult, 
+    MeetingTranscript, 
+    TTSResult, 
+    MusicMatch,
+    StreamUpdate
+)
+from .processors import AudioPreprocessor, VoiceActivityDetector
+from .stt import DualSTTStrategy
+from .diarization import SpeakerDiarization
+from .tts import TTSManager
+from .music import MusicIdentifier
+from .identity import VoiceIdentityManager
+from .errors import InvalidAudioFormatError, NoSpeechDetectedError
+
+logger = logging.getLogger(__name__)
+
+class AudioService:
+    """
+    Butler Stacked Audio Service Facade.
+    Coordinates preprocessing, VAD, STT Strategy, Diarization, Identity, and TTS.
+    """
+    
+    def __init__(self):
+        self.proxy = AudioModelProxy()
+        
+        # Layers
+        self.preprocessor = AudioPreprocessor()
+        self.vad = VoiceActivityDetector()
+        self.stt_strategy = DualSTTStrategy(self.proxy)
+        self.diarization = SpeakerDiarization()
+        self.identity = VoiceIdentityManager(self.proxy)
+        self.tts_manager = TTSManager(self.proxy)
+        self.music_id = MusicIdentifier()
+
+    async def transcribe(
+        self, 
+        audio_data_b64: str, 
+        language: Optional[str] = None, 
+        quality_mode: str = "balanced"
+    ) -> TranscribeResult:
+        """
+        Stacked STT Workflow:
+        1. Base64 Decode
+        2. Preprocess (Format → 16kHz → Normalize → Denoise)
+        3. VAD (Check for speech)
+        4. STT Strategy (Fast/Accurate pass)
+        """
+        start_time = time.perf_counter()
+        
+        # 1. Decode
+        try:
+            audio_bytes = base64.b64decode(audio_data_b64)
+        except Exception:
+            raise InvalidAudioFormatError("Invalid base64 audio data")
+
+        # 2. Preprocess
+        processed = await self.preprocessor.process(audio_bytes)
+        
+        # 3. VAD
+        if not await self.vad.detect_speech(processed.data):
+            logger.info("audio_rejected_no_speech")
+            raise NoSpeechDetectedError()
+
+        # 4. STT Strategy
+        result = await self.stt_strategy.transcribe(
+            processed.data, 
+            language=language, 
+            quality_mode=quality_mode
+        )
+        
+        return result
+
+    async def process_meeting( 
+        self, 
+        audio_data_b64: str,
+        min_speakers: int = 1,
+        max_speakers: int = 10,
+        identify_speakers: bool = True
+    ) -> MeetingTranscript:
+        """
+        Meeting Intelligence Workflow:
+        1. Preprocess
+        2. Diarize (pyannote)
+        3. Identify Speakers (Voice ID)
+        4. Transcribe segments (Strategy)
+        5. Assemble transcript
+        """
+        start_ts = time.perf_counter()
+        audio_bytes = base64.b64decode(audio_data_b64)
+        processed = await self.preprocessor.process(audio_bytes)
+        
+        # 1. Diarize
+        diarization = await self.diarization.diarize(
+            processed.data, 
+            min_speakers=min_speakers, 
+            max_speakers=max_speakers
+        )
+        
+        # 2. Identify Speakers (Global pass or per segment)
+        # We perform per-segment identification for better accuracy
+        final_segments = []
+        for segment in diarization.segments:
+            # Extract chunk
+            chunk = self._extract_chunk(processed.data, segment.start, segment.end, processed.sample_rate)
+            if not chunk:
+                continue
+            
+            # Identify
+            if identify_speakers:
+                account_id = await self.identity.identify_speaker(chunk)
+                if account_id:
+                    segment.speaker_id = f"USER:{account_id}"
+                
+            # Transcribe
+            res = await self.stt_strategy.transcribe(chunk, quality_mode="fast")
+            segment.text = res.transcript
+            final_segments.append(segment)
+            
+        return MeetingTranscript(
+            segments=final_segments,
+            speaker_count=diarization.speaker_count,
+            processing_time_ms=int((time.perf_counter() - start_ts) * 1000)
+        )
+
+    async def enroll_user_voice(self, account_id: str, audio_data_b64: str) -> bool:
+        """Register a user's voice for future identification."""
+        audio_bytes = base64.b64decode(audio_data_b64)
+        processed = await self.preprocessor.process(audio_bytes)
+        return await self.identity.enroll_voice(account_id, processed.data)
+
+    def _extract_chunk(self, data: bytes, start: float, end: float, sr: int) -> bytes:
+        import numpy as np
+        audio_np = np.frombuffer(data, dtype=np.int16)
+        start_idx = int(start * sr)
+        end_idx = int(end * sr)
+        return audio_np[start_idx:end_idx].tobytes()
+
+    async def synthesize(
+        self, 
+        text: str, 
+        voice_id: Optional[str] = None,
+        voice_reference_b64: Optional[str] = None,
+        consent_verified: bool = False
+    ) -> TTSResult:
+        """
+        TTS Synthesis with consent check.
+        """
+        voice_ref = base64.b64decode(voice_reference_b64) if voice_reference_b64 else None
+        return await self.tts_manager.generate(
+            text=text,
+            voice_id=voice_id,
+            voice_reference=voice_ref,
+            consent_verified=consent_verified
+        )
+
+    async def identify_music(self, audio_data_b64: str) -> MusicMatch:
+        """
+        Identify music from audio data.
+        """
+        audio_bytes = base64.b64decode(audio_data_b64)
+        return await self.music_id.identify(audio_bytes)
+
+    async def close(self):
+        """Cleanup resources"""
+        await self.proxy.close()

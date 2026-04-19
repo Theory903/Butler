@@ -1,0 +1,172 @@
+"""Redis-backed Lua Token Bucket Rate Limiter.
+
+Executes atomic, race-condition-free capacity checks conforming to Token Bucket
+semantics. Emits IETF draft-ietf-httpapi-ratelimit-headers composite headers:
+
+  RateLimit: limit=100, remaining=99, reset=59
+  RateLimit-Policy: 100;w=60
+
+This supersedes the legacy tripled header format (RateLimit-Limit /
+RateLimit-Remaining / RateLimit-Reset) that does not match the current spec.
+
+Route-specific overrides can be passed via constructor params so hotspot
+endpoints (e.g. /chat/stream) get tighter caps than lower-volume routes.
+
+Degraded Redis behaviour: on any Redis error the limiter fails open
+(allows the request) and logs a warning — this prevents Redis outages from
+taking down the entire API.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+
+from redis.asyncio import Redis
+import structlog
+
+from domain.auth.exceptions import GatewayErrors
+
+logger = structlog.get_logger(__name__)
+
+# Canonical Redis Lua Script for atomic Token Bucket evaluation.
+# KEYS[1]: rate_limit_key
+# ARGV[1]: capacity  ARGV[2]: refill_rate_per_sec
+# ARGV[3]: requested_tokens  ARGV[4]: current_time_sec
+TOKEN_BUCKET_LUA = """
+local key = KEYS[1]
+local capacity = tonumber(ARGV[1])
+local refill_rate = tonumber(ARGV[2])
+local requested = tonumber(ARGV[3])
+local now = tonumber(ARGV[4])
+
+local state = redis.call('HMGET', key, 'tokens', 'last_updated')
+local tokens = tonumber(state[1])
+local last_updated = tonumber(state[2])
+
+if not tokens then
+    tokens = capacity
+    last_updated = now
+end
+
+local time_passed = math.max(0, now - last_updated)
+local generated_tokens = time_passed * refill_rate
+tokens = math.min(capacity, tokens + generated_tokens)
+
+local allowed = 0
+if tokens >= requested then
+    allowed = 1
+    tokens = tokens - requested
+end
+
+redis.call('HMSET', key, 'tokens', tokens, 'last_updated', now)
+local time_to_fill = capacity / refill_rate
+redis.call('EXPIRE', key, math.ceil(time_to_fill * 2))
+
+return {allowed, tokens, capacity, refill_rate}
+"""
+
+
+@dataclass(frozen=True)
+class RateLimitResult:
+    allowed: bool
+    remaining: int
+    limit: int
+    reset: int        # Unix timestamp when the bucket is fully replenished
+    window_s: int     # Refill window in seconds (for Policy header)
+
+    # ── IETF draft composite header values ───────────────────────────────────
+
+    def ratelimit_header(self) -> str:
+        """Produce the composite RateLimit header value.
+
+        Format: limit=<N>, remaining=<M>, reset=<T>
+        where T is seconds until reset (relative, per IETF draft §5.3).
+        """
+        reset_rel = max(0, self.reset - int(time.time()))
+        return f"limit={self.limit}, remaining={self.remaining}, reset={reset_rel}"
+
+    def ratelimit_policy_header(self) -> str:
+        """Produce the RateLimit-Policy header value.
+
+        Format: <quota>;w=<window>
+        """
+        return f"{self.limit};w={self.window_s}"
+
+
+class RateLimiter:
+    """Mathematical Token Bucket Rate Limiter with IETF composite header output.
+
+    Args:
+        redis:       Async Redis client.
+        capacity:    Max tokens (requests) allowed per window.
+        refill_rate: Tokens added per second (capacity / window_s).
+        window_s:    Logical window length in seconds (for Policy header only —
+                     not used in the Lua computation, which is continuous).
+        key_prefix:  Allows per-route namespacing (e.g. "rl:stream:").
+    """
+
+    def __init__(
+        self,
+        redis: Redis,
+        capacity: int = 100,
+        refill_rate: float = 1.0,
+        window_s: int = 60,
+        key_prefix: str = "ratelimit:tb:",
+    ) -> None:
+        self._redis = redis
+        self._capacity = capacity
+        self._refill_rate = refill_rate
+        self._window_s = window_s
+        self._key_prefix = key_prefix
+        self._script = redis.register_script(TOKEN_BUCKET_LUA)
+
+    async def check(self, account_id: str, cost: int = 1) -> RateLimitResult:
+        """Deduct `cost` tokens. Raises Problem(429) if the bucket is empty.
+
+        On Redis failure: fails open, returns a permissive result and logs.
+        """
+        redis_key = f"{self._key_prefix}{account_id}"
+        now_sec = time.time()
+
+        try:
+            allowed_flag, current_tokens, cap, refill = await self._script(
+                keys=[redis_key],
+                args=[self._capacity, self._refill_rate, cost, now_sec],
+            )
+        except Exception as exc:
+            logger.warning("rate_limiter_redis_error", error=str(exc), account_id=account_id)
+            # Fail open: return a permissive result so a Redis blip doesn't
+            # take down the API.
+            return RateLimitResult(
+                allowed=True,
+                remaining=self._capacity,
+                limit=self._capacity,
+                reset=int(now_sec + self._window_s),
+                window_s=self._window_s,
+            )
+
+        allowed = bool(allowed_flag)
+        remaining = int(current_tokens)
+        reset_abs = int(now_sec + (self._capacity / self._refill_rate))
+
+        if not allowed:
+            retry_after = max(1, int((cost - remaining) / self._refill_rate))
+            # Emit Prometheus counter for real-time observability
+            try:
+                from core.observability import get_metrics
+                get_metrics().inc_rate_limit_hit(endpoint=self._key_prefix.rstrip(":"))
+            except Exception:
+                pass
+            raise GatewayErrors.rate_limited(
+                retry_after=retry_after,
+                remaining=remaining,
+            )
+
+        return RateLimitResult(
+            allowed=True,
+            remaining=remaining,
+            limit=self._capacity,
+            reset=reset_abs,
+            window_s=self._window_s,
+        )

@@ -1,0 +1,47 @@
+from abc import ABC, abstractmethod
+from typing import Optional, List, Dict, Any
+
+from core.envelope import ButlerEnvelope
+from domain.orchestrator.models import Workflow, Task, ApprovalRequest
+
+from domain.base import DomainService
+
+from pydantic import BaseModel, Field
+
+class OrchestratorResult(BaseModel):
+    """Canonical response format for intelligence ingestion."""
+    workflow_id: str
+    content: str
+    actions: List[Dict[str, Any]] = Field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    duration_ms: int = 0
+    requires_approval: bool = False
+    approval_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=list)
+
+class OrchestratorServiceContract(DomainService):
+    @abstractmethod
+    async def intake(self, envelope: ButlerEnvelope) -> OrchestratorResult:
+        """Main entry — receive envelope, classify, execute, respond."""
+        pass
+
+    @abstractmethod
+    async def get_workflow(self, workflow_id: str) -> Optional[Workflow]:
+        """Get workflow by ID."""
+        pass
+
+    @abstractmethod
+    async def approve_request(self, approval_id: str, decision: str) -> Task:
+        """Grant or deny an approval request."""
+        pass
+
+    @abstractmethod
+    async def get_pending_approvals(self, account_id: str) -> list[ApprovalRequest]:
+        """List pending approval requests for an account."""
+        pass
+
+    @abstractmethod
+    async def retry_task(self, task_id: str) -> Task:
+        """Retry a failed task."""
+        pass
