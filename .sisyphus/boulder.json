@@ -1,0 +1,53 @@
+{
+  "active_plan": "/Users/abhishekjha/CODE/Butler/.sisyphus/plans/butler-mvp-2day.md",
+  "started_at": "2026-04-15T21:13:32.375Z",
+  "session_ids": [
+    "ses_26db66ed4ffeiqX8gowhT5iLrJ",
+    "ses_26a39d0a7ffeexB887x4PcFDfT",
+    "ses_26a38f883ffe8X5Y9Tfz70Fh7b",
+    "ses_26a231716ffe6UnOY7T5U1gwub",
+    "ses_26a231719ffeZye725xIkkrVVL",
+    "ses_26a23188effeMmI78cPjgmas6w",
+    "ses_269f9895fffeL3O4190y7j9TU5",
+    "ses_269f98af5ffeGSC0Wy5Xj3x7yj",
+    "ses_269f98963ffeUBjp4wI5o7delp",
+    "ses_269f1f836ffeVTj1wpT1rEqNxS",
+    "ses_269ef294fffe9ELTIav2b88WEE",
+    "ses_269eb31aaffea3jyGQkKXOQDbD",
+    "ses_269acb30effes0UV7nYuAElGla",
+    "ses_269ac558cffeAdIpfQvns2Spsz",
+    "ses_269ac161cffeE02El13sAOSDEM",
+    "ses_2699ef4e5ffeYwCTTqNxl0CKdI",
+    "ses_2699eef86ffe724jycS2kJBQF7",
+    "ses_2699ee832ffeNxblDWc7qfJMf5",
+    "ses_2699ee589ffe1m8oY8HCzhw4mw",
+    "ses_26969bac1ffeiH4K34VJMO1dIv",
+    "ses_26969babfffeZeaizn0Tj6JzUo",
+    "ses_26919d0d4ffeiT2ccDg1e2WjbD",
+    "ses_26916c022ffex8W1jSS58R3fQE",
+    "ses_2687a269effezZlga2QqnwHF0C",
+    "ses_2687924edffe78RWH7jLVeLuB7",
+    "ses_268751ecaffew8STEztxfV8tES",
+    "ses_268743740ffewt8b1JRLP17wwR",
+    "ses_268709f7dffeXwo1JeX7pHkDSV",
+    "ses_268532d08ffemtxBApdIdA8mlQ",
+    "ses_2683558d6ffejBxH8zzqwQCe2M",
+    "ses_2682c548fffeqYSa2sU44PAprH",
+    "ses_268232837ffe1Ag95HGLDR3i3P",
+    "ses_2681a6227ffetpqTMzy5Cb3IFe",
+    "ses_26818d1edfferR3IMPBHp6koqP"
+  ],
+  "plan_name": "butler-mvp-2day",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "Lock alpha MVP acceptance matrix",
+      "session_id": "ses_26818d1edfferR3IMPBHp6koqP",
+      "agent": "Sisyphus-Junior",
+      "category": "writing",
+      "updated_at": "2026-04-16T20:14:18.525Z"
+    }
+  }
+}
