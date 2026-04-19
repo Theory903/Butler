@@ -1,0 +1,368 @@
+docs/README.md:39	| **Service boundaries** | Gateway NEVER calls Memory |
+docs/index.md:115	| **Service boundaries** | Gateway NEVER calls Memory | Platform Constitution |
+docs/index.md:168	| 1 | Gateway | 8000 | NEVER calls Memory |
+docs/index.md:169	| 2 | Auth | 8001 | Identity only |
+docs/index.md:170	| 3 | Security | 8015 | Enforcement only |
+docs/index.md:227	Every doc MUST have:
+docs/AGENTS.md:64	2. the doc must be updated before the code is considered correct
+docs/AGENTS.md:181	Every major system behavior must be documented in exactly one authoritative place.
+docs/AGENTS.md:257	Only after this works should additional layers be expanded:
+docs/AGENTS.md:271	Butler must remain:
+docs/AGENTS.md:295	A feature is only real if it can be executed, validated, observed, and recovered from on failure.
+docs/AGENTS.md:301	Butler must be powerful without becoming reckless.
+docs/AGENTS.md:305	Tasks must survive restarts, approval pauses, and delayed dependencies.
+docs/AGENTS.md:349	A service spec is done only when it includes:
+docs/AGENTS.md:369	The project moves from documentation-guided to implementation-valid only when:
+docs/AGENTS.md:476	Every new document must either:
+docs/AGENTS.md:507	| HTTP/3 | RFC 9114 | Edge ingress only |
+docs/AGENTS.md:518	All services MUST use RFC 9457 Problem Details for error responses:
+docs/AGENTS.md:548	- Service boundaries clarified (Gateway NEVER calls Memory directly)
+docs/02-services/communication.md:68	| Communication | Never decides message content - only delivery governance |
+docs/02-services/communication.md:755	| C006 | approval-required | 403 | High-risk requires token |
+docs/02-services/orchestrator.md:34	- Does NOT persist durable state in ephemeral cache only
+docs/02-services/orchestrator.md:39	The Orchestrator is the **primary Butler consumer** of Hermes runtime code, but only through Butler-owned adapters.
+docs/02-services/orchestrator.md:132	Redis alone is not enough for this. Durable execution state must live in a persistent store.
+docs/02-services/orchestrator.md:240	Planning must be schema-constrained, not prose-first.
+docs/02-services/orchestrator.md:278	Validation must check:
+docs/02-services/orchestrator.md:292	- Orchestrator consumes only normalized capabilities, policy tags, and execution constraints
+docs/02-services/orchestrator.md:377	Handoffs are allowed only when:
+docs/02-services/orchestrator.md:391	- target must be declared and typed
+docs/02-services/orchestrator.md:482	Orchestrator keeps an append-only event stream:
+docs/02-services/orchestrator.md:508	- `approval.required`
+docs/02-services/orchestrator.md:524	- Redis used for coordination, not as the only source of truth
+docs/02-services/orchestrator.md:573	| Context retrieval timeout | use ranked cached context only |
+docs/02-services/orchestrator.md:580	- compensating nodes run when rollback is defined and required
+docs/02-services/orchestrator.md:590	- imported libraries may help execution, but they must never define Butler lifecycle semantics
+docs/02-services/search.md:88	| Search | Evidence only - never generates final answer |
+docs/02-services/search.md:729	Required OTel attributes:
+docs/02-services/ml.md:301	The ML service MUST have feature store capabilities for both training and inference.
+docs/02-services/data.md:565	- Session-dependent features (e.g., `SET LOCAL`, temp tables) must be avoided
+docs/02-services/data.md:633	-- Policy: Users can only see their own data
+docs/02-services/data.md:753	-- Downtime Required: NO (use ALTER TABLE ADD COLUMN)
+docs/02-services/audio.md:78	| Audio | Perception + synthesis only |
+docs/02-services/audio.md:613	| A006 | voice-cloning-denied | 403 | Consent required |
+docs/02-services/realtime.md:137	**Critical insight:** Redis Pub/Sub provides at-most-once delivery only. If a subscriber disconnects or chokes, the message is lost forever. Use Pub/Sub for ephemeral hints only. Use Redis Streams for anything important.
+docs/02-services/realtime.md:163	**NEVER use raw query tokens:** `WS /ws/chat?token=...` is lazy and leaks into logs/proxies.
+docs/02-services/realtime.md:255	| **Approval** | approval.required, approval.granted, approval.denied |
+docs/02-services/realtime.md:308	| Chat chunks | active-device only |
+docs/02-services/memory.md:81	Butler memory must support:
+docs/02-services/memory.md:139	Keyword search must have a real owner. For Butler MVP and early scale, Memory uses **PostgreSQL full-text search** for keyword fallback and exact lexical signals. OpenSearch or a dedicated text engine can be introduced later when operationally justified.
+docs/02-services/memory.md:225	Memory retrieval must not stop at “normalize scores somehow.” Butler uses explicit score fusion.
+docs/02-services/memory.md:293	Memory must unify entities across channels and artifacts.
+docs/02-services/memory.md:434	"conflict_policy": "auto|review|required"
+docs/02-services/memory.md:476	Avoid broad `GET /memory/{user_id}` full dumps by default. If a user summary endpoint is needed later, it must be projection-limited, redacted, and authorization-scoped.
+docs/02-services/memory.md:630	| identity facts | cached selectively | long-lived | yes | never hard-delete without policy |
+docs/02-services/memory.md:636	Memory items must preserve:
+docs/02-services/memory.md:698	- users can access only their own memory unless delegated policy exists
+docs/02-services/vision.md:73	| Vision | Perception only - never executes UI actions |
+docs/02-services/vision.md:91	4. SAM 2 only for precise region grounding
+docs/02-services/vision.md:97	3. InsightFace (opt-in, closed-world only)
+docs/02-services/vision.md:108	Every perception must verify:
+docs/02-services/vision.md:126	| **Qwen2.5-VL-72B** | Premium only | <2s | ~80GB VRAM |
+docs/02-services/vision.md:143	| **SAM2-tiny** | Precision when needed | <80ms | Explicit request only |
+docs/02-services/vision.md:160	- **Pretrained models: Non-commercial research use only**
+docs/02-services/vision.md:164	- Opt-in only
+docs/02-services/vision.md:165	- Closed-world personal graph only
+docs/02-services/vision.md:441	enabled: false  # Opt-in only
+docs/02-services/vision.md:470	| V004 | model-unavailable | 503 | GPU required |
+docs/02-services/vision.md:553	| **Face** | Disabled | - | Opt-in only |
+docs/02-services/auth.md:88	- Every request must carry active account context.
+docs/02-services/auth.md:89	- Account switching must not leak sessions, caches, or data across accounts.
+docs/02-services/auth.md:157	"residentKey": "required",
+docs/02-services/auth.md:180	Public clients must use **Authorization Code + PKCE**.
+docs/02-services/auth.md:198	- `S256` PKCE only
+docs/02-services/auth.md:208	- recent-password reauth where required
+docs/02-services/auth.md:259	Use **asymmetric signing only** for Butler-issued tokens.
+docs/02-services/auth.md:545	- PKCE required
+docs/02-services/auth.md:565	- current-device logout invalidates only the right session
+docs/02-services/gateway.md:53	- **internal control traffic** must use internal ingress or service-mesh policy, not the public default path
+docs/02-services/gateway.md:54	- **specialized direct routes** are allowed only when explicitly justified as edge-safe and documented
+docs/02-services/gateway.md:56	Gateway **never** calls Memory directly for retrieval or persistence. The golden path remains:
+docs/02-services/gateway.md:70	**Critical Boundary:** Gateway may use Hermes session helpers for request-context tracking only. It **MUST NOT** write directly to `hermes_state.py`, `state.py`, or any memory backend. All persistence still flows through the documented Butler path: Gateway → Orchestrator → Memory.
+docs/02-services/gateway.md:72	Gateway must **not** let the following redefine Butler transport behavior:
+docs/02-services/gateway.md:152	| HTTP/3 | edge ingress only | Public edge | Terminated at ingress |
+docs/02-services/gateway.md:155	| gRPC | internal service calls | Internal only | Native internal |
+docs/02-services/gateway.md:157	| A2A / ACP-style control | internal agent control | Internal only | Butler-owned internal envelope |
+docs/02-services/gateway.md:214	- Never store conversation history directly as Gateway-owned memory.
+docs/02-services/gateway.md:230	Auth: Required (OIDC JWT)
+docs/02-services/gateway.md:248	Auth: Required (OIDC JWT)
+docs/02-services/gateway.md:249	Purpose: MVP convenience endpoint for small synchronous voice turns only
+docs/02-services/gateway.md:250	Limits: small uploads only; larger or realtime voice uses streaming/session path
+docs/02-services/gateway.md:266	Auth: Required
+docs/02-services/gateway.md:275	Auth: Required
+docs/02-services/gateway.md:289	Auth: Required
+docs/02-services/gateway.md:304	Internal control routes for agent coordination, ACP-like control messages, or tool-plane control must be behind internal ingress, mTLS, and workload identity. They are **not** part of the public default Gateway contract.
+docs/02-services/gateway.md:342	Butler streaming is not just token output. The edge contract must support execution-aware events.
+docs/02-services/gateway.md:411	Redis failure must not imply a universal fail-open policy.
+docs/02-services/gateway.md:440	Per-endpoint payload limits are required.
+docs/02-services/gateway.md:456	Avoid exposing only legacy `X-RateLimit-*` headers when standards are already documented.
+docs/02-services/gateway.md:482	All Gateway latency targets must be read as **edge-processing-only** targets, excluding upstream business latency.
+docs/02-services/gateway.md:499	Targets must be published with pod CPU / memory shape during testing. A bare “500 RPS per pod” claim without hardware assumptions is not sufficient for implementation decisions.
+docs/02-services/gateway.md:518	| `gateway.edge.latency` | Histogram | edge-only processing latency |
+docs/02-services/gateway.md:581	Load tests must distinguish:
+docs/02-services/gateway.md:593	- direct memory access stays prohibited
+docs/02-services/gateway.md:608	| 5 | Internal control ingress with workload identity and machine-only routes |
+docs/02-services/observability.md:75	| Services | Only instrument - never configure backends |
+docs/02-services/observability.md:91	"service.name": "required",           # butler.gateway, butler.orchestrator
+docs/02-services/observability.md:92	"service.version": "required",       # e.g., v2.0.0
+docs/02-services/observability.md:93	"deployment.environment": "required", # dev, staging, prod
+docs/02-services/observability.md:94	"butler.account_id": "required",   # Multi-tenant isolation
+docs/02-services/observability.md:100	"butler.workflow_id": "required",
+docs/02-services/observability.md:101	"butler.workflow_name": "required",
+docs/02-services/observability.md:102	"butler.workflow_status": "required", # started, completed, failed
+docs/02-services/observability.md:109	"butler.session_id": "required",
+docs/02-services/observability.md:123	"butler.service_name": "required",
+docs/02-services/observability.md:132	**CRITICAL RULE - Never put in labels:**
+docs/02-services/observability.md:143	"ip_address",       # Security log only
+docs/02-services/observability.md:144	"device_token",    # Push only
+docs/02-services/observability.md:480	butler_workflow_id=workflow_id,  # Required
+docs/02-services/hermes-library-map.md:38	| Adapt behind wrapper | Useful, but Butler must own contracts, naming, and policy |
+docs/02-services/hermes-library-map.md:58	| Data | Hermes event/session schemas only as compatibility references, not ownership transfer |
+docs/02-services/hermes-library-map.md:66	| `acp_adapter/` | Agent control plane compatibility modules: auth, events, permissions, server, session, tools | Gateway + Orchestrator + Auth wrappers | Deferred / Isolated | Keep for future A2A/ACP compatibility. Do not let Butler routes import it directly. Use as reference material for internal agent control APIs only. |
+docs/02-services/hermes-library-map.md:71	| `optional-skills/` | Domain-specific optional capability packs and helper scripts | Tools + Plugins + future specialized services | Deferred | Preserve as capability inventory. Only expose through explicit Butler plugin decisions, not automatic discovery. |
+docs/02-services/hermes-library-map.md:73	| `skills/` | Preserved capability bundles for productivity, research, media, red teaming, mlops | Tools + Search + Communication + future feature services | Deferred / Adapt | Treat as a library of optional capabilities. Promote only through Butler-owned workflows or tool adapters. |
+docs/02-services/hermes-library-map.md:76	| `cli.py` | Interactive Hermes terminal application | No Butler service owner; operator compatibility only | Isolated | Do not document as Butler product behavior. Keep as preserved operator surface only. |
+docs/02-services/hermes-library-map.md:77	| `hermes_constants.py` | Hermes home path and env worldview | Core compatibility layer only | Isolated / Adapt | Use carefully as a compatibility layer. Do not let `HERMES_HOME` or CLI profile assumptions leak into Butler service contracts. |
+docs/02-services/hermes-library-map.md:83	| `model_tools.py` | Thin orchestration layer over the Hermes tool registry with async bridging and discovery | Tools service | Adapt behind wrapper | Use as Butler's imported execution substrate, but Butler Tools remains the authority for registration, permissions, verification, and auditability. Orchestrator should consume it only through Butler Tools interfaces or service calls. |
+docs/02-services/hermes-library-map.md:84	| `rl_cli.py` | Reinforcement-learning CLI | ML / offline training | Isolated | Preserve for operator/training workflows only. Not an active Butler service dependency. |
+docs/02-services/hermes-library-map.md:85	| `run_agent.py` | Main AI agent runner with tool-calling loop and provider support | Orchestrator | Adapt behind wrapper | High-value runtime substrate. Butler must wrap it so orchestrator policy, state transitions, approvals, and memory contracts stay Butler-owned. |
+docs/02-services/hermes-library-map.md:126	| `skills_*`, `todo_tool.py`, `memory_tool.py` | Only expose through Butler-owned workflow decisions, not direct inheritance |
+docs/02-services/hermes-library-map.md:159	- Butler must own **contracts**.
+docs/02-services/device.md:61	| ML | ML infers and recommends; Device only provides signals and control surfaces |
+docs/02-services/device.md:305	- tightly consented medical data only under stronger controls
+docs/02-services/device.md:439	- local-only
+docs/02-services/device.md:575	Required tests should cover:
+docs/02-services/security.md:99	**CRITICAL RULE:** Never merge untrusted content into instruction authority channel.
+docs/02-services/security.md:173	"require_approval": "Human approval required",
+docs/02-services/security.md:246	EXPLICIT = "explicit"  # Human must approve
+docs/02-services/security.md:248	FORBIDDEN = "forbidden" # Never allowed
+docs/02-services/security.md:313	return ToolGateDecision(allowed=False, reason="Idempotency key required")
+docs/02-services/security.md:350	"""Retrieval must be purpose-bound"""
+docs/02-services/security.md:580	raise ValueError("AES-256 key must be 32 bytes")
+docs/02-services/security.md:689	- **NEVER logs:** tokens, passwords, API keys, raw secrets
+docs/02-services/tools.md:84	L0 = "l0"  # read-only, no side effects
+docs/02-services/tools.md:123	PURE_INTERNAL = "pure_internal"  # Audited pure functions only
+docs/02-services/tools.md:179	"required": ["to", "body"]
+docs/02-services/tools.md:213	"required": ["query"]
+docs/02-services/tools.md:244	"required": ["device_id"]
+docs/02-services/tools.md:384	5. Check required permissions (from Security)
+docs/02-services/tools.md:386	6. Check resource ownership (if required)
+docs/02-services/tools.md:472	| send_message | NON_IDEMPOTENT | Only with explicit idempotency_key |
+docs/02-services/tools.md:537	"approval_token": "approval_abc",  # if required
+docs/02-services/tools.md:624	| tool.approval.required | counter | rate |
+docs/03-reference/runtime-flow.md:542	*Version: 2.0 - Production Required*
+docs/03-reference/workflow-engine.md:48	required: false
+docs/03-reference/workflow-engine.md:89	required: false
+docs/03-reference/workflow-engine.md:294	- Append-only execution event trail
+docs/03-reference/workflow-engine.md:298	- Subworkflow fanout only where throughput/composability justify it
+docs/03-reference/workflow-engine.md:313	5. durable workflow (only if needed)
+docs/03-reference/workflow-engine.md:431	> - Workers **ack** work only after state is committed
+docs/03-reference/workflow-engine.md:469	**Durable workflow only if needed:**
+docs/03-reference/plugins/plugin-to-tool.md:67	"required": true
+docs/03-reference/plugins/plugin-to-tool.md:268	"required": true
+docs/03-reference/plugins/plugin-to-tool.md:273	"required": false
+docs/03-reference/plugins/plugin-system.md:4	> **Status:** Production Required
+docs/03-reference/plugins/plugin-system.md:33	│  ├─ manifest-only: Metadata, schemas, config                 │
+docs/03-reference/plugins/plugin-system.md:62	├── plugin.yaml           # REQUIRED: machine-readable manifest
+docs/03-reference/plugins/plugin-system.md:97	runtime_type: "mcp"  # manifest-only | mcp | remote | wasm
+docs/03-reference/plugins/plugin-system.md:156	runtime_type: "manifest-only"
+docs/03-reference/plugins/plugin-system.md:267	**RARE.** Only when Butler truly needs custom execution logic.
+docs/03-reference/plugins/plugin-system.md:282	Third-party code runs in WASM, never in-process.
+docs/03-reference/plugins/plugin-system.md:326	│     ├─ Required fields check                                │
+docs/03-reference/plugins/plugin-system.md:344	│     ├─ manifest-only: Error                               │
+docs/03-reference/plugins/plugin-system.md:444	5. Register manifest only (NOT activate)
+docs/03-reference/plugins/plugin-system.md:533	| Arbitrary routes | Plugin injection | Declared ingress only |
+docs/03-reference/plugins/plugin-system.md:587	| manifest-only | N/A (no execution) |
+docs/03-reference/plugins/plugin-system.md:595	*Version: 2.0 - Production Required*
+docs/03-reference/workflows/macro-engine.md:119	| Safety Class | Required Action |
+docs/03-reference/workflows/macro-engine.md:122	| confirm | Pre-approval required |
+docs/03-reference/workflows/routine-engine.md:199	| Approval | Often required | Usually auto |
+docs/03-reference/workflows/routine-engine.md:209	- Activity detection is local-only by default
+docs/03-reference/agent/decision-tree.md:39	│  - Extract required entities                                              │
+docs/03-reference/agent/decision-tree.md:65	│  - Validate required params                                                 │
+docs/03-reference/agent/decision-tree.md:129	"""Match pattern at word boundaries only - prevents "hi" matching "him" """
+docs/03-reference/agent/decision-tree.md:215	missing_params: list[str] = None  # Required but missing
+docs/03-reference/agent/decision-tree.md:300	"""Validate required vs optional slots"""
+docs/03-reference/agent/decision-tree.md:304	"required": ["to", "message"],
+docs/03-reference/agent/decision-tree.md:308	"required": ["to", "subject"],
+docs/03-reference/agent/decision-tree.md:312	"required": ["title", "time"],
+docs/03-reference/agent/decision-tree.md:316	"required": ["query"],
+docs/03-reference/agent/decision-tree.md:326	required = requirements.get("required", [])
+docs/03-reference/agent/decision-tree.md:330	missing = [p for p in required if p not in provided or not provided[p]]
+docs/03-reference/agent/decision-tree.md:889	| Missing params | None | Required/optional param check |
+docs/03-reference/agent/agent-loop.md:1140	| Input | Text-only | Multimodal (voice, image, screen, OCR) |
+docs/03-reference/agent/agent-loop.md:1150	| Execution | Parallel only | With timeout, cancellation, partial failure |
+docs/03-reference/system/hermes-assimilation-map.md:18	- what imported code must remain **isolated behind integration boundaries**
+docs/03-reference/system/hermes-assimilation-map.md:20	- what wrappers/contracts Butler must own so the system reads as Butler, not a renamed Hermes fork
+docs/03-reference/system/hermes-assimilation-map.md:44	| Butler is **not a chatbot wrapper** | Imported runtime cannot define Butler as “message in, text out” only |
+docs/03-reference/system/hermes-assimilation-map.md:45	| Butler is a **personal AI system** that observes, understands, decides, acts, and learns | Imported agent/runtime code must be aligned around execution, not CLI UX |
+docs/03-reference/system/hermes-assimilation-map.md:46	| Butler MVP path is **Gateway → Auth → Orchestrator → Memory → Tools** | Imported code outside this slice must be deferred or isolated |
+docs/03-reference/system/hermes-assimilation-map.md:47	| Backend target is a **modular monolith** | Imported packages must stay behind explicit domain/integration boundaries |
+docs/03-reference/system/hermes-assimilation-map.md:48	| `api/routes -> core/dependencies -> domain services -> infrastructure adapters` | Imported Hermes internals must not leak into routes or cross-service logic |
+docs/03-reference/system/hermes-assimilation-map.md:49	| Gateway never calls Memory directly; it goes via Orchestrator | Hermes gateway patterns must not bypass Butler service boundaries |
+docs/03-reference/system/hermes-assimilation-map.md:50	| Tools service owns execution, validation, permission checks, auditability | Hermes tools are useful, but Butler must own tool contracts and safety policy |
+docs/03-reference/system/hermes-assimilation-map.md:51	| Plugins are extension points, not core identity | Imported skills/plugins must be staged intentionally, not auto-promoted into Butler core |
+docs/03-reference/system/hermes-assimilation-map.md:80	- **activate only the MVP-critical path now**
+docs/03-reference/system/hermes-assimilation-map.md:95	Useful and important, but must change naming, contracts, boundaries, or behavior.
+docs/03-reference/system/hermes-assimilation-map.md:122	Only imported code that directly strengthens one of these Butler-owned domains should become active soon.
+docs/03-reference/system/hermes-assimilation-map.md:130	| Auth/Security | selective credential/policy helpers, never full Hermes auth worldview |
+docs/03-reference/system/hermes-assimilation-map.md:132	Everything else must be **deferred** or **isolated** until Butler’s golden path is real. Importing code into the tree does not make it active Butler runtime behavior.
+docs/03-reference/system/hermes-assimilation-map.md:152	| `run_agent.py` | imported execution engine reference | B | Valuable for orchestration logic, but Butler must own orchestration contracts |
+docs/03-reference/system/hermes-assimilation-map.md:153	| `model_tools.py` | imported tool-call orchestration reference | B | Useful, but Butler Tools service must remain the execution authority |
+docs/03-reference/system/hermes-assimilation-map.md:154	| `hermes_state.py` | imported session/history store | B | Useful for fast vertical slice, but schema and persistence contract must be Butler-owned |
+docs/03-reference/system/hermes-assimilation-map.md:155	| `hermes_constants.py` | foreign path/env worldview | D | Too Hermes/profile/CLI specific; preserve as compatibility layer only |
+docs/03-reference/system/hermes-assimilation-map.md:191	| `prompt_builder.py` | Butler prompt/context assembly support | B | Must align with Butler identity and docs-first runtime |
+docs/03-reference/system/hermes-assimilation-map.md:192	| `context_engine.py` | Butler context construction support | B | Useful, but must align with Butler memory + tool-state model |
+docs/03-reference/system/hermes-assimilation-map.md:200	| `skill_utils.py`, `skill_commands.py` | Hermes skill runtime | C/D | Butler has plugin + workflow docs; commands must stay deferred |
+docs/03-reference/system/hermes-assimilation-map.md:216	So the imported `agent/` package is useful **only if** it is subordinated to Butler’s state machine, policy model, approval checks, audit flow, and learn/write-back behavior.
+docs/03-reference/system/hermes-assimilation-map.md:255	| `skills_*` tool files | imported skill ecosystem tooling | D | must be routed through Butler plugin/workflow strategy, not auto-exposed |
+docs/03-reference/system/hermes-assimilation-map.md:277	And the imported tools must ultimately comply with Butler’s execution posture:
+docs/03-reference/system/hermes-assimilation-map.md:283	So imported Hermes tools must be treated as **execution primitives**, not autonomous product definitions.
+docs/03-reference/system/hermes-assimilation-map.md:366	- **Butler role:** future developer/operator integration surface only
+docs/03-reference/system/hermes-assimilation-map.md:518	- these values must either be wrapped, renamed, or confined to the compatibility layer
+docs/03-reference/system/hermes-assimilation-map.md:532	- imported CLI ergonomics must not define Butler runtime behavior
+docs/03-reference/api/gateway-api.md:66	Auth: Required
+docs/03-reference/api/gateway-api.md:155	Auth: Required
+docs/03-reference/api/gateway-api.md:271	Auth: Required (tool permission)
+docs/plans/07-phase-6-security-observability-ambient.md:16	- **Channel separation** — never merge untrusted content into instruction authority
+docs/plans/07-phase-6-security-observability-ambient.md:67	"""Route content to appropriate channel — NEVER merge untrusted into instructions."""
+docs/plans/07-phase-6-security-observability-ambient.md:103	"require_approval": "Human approval required",
+docs/plans/07-phase-6-security-observability-ambient.md:227	return ToolGateDecision(allowed=False, reason="Idempotency key required")
+docs/plans/07-phase-6-security-observability-ambient.md:275	raise ValueError("AES-256 key must be 32 bytes")
+docs/plans/07-phase-6-security-observability-ambient.md:743	- [ ] Channel separator never routes untrusted to instructions
+docs/plans/07-phase-6-security-observability-ambient.md:746	- [ ] Tool capability gate enforces approval when required
+docs/plans/00-master-plan.md:61	| **Service Boundaries** | Domain must NOT import FastAPI; routes must NOT contain business logic |
+docs/plans/00-master-plan.md:62	| **Gateway Rule** | Gateway NEVER calls Memory directly — always via Orchestrator |
+docs/plans/00-master-plan.md:63	| **Docs = Truth** | If code and docs disagree, docs win (or docs must be updated first) |
+docs/plans/00-master-plan.md:446	| Phase 3 complexity explosion | Strict state machine with explicit transitions only |
+docs/plans/00-master-plan.md:455	├── api/              # HTTP-only: routes + schemas + middleware
+docs/plans/01-phase-0-foundation.md:28	Every error in Butler MUST follow [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457):
+docs/plans/01-phase-0-foundation.md:54	MISSING_AUTH = Problem(type="...", title="Authorization Required", status=401)
+docs/plans/05-phase-4-memory-tools-search.md:553	- [ ] Approval-required tools raise `ApprovalRequired`
+docs/plans/03-phase-2-gateway.md:20	- NEVER calls Memory or Tools directly — always routes through Orchestrator
+docs/plans/03-phase-2-gateway.md:41	│ NEVER calls: Memory, Tools, ML directy     │
+docs/plans/03-phase-2-gateway.md:244	nx=True,  # Only set if not exists
+docs/plans/03-phase-2-gateway.md:410	title="Authorization Required",
+docs/plans/03-phase-2-gateway.md:412	detail="Bearer token required in Authorization header.",
+docs/plans/03-phase-2-gateway.md:528	- [ ] Envelope contains all required fields before dispatch
+docs/plans/04-phase-3-orchestrator.md:21	- NEVER holds business logic for Memory, Tools, or ML — delegates through contracts
+docs/05-development/architecture.md:128	Boundaries must be clean:
+docs/05-development/architecture.md:409	| Gateway NEVER calls Memory | Code review |
+docs/05-development/architecture.md:412	| Domain must NOT import FastAPI | Linter rule |
+docs/05-development/BUILD_PLAN.md:47	| `hermes/acp_adapter/auth.py` | Auth | Reference only |
+docs/05-development/BUILD_PLAN.md:224	POST /api/v1/chat        # Auth: Required
+docs/05-development/BUILD_PLAN.md:225	GET  /api/v1/stream/{id}  # Auth: Required
+docs/05-development/CONTRIBUTING.md:188	- **Types**: Full type hints required
+docs/05-development/CONTRIBUTING.md:222	- Run in CI only
+docs/05-development/CONTRIBUTING.md:231	- Gateway NEVER calls Memory directly
+docs/01-core/PRD.md:26	| US-003 | As a user, I want to set reminders so I never forget important tasks | P0 |
+docs/01-core/PRD.md:206	| Twilio | SMS | Required |
+docs/01-core/PRD.md:207	| WhatsApp Business | Messaging | Required |
+docs/01-core/PRD.md:208	| OpenAI | LLM | Required |
+docs/01-core/PRD.md:209	| Neo4j | Graph memory | Required |
+docs/01-core/PRD.md:210	| Qdrant | Vector search | Required |
+docs/01-core/PRD.md:299	All error responses MUST follow RFC 9457 Problem Details format:
+docs/01-core/LLD.md:483	All error responses MUST use RFC 9457 Problem Details format:
+docs/01-core/BRD.md:30	| Passive assistants | Current assistants only respond, don't act |
+docs/01-core/BRD.md:34	- **Siri/Alexa**: Voice-only, limited actions, no learning
+docs/01-core/BRD.md:37	- **Zapier**: Technical setup required, no natural language
+docs/01-core/HLD.md:278	| Memory | 20% errors | Use cache only |
+docs/01-core/HLD.md:381	| eu-west-1 | Tertiary | Gateway only |
+docs/01-core/HLD.md:423	| HTTP/3 | RFC 9114 | Edge ingress only |
+docs/01-core/HLD.md:476	All error responses MUST follow RFC 9457 Problem Details format:
+docs/01-core/HLD.md:495	- Service boundaries clarified (Gateway NEVER calls Memory directly)
+docs/01-core/HLD.md:511	| Gateway vs Memory | Gateway NEVER calls Memory directly. Always via Orchestrator |
+docs/04-operations/infra/INFRASTRUCTURE.md:4	> **Status:** Production Required
+docs/04-operations/infra/INFRASTRUCTURE.md:392	- **Writes** → Primary only
+docs/04-operations/infra/INFRASTRUCTURE.md:507	*Version: 2.0 - Production Required*
+docs/04-operations/security/ai-security.md:4	> **Status:** Production Required
+docs/04-operations/security/SECURITY_BASELINE.md:4	> **Status:** Production Required
+docs/04-operations/security/SECURITY_BASELINE.md:46	| Database connections | TLS required | PostgreSQL, Redis TLS enabled |
+docs/04-operations/security/SECURITY_BASELINE.md:184	Tools NEVER execute directly from model requests. All tool execution goes through policy gating:
+docs/04-operations/security/SECURITY_BASELINE.md:251	All tools with side effects MUST implement idempotency:
+docs/04-operations/security/SECURITY_BASELINE.md:358	Required for **high-risk data**:
+docs/04-operations/security/SECURITY_BASELINE.md:372	**Required:** Argon2id (not bcrypt)
+docs/04-operations/security/SECURITY_BASELINE.md:376	Passkeys are **preferred authentication**. Passwords are fallback only.
+docs/04-operations/security/SECURITY_BASELINE.md:435	│  Approval Tier ──→ Required for                              │
+docs/04-operations/security/SECURITY_BASELINE.md:531	"""Append-only log (no delete)"""
+docs/04-operations/security/SECURITY_BASELINE.md:620	| Idempotency | Required for all side-effect tools |
+docs/04-operations/security/SECURITY_BASELINE.md:694	All services **MUST** implement:
+docs/04-operations/security/SECURITY_BASELINE.md:717	*Version: 2.0 - Production Required*
+docs/04-operations/security/key-management.md:4	> **Status:** Production Required
+docs/04-operations/security/key-management.md:176	| **Generation** | HSM-generated, never exported |
+docs/04-operations/security/key-management.md:178	| **Storage** | HSM/KMS only, no plaintext |
+docs/04-operations/security/key-management.md:179	| **Use** | In-memory only, zero on release |
+docs/04-operations/security/crypto-standards.md:4	> **Status:** Production Required
+docs/04-operations/security/crypto-standards.md:92	**CRITICAL:** Never reuse nonce/IV with same key.
+docs/04-operations/security/data-classification.md:4	> **Status:** Production Required
+docs/04-operations/security/data-classification.md:13	| **PUBLIC** | No restrictions | Marketing content, public docs | No encryption required, standard logging |
+docs/04-operations/security/data-classification.md:14	| **INTERNAL** | Company-only | Product roadmap, internal docs | Encrypt at rest, redact in logs |
+docs/04-operations/security/data-classification.md:28	| Password hash | SECRET | Argon2id | Permanent | Audit only |
+docs/04-operations/security/AGENTS.md:42	- NEVER use bcrypt for passwords (use Argon2id)
+docs/04-operations/security/AGENTS.md:43	- NEVER skip data classification
+docs/04-operations/security/AGENTS.md:44	- NEVER use outdated TLS versions
+docs/04-operations/security/AGENTS.md:45	- NEVER skip mTLS for internal services
+docs/04-operations/security/SECURITY.md:4	> **Status:** Production Required
+docs/04-operations/security/SECURITY.md:107	| In transit | TLS 1.3 | Required |
+docs/04-operations/security/SECURITY.md:108	| At rest | AES-256-GCM | Required |
+docs/04-operations/security/SECURITY.md:109	| Field-level | AES-256-GCM | High-risk only |
+docs/04-operations/security/SECURITY.md:117	| Internal | Metrics, logs | Auth required |
+docs/04-operations/security/SECURITY.md:143	- User consent required
+docs/04-operations/security/SECURITY.md:217	*Version: 2.0 - Production Required*
+docs/04-operations/runbooks/index.md:4	> **Status:** Production Required
+docs/04-operations/runbooks/index.md:124	*Version: 2.0 - Production Required*
+docs/04-operations/rules/SYSTEM_RULES.md:47	✅ DO: Use verbs in URLs only for true actions not natural resource state transitions
+docs/04-operations/rules/SYSTEM_RULES.md:120	✅ DO: JSONB only for truly flexible or sparse structures
+docs/04-operations/rules/SYSTEM_RULES.md:121	✅ DO: Foreign keys and critical lookup paths must be indexed
+docs/04-operations/rules/SYSTEM_RULES.md:131	✅ DO: Access tokens must expire
+docs/04-operations/rules/SYSTEM_RULES.md:133	✅ DO: HTTPS/TLS required for all external traffic
+docs/04-operations/rules/SYSTEM_RULES.md:134	✅ DO: Internal service auth must be workload-authenticated, preferably mTLS-backed
+docs/04-operations/rules/SYSTEM_RULES.md:135	✅ DO: Password hashing MUST be Argon2id (OWASP-recommended)
+docs/04-operations/rules/SYSTEM_RULES.md:145	✅ DO: Authorization is server-side only
+docs/04-operations/rules/SYSTEM_RULES.md:156	✅ DO: PII must be masked or redacted in logs
+docs/04-operations/rules/SYSTEM_RULES.md:158	❌ DON'T: Store passwords with reversible encryption (must use hashing)
+docs/04-operations/rules/SYSTEM_RULES.md:179	✅ DO: Requests/limits required for all deployed services
+docs/04-operations/rules/SYSTEM_RULES.md:188	✅ DO: Every cache entry must have TTL or explicit invalidation rule
+docs/04-operations/rules/SYSTEM_RULES.md:189	❌ DON'T: Treat cache as the only durable truth
+docs/04-operations/rules/SYSTEM_RULES.md:201	✅ DO: Every request must have correlation/request ID
+docs/04-operations/rules/SYSTEM_RULES.md:202	✅ DO: Log levels must be meaningful (DEBUG, INFO, WARN, ERROR)
+docs/04-operations/rules/SYSTEM_RULES.md:210	✅ DO: High-cardinality labels must be controlled
+docs/04-operations/rules/SYSTEM_RULES.md:217	✅ DO: Distributed tracing required across service boundaries
+docs/04-operations/rules/SYSTEM_RULES.md:224	Every service MUST expose:
+docs/04-operations/rules/SYSTEM_RULES.md:271	✅ DO: Lint, type check, and tests must pass before deploy
+docs/04-operations/rules/SYSTEM_RULES.md:275	✅ DO: Rollback path required before production promotion
+docs/04-operations/rules/SYSTEM_RULES.md:284	✅ DO: DB migrations must be forward-safe and rollback-considered
+docs/04-operations/analytics/ANALYTICS.md:337	│  - PostgreSQL for transactional only                                            │
+docs/00-governance/doc-precedence.md:87	- RFC compliance required
+docs/00-governance/doc-precedence.md:98	Every doc MUST indicate:
+docs/00-governance/doc-precedence.md:103	| Status | authoritative, draft, or production-required |
+docs/00-governance/object-model.md:198	FORBIDDEN = 'forbidden'    // Never execute
+docs/00-governance/glossary.md:53	**Gateway:** The HTTP entry point service. MUST never call Memory directly.
+docs/00-governance/glossary.md:59	**Idempotency:** Property where repeated execution produces same result. Required for all side-effect endpoints.
+docs/00-governance/glossary.md:65	**JWKS (JSON Web Key Set):** The public key set for JWT validation. MUST be served at `/.well-known/jwks`.
+docs/00-governance/glossary.md:73	**Memory (Service):** The service responsible for storing and retrieving user context. NEVER called directly from Gateway.
+docs/00-governance/glossary.md:89	**Problem Details (RFC 9457):** The standard error format. All errors MUST use this format.
+docs/00-governance/glossary.md:107	- `forbidden` - Never execute
+docs/00-governance/request-envelope.md:11	All API requests MUST use this envelope structure:
+docs/00-governance/request-envelope.md:214	When breaking changes required:
+docs/00-governance/platform-constitution.md:70	| api → services → domain → infrastructure | Never skip layers |
+docs/00-governance/platform-constitution.md:186	1. **Gateway NEVER calls Memory directly.** Always via Orchestrator.
+docs/00-governance/platform-constitution.md:198	**Definition:** Work must survive restarts, approval pauses, and delayed dependencies. Execution resumes from a committed boundary, not from vibes.
+docs/00-governance/platform-constitution.md:202	- Redis for hot cache only
+docs/00-governance/platform-constitution.md:210	| Class | Approval Required | Examples |
+docs/00-governance/platform-constitution.md:219	**Definition:** Memory is a system's capability, NOT an excuse to store everything forever. Memory must evolve, not accumulate.
+docs/00-governance/platform-constitution.md:263	| 5 | Memory evolves, not only accumulates | Cost + privacy |
+docs/00-governance/platform-constitution.md:287	Every event MUST include:
+docs/00-governance/platform-constitution.md:302	Every request MUST include:
+docs/00-governance/platform-constitution.md:330	| Level | Auth Required | Actions |
+docs/00-governance/platform-constitution.md:340	- **Ambient recording:** Opt-in only, user toggle, retention limits
+docs/00-governance/platform-constitution.md:341	- **Health data:** Tightly consented, explicit use only
+docs/00-governance/platform-constitution.md:347	Every service doc must:
+docs/00-governance/system-design-rules.md:11	All services MUST use Problem Details format:
+docs/00-governance/system-design-rules.md:43	- RS256 ONLY (no HS256)
+docs/00-governance/system-design-rules.md:44	- JWKS endpoint required
+docs/00-governance/system-design-rules.md:54	Argon2id ONLY per OWASP:
+docs/00-governance/system-design-rules.md:99	All side-effect endpoints MUST support `Idempotency-Key` header.
+docs/00-governance/system-design-rules.md:137	Required metrics:
+docs/00-governance/event-contract.md:11	All events MUST follow this schema:
+docs/00-governance/event-contract.md:108	- Consumer idempotency required
