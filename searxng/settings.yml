@@ -1,0 +1,40 @@
+use_default_settings: true
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: "butler_searxng_secret_key"
+  base_url: http://localhost:8080/
+  image_proxy: true
+
+search:
+  safe_search: 0
+  autocomplete: "google"
+  default_lang: "en-US"
+
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: w
+  - name: exa
+    engine: exa
+    api_key: "${EXA_API_KEY}"
+    shortcut: exa
+
+ui:
+  static_path: ""
+  templates_path: ""
+  theme: simple
+  center_alignment: false
+  default_theme: simple
+  default_locale: ""
+  query_in_title: true
+  infinite_scroll: false
+
+enabled_plugins:
+  - 'Basic Health Check'

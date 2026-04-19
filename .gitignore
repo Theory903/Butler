@@ -1,0 +1,86 @@
+# Butler - Production Git Ignore
+
+## Build Artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+## Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+.venv*
+
+## IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+## Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+## Environment
+.env
+.env.local
+.env.*.local
+
+## Logs
+*.log
+logs/
+
+## OpenCode
+.opencode/
+
+## Ref/External Research (License Review Required)
+# Contents in .ref/ may be AGPL-licensed and require legal review before use
+# Do not commit external code without licensing approval
+/ref/
+
+## Documentation Build
+site/
+.publi[c]/
+*.md.bak
+
+## Database
+*.db
+*.sqlite
+*.sqlite3
+
+## Docker
+.docker/
+*.tar
+*.tar.gz
+
+## Secrets (DO NOT COMMIT)
+credentials.json
+secrets.yaml
+*secret*
+*password*
+*.key
+*.pem
+*.cer
+
+## Temporary
+tmp/
+temp/
+*.tmp
+*.temp
+
+## Cache
+.cache/
+.node_modules/
+.npm/
+.eslintcache
