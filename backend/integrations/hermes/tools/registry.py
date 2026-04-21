@@ -448,7 +448,7 @@ ButlerImportedToolRegistry = ToolRegistry
 # hundreds of times across tool files.
 #
 # Usage:
-#   from tools.registry import registry, tool_error, tool_result
+#   from integrations.hermes.tools.registry import registry, tool_error, tool_result
 #
 #   return tool_error("something went wrong")
 #   return tool_error("not found", code=404)

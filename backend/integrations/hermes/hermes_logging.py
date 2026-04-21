@@ -6,7 +6,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .hermes_constants import get_config_path, get_hermes_home
+from integrations.hermes.hermes_constants import get_config_path, get_hermes_home
 
 # Sentinel to track whether setup_logging() has already run.  The function
 # is idempotent — calling it twice is safe but the second call is a no-op
@@ -188,7 +188,7 @@ def setup_logging(
     backups = backup_count or cfg_backup or 3
 
     # Lazy import to avoid circular dependency at module load time.
-    from agent.redact import RedactingFormatter
+    from integrations.hermes.agent.redact import RedactingFormatter
 
     root = logging.getLogger()
 
@@ -241,7 +241,7 @@ def setup_verbose_logging() -> None:
 
     Called by ``AIAgent.__init__()`` when ``verbose_logging=True``.
     """
-    from agent.redact import RedactingFormatter
+    from integrations.hermes.agent.redact import RedactingFormatter
 
     root = logging.getLogger()
 

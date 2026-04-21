@@ -220,7 +220,7 @@ def check_tinker_atropos():
 
 def list_environments_sync():
     """List available environments (synchronous wrapper)."""
-    from tools.rl_training_tool import rl_list_environments
+    from integrations.hermes.tools.rl_training_tool import rl_list_environments
     import json
     
     async def _list():
@@ -401,7 +401,7 @@ def main(
                 
                 if user_input.lower() == 'status':
                     # Quick status check
-                    from tools.rl_training_tool import rl_list_runs
+                    from integrations.hermes.tools.rl_training_tool import rl_list_runs
                     import json
                     result = asyncio.run(rl_list_runs())
                     runs = json.loads(result)

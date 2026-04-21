@@ -25,8 +25,30 @@ class QdrantClient:
                     port=settings.QDRANT_PORT,
                     api_key=settings.QDRANT_API_KEY
                 )
-                # Quick health check
-                await self._client.get_collections()
+                # Quick health check & Ensure collection exists with correct dimensions
+                collections_res = await self._client.get_collections()
+                collection_names = [c.name for c in collections_res.collections]
+                
+                recreate = False
+                if "butler_memories" in collection_names:
+                    # Check dimensions
+                    c_info = await self._client.get_collection("butler_memories")
+                    current_dim = c_info.config.params.vectors.size if hasattr(c_info.config.params.vectors, "size") else 0
+                    if current_dim != 1536:
+                        logger.warning(f"Qdrant collection dimension mismatch: {current_dim} vs 1536. Recreating...")
+                        await self._client.delete_collection("butler_memories")
+                        recreate = True
+                else:
+                    recreate = True
+
+                if recreate:
+                    from qdrant_client.http.models import Distance, VectorParams
+                    await self._client.create_collection(
+                        collection_name="butler_memories",
+                        vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+                    )
+                    logger.info("Initialized Qdrant collection: butler_memories (1536-d)")
+                
                 logger.info(f"Qdrant connection established at {settings.QDRANT_HOST}:{settings.QDRANT_PORT}")
             except Exception as e:
                 logger.error(f"Failed to connect to Qdrant: {e}")

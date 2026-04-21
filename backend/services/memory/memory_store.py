@@ -32,7 +32,7 @@ import uuid
 import structlog
 from datetime import datetime, UTC
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
@@ -46,6 +46,8 @@ from domain.memory.write_policy import (
 from domain.memory.models import MemoryEntry, MemoryStatus
 from domain.memory.contracts import IColdStore, IMemoryWriteStore
 from services.memory.knowledge_repo_contract import KnowledgeRepoContract
+from infrastructure.config import settings
+from infrastructure.memory.qdrant_client import qdrant_client
 
 logger = structlog.get_logger(__name__)
 
@@ -195,19 +197,24 @@ class ButlerMemoryStore(IMemoryWriteStore):
 
     async def _write_warm(self, request: MemoryWriteRequest) -> str | None:
         """Qdrant warm tier — full-precision embedding vectors."""
+        if settings.VECTOR_STORE_BACKEND != "qdrant":
+            return None
+
         from services.ml.embeddings import EmbeddingService
-        from infrastructure.config import settings
-        from infrastructure.memory.qdrant_client import qdrant_client
         
         warm_id = str(uuid.uuid4())
         content_str = request.content if isinstance(request.content, str) else json.dumps(request.content)
+
+        if qdrant_client._client is None:
+            await qdrant_client.connect()
+        client = cast(Any, qdrant_client.client)
         
         # 1. Generate embedding
         embedder = EmbeddingService(settings.EMBEDDING_MODEL)
         vector = await embedder.embed(content_str)
         
         # 2. Upsert to Qdrant
-        await qdrant_client.upsert(
+        await client.upsert(
             collection_name="butler_memories",
             points=[{
                 "id": warm_id,
@@ -245,27 +252,52 @@ class ButlerMemoryStore(IMemoryWriteStore):
 
     async def _write_struct(self, request: MemoryWriteRequest) -> str:
         """PostgreSQL canonical storage — respects archival policy."""
+        from services.ml.embeddings import EmbeddingService
+
         # 1. Archive superseded facts if applicable
         if request.metadata.get("supersedes"):
             old_id = uuid.UUID(request.metadata["supersedes"])
             await self._archive_record(request.account_id, old_id)
 
-        # 2. Create new record
+        # 2. Prepare metadata (Ensure JSON serializable, convert enums)
+        metadata = self._prepare_metadata_for_db(request.metadata)
+
+        embedding = None
+        if settings.VECTOR_STORE_BACKEND == "postgres":
+            content_str = request.content if isinstance(request.content, str) else json.dumps(request.content)
+            embedder = EmbeddingService(settings.EMBEDDING_MODEL)
+            embedding = await embedder.embed(content_str)
+
+        # 4. Create new record
         entry = MemoryEntry(
             id=uuid.uuid4(),
             account_id=uuid.UUID(request.account_id),
             memory_type=request.memory_type,
             content=request.content,
+            embedding=embedding,
             importance=request.importance,
-            source=request.metadata.get("source", "conversation"),
+            source=metadata.get("source", "conversation"),
             session_id=request.session_id,
             status=MemoryStatus.ACTIVE,
             valid_from=datetime.now(UTC),
-            metadata_col=request.metadata
+            metadata_col=metadata
         )
         self._db.add(entry)
         await self._db.flush()
         return str(entry.id)
+
+    def _prepare_metadata_for_db(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Deep copy and serialize enums/objects for JSONB columns."""
+        from enum import Enum
+        def _serialize(v):
+            if isinstance(v, Enum):
+                return v.value
+            if isinstance(v, dict):
+                return {ik: _serialize(iv) for ik, iv in v.items()}
+            if isinstance(v, list):
+                return [_serialize(i) for i in v]
+            return v
+        return cast(dict[str, Any], _serialize(metadata))
 
     async def _write_cold(self, request: MemoryWriteRequest) -> str:
         """Compressed cold storage tier (asynchronous)."""

@@ -12,7 +12,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# Module-level export for easier imports
+BUTLER_NODE_ID = "node-1"
 
 
 class Settings(BaseSettings):
@@ -23,11 +28,24 @@ class Settings(BaseSettings):
     SERVICE_VERSION: str = "0.1.0"
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
+    BUTLER_NODE_ID: str = "node-1"  # Override in prod with unique ID
 
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:19006"]
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                return raw
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return value
 
     # Service Discovery / URLs
     ORCHESTRATOR_URL: str = "http://localhost:8000"  # Self-referencing in monolithic mode
@@ -142,6 +160,14 @@ class Settings(BaseSettings):
     HERMES_PLATFORM_ADAPTERS_ENABLED: bool = True
     HERMES_CRON_ENABLED: bool = True
     HERMES_MEMORY_PLUGINS_ENABLED: bool = True
+
+    # ── Marketplace & Ecosystem (Phase 12) ──────────────────────────────────
+    CLAW_HUB_URL: str = "http://localhost:8080"  # Mock registry for now
+    SEARXNG_URL: str = "http://localhost:8080"
+    SEMGREP_RULES_PATH: Optional[str] = None
+    PLUGINS_ISOLATION_ENABLED: bool = True
+    PLUGINS_ISOLATION_BACKEND: str = "subprocess"  # subprocess | docker
+    PLUGINS_DOCKER_IMAGE: str = "butler-sandbox:latest"
 
     # Observability
     OTEL_ENDPOINT: Optional[str] = None  # e.g. "http://otel-collector:4317"

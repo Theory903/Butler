@@ -23,11 +23,12 @@ Sovereignty rules:
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Optional, Union, Any
 
-from domain.policy.product_tiers import TIER_CONFIGS, CapabilityFlag, ProductTier
+from domain.policy.capability_flags import CapabilityArea, TrustLevel
+from domain.policy.product_tiers import TIER_CONFIGS, ProductTier, CapabilityFlag  # CapabilityFlag is an alias
 
 
 class IndustryProfile(str, Enum):
@@ -71,15 +72,12 @@ PROFILE_CONFIGS: dict[IndustryProfile, ProfileConfig] = {
         display_name="Healthcare (HIPAA)",
         description="HIPAA-compliant mode: PHI handling, encrypted memory, no unencrypted storage.",
         additional_capabilities=frozenset({
-            CapabilityFlag.HIPAA_MODE,
-            CapabilityFlag.AUDIT_FULL,
-            CapabilityFlag.SOC2_AUDIT,
+            CapabilityArea.HEALTH_INTEGRATION,
         }),
         restricted_capabilities=frozenset({
-            # PHI cannot be written to local unencrypted files
-            CapabilityFlag.FILE_WRITE,
+            CapabilityArea.WEB_SEARCH,  # Restrict public web for PHI safety
         }),
-        required_compliance=frozenset({CapabilityFlag.HIPAA_MODE}),
+        required_compliance=frozenset({CapabilityArea.HEALTH_INTEGRATION}),
         min_tier=ProductTier.ENTERPRISE,
     ),
 
@@ -88,17 +86,11 @@ PROFILE_CONFIGS: dict[IndustryProfile, ProfileConfig] = {
         display_name="Government (FedRAMP)",
         description="FedRAMP High: data sovereignty, approved providers, mandatory audit.",
         additional_capabilities=frozenset({
-            CapabilityFlag.FEDRAMP_MODE,
-            CapabilityFlag.AUDIT_FULL,
-            CapabilityFlag.SOC2_AUDIT,
+            CapabilityArea.SYSTEM_OPS,
         }),
         restricted_capabilities=frozenset({
-            # FedRAMP prohibits unapproved cloud LLM (only approved providers allowed)
-            CapabilityFlag.CLOUD_FRONTIER_LLM,
-            # No external API calls without ATO
-            CapabilityFlag.EXTERNAL_API_CALLS,
+            CapabilityArea.SOCIAL_PRESENCE,
         }),
-        required_compliance=frozenset({CapabilityFlag.FEDRAMP_MODE, CapabilityFlag.AUDIT_FULL}),
         min_tier=ProductTier.ENTERPRISE,
     ),
 
@@ -107,14 +99,11 @@ PROFILE_CONFIGS: dict[IndustryProfile, ProfileConfig] = {
         display_name="Financial Services (SOC2)",
         description="SOC2 Type II compliance with full audit log and external API approval gates.",
         additional_capabilities=frozenset({
-            CapabilityFlag.SOC2_AUDIT,
-            CapabilityFlag.AUDIT_FULL,
+            CapabilityArea.FINANCE_GATEWAY,
         }),
         restricted_capabilities=frozenset({
-            # External API calls need explicit approval in finance (MiFID II, DORA)
-            CapabilityFlag.EXTERNAL_API_CALLS,
+            CapabilityArea.GEN_AI_FACTORY, # Restrict unapproved model usage
         }),
-        required_compliance=frozenset({CapabilityFlag.SOC2_AUDIT}),
         min_tier=ProductTier.ENTERPRISE,
     ),
 
@@ -123,11 +112,10 @@ PROFILE_CONFIGS: dict[IndustryProfile, ProfileConfig] = {
         display_name="Legal",
         description="Document-focused: no code execution, no external APIs, full audit.",
         additional_capabilities=frozenset({
-            CapabilityFlag.AUDIT_FULL,
+            CapabilityArea.MEMORY_OPS,
         }),
         restricted_capabilities=frozenset({
-            CapabilityFlag.CODE_EXECUTION,
-            CapabilityFlag.EXTERNAL_API_CALLS,
+            CapabilityArea.DATA_ANALYSIS,
         }),
         min_tier=ProductTier.PRO,
     ),
@@ -137,9 +125,8 @@ PROFILE_CONFIGS: dict[IndustryProfile, ProfileConfig] = {
         display_name="Education",
         description="COPPA-safe mode: no email, no device control, no external APIs.",
         restricted_capabilities=frozenset({
-            CapabilityFlag.EMAIL_SEND,
-            CapabilityFlag.DEVICE_CONTROL,
-            CapabilityFlag.EXTERNAL_API_CALLS,
+            CapabilityArea.SOCIAL_PRESENCE,
+            CapabilityArea.IOT_CONTROL,
         }),
         min_tier=ProductTier.PERSONAL,
     ),

@@ -205,7 +205,13 @@ class IJWKSVerifier(ABC):
         """Return the current set of JWK public keys."""
 
     @abstractmethod
-    def verify_token(self, token: str) -> dict:
+    def verify_token(
+        self,
+        token: str,
+        audience: str | None = None,
+        issuer: str | None = None,
+        leeway: int = 0,
+    ) -> dict:
         """Verify a JWT and return its decoded claims.
 
         Raises jwt.InvalidTokenError (or subclass) on any verification failure.

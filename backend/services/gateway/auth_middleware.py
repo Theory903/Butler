@@ -38,6 +38,7 @@ _VALID_ALGS = frozenset({"RS256", "ES256", "RS384", "ES384", "RS512", "ES512"})
 _CLOCK_SKEW_S: int = 30
 
 
+
 class JWTAuthMiddleware:
     """Verify JWT Bearer tokens using JWKS public key.
 

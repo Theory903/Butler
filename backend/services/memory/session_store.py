@@ -130,21 +130,12 @@ class ButlerSessionStore:
             session_data = json.loads(raw_session)
             summary = session_data.get("running_summary")
 
-        # Prepend summary to history as a system anchor if present
-        if summary:
-            # We insert it as the FIRST message to provide anchored context
-            hot.insert(0, {
-                "role": "system",
-                "content": f"## PREVIOUS CONTEXT SUMMARY (Anchored)\n\n{summary}",
-                "ts": datetime.now(UTC).isoformat(),
-                "metadata": {"type": "context_anchor"}
-            })
-
         return ContextPack(
             session_history=hot,
             relevant_memories=[],
             preferences=[],
             entities=[],
+            summary_anchor=summary,
             context_token_budget=4096,
         )
 

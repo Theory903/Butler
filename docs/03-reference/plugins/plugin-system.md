@@ -594,3 +594,10 @@ Response: { "installed": true, "plugin_id": "weather" }
 *Document owner: Platform Team*  
 *Version: 2.0 - Production Required*  
 *Last updated: 2026-04-18*
+
+## Harvested Capabilities: Plugin Architecture
+**Source: OpenClaw Architecture Boundaries**
+- **Capability-Based Registration:** Plugins do not execute arbitrary code in the main gateway; instead, they register strictly typed capabilities (`registerHttpRoute`, `registerCliBackend`, `registerSpeechProvider`).
+- **Four-Layer Plugin Lifecycle:** (1) Discovery/Manifest Reading, (2) Validation & Consent, (3) Isolation/Sandboxing, (4) Capability Extraction.
+- *Butler Discard/Rewrite:* OpenClaw's "In-Process jiti" loading is discarded in favor of Butler's Multi-Tenant MCP process isolation to avoid root-level trust dependencies.
+

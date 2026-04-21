@@ -846,7 +846,7 @@ class MCPServerTask:
         After the initial ``await`` (list_tools), all mutations are synchronous
         — atomic from the event loop's perspective.
         """
-        from tools.registry import registry
+        from integrations.hermes.tools.registry import registry
 
         async with self._refresh_lock:
             # Capture old tool names for change diff
@@ -902,7 +902,7 @@ class MCPServerTask:
         command, safe_env = _resolve_stdio_command(command, safe_env)
 
         # Check package against OSV malware database before spawning
-        from tools.osv_check import check_package_for_malware
+        from integrations.hermes.tools.osv_check import check_package_for_malware
         malware_error = check_package_for_malware(command, args)
         if malware_error:
             raise ValueError(
@@ -958,7 +958,7 @@ class MCPServerTask:
         _oauth_auth = None
         if self._auth_type == "oauth":
             try:
-                from tools.mcp_oauth import build_oauth_auth
+                from integrations.hermes.tools.mcp_oauth import build_oauth_auth
                 _oauth_auth = build_oauth_auth(
                     self.name, url, config.get("oauth")
                 )
@@ -1138,7 +1138,7 @@ class MCPServerTask:
 
     async def shutdown(self):
         """Signal the Task to exit and wait for clean resource teardown."""
-        from tools.registry import registry
+        from integrations.hermes.tools.registry import registry
 
         self._shutdown_event.set()
         if self._task and not self._task.done():
@@ -1243,7 +1243,7 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
     Poll in short intervals so the calling agent thread can honor user
     interrupts while the MCP work is still running on the background loop.
     """
-    from tools.interrupt import is_interrupted
+    from integrations.hermes.tools.interrupt import is_interrupted
 
     with _lock:
         loop = _mcp_loop
@@ -1464,7 +1464,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that reads a resource by URI from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        from tools.registry import tool_error
+        from integrations.hermes.tools.registry import tool_error
 
         with _lock:
             server = _servers.get(server_name)
@@ -1559,7 +1559,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that gets a prompt by name from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        from tools.registry import tool_error
+        from integrations.hermes.tools.registry import tool_error
 
         with _lock:
             server = _servers.get(server_name)
@@ -1831,7 +1831,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     Returns:
         List of registered prefixed tool names.
     """
-    from tools.registry import registry
+    from integrations.hermes.tools.registry import registry
 
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"

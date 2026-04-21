@@ -1020,7 +1020,7 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _download_and_cache(self, url: str, content_type: str) -> Optional[str]:
         """Download a URL and cache it locally."""
-        from tools.url_safety import is_safe_url
+        from integrations.hermes.tools.url_safety import is_safe_url
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL: {url[:80]}")
 

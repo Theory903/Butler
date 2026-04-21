@@ -18,7 +18,7 @@ Configuration is loaded from ~/.hermes/config.yaml under the 'tts:' key.
 The user chooses the provider and voice; the model just sends text.
 
 Usage:
-    from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+    from integrations.hermes.tools.tts_tool import text_to_speech_tool, check_tts_requirements
 
     result = text_to_speech_tool(text="Hello world")
 """
@@ -43,8 +43,8 @@ from urllib.parse import urljoin
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
+from integrations.hermes.tools.managed_tool_gateway import resolve_managed_tool_gateway
+from integrations.hermes.tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
 
 # ---------------------------------------------------------------------------
 # Lazy imports -- providers are imported only when actually used to avoid
@@ -926,7 +926,7 @@ def stream_tts_to_speaker(
                         if stop_evt.is_set():
                             break
                         wf.writeframes(chunk)
-                from tools.voice_mode import play_audio_file
+                from integrations.hermes.tools.voice_mode import play_audio_file
                 play_audio_file(tmp_path)
             except Exception as exc:
                 logger.warning("Temp-file TTS fallback failed: %s", exc)
@@ -1038,7 +1038,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
+from integrations.hermes.tools.registry import registry, tool_error
 
 TTS_SCHEMA = {
     "name": "text_to_speech",

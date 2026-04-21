@@ -80,7 +80,7 @@ def register_credential_file(
 
     # Resolve symlinks and normalise ``..`` before the containment check so
     # that traversal like ``../. ssh/id_rsa`` cannot escape HERMES_HOME.
-    from tools.path_security import validate_within_dir
+    from integrations.hermes.tools.path_security import validate_within_dir
 
     containment_error = validate_within_dir(host_path, hermes_home)
     if containment_error:
@@ -140,7 +140,7 @@ def _load_config_files() -> List[Dict[str, str]]:
         cfg = read_raw_config()
         cred_files = cfg.get("terminal", {}).get("credential_files")
         if isinstance(cred_files, list):
-            from tools.path_security import validate_within_dir
+            from integrations.hermes.tools.path_security import validate_within_dir
 
             for item in cred_files:
                 if isinstance(item, str) and item.strip():

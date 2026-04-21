@@ -32,7 +32,7 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 import yaml
 
-from tools.skills_guard import (
+from integrations.hermes.tools.skills_guard import (
     ScanResult, content_hash, TRUSTED_REPOS,
 )
 

@@ -1,14 +1,24 @@
 import uuid
-from typing import List, Optional
+from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from domain.memory.notebook_models import Notebook, Source, Note
-from services.memory.notebook_repo import PostgresNotebookRepository
-from services.memory.transformation_service import TransformationService
 from core.deps import get_db
 
 router = APIRouter(prefix="/research", tags=["research"])
+
+
+async def get_notebook_repo(db=Depends(get_db)) -> Any:
+    from services.memory.notebook_repo import PostgresNotebookRepository
+
+    return PostgresNotebookRepository(db)
+
+
+async def get_transformation_service() -> Any:
+    from services.memory.transformation_service import TransformationService
+
+    return TransformationService()
 
 class NotebookCreate(BaseModel):
     title: str
@@ -20,18 +30,18 @@ class SourceCreate(BaseModel):
     title: Optional[str] = None
 
 @router.post("/notebooks")
-async def create_notebook(data: NotebookCreate, repo: PostgresNotebookRepository = Depends(get_db)):
+async def create_notebook(data: NotebookCreate, repo: Any = Depends(get_notebook_repo)):
     # Mocking account_id for now as is consistent with other routes
     account_id = str(uuid.uuid4()) 
     return await repo.create_notebook(account_id=account_id, title=data.title, description=data.description)
 
 @router.get("/notebooks")
-async def list_notebooks(repo: PostgresNotebookRepository = Depends(get_db)):
+async def list_notebooks(repo: Any = Depends(get_notebook_repo)):
     account_id = str(uuid.uuid4())
     return await repo.list_notebooks(account_id)
 
 @router.post("/sources")
-async def add_source(data: SourceCreate, repo: PostgresNotebookRepository = Depends(get_db), transformer: TransformationService = Depends()):
+async def add_source(data: SourceCreate, repo: Any = Depends(get_notebook_repo), transformer: Any = Depends(get_transformation_service)):
     # 1. Ingest content based on URL
     if "youtube.com" in data.url or "youtu.be" in data.url:
         ingest_result = await transformer.ingest_youtube(data.url)
@@ -53,5 +63,5 @@ async def add_source(data: SourceCreate, repo: PostgresNotebookRepository = Depe
     return source
 
 @router.get("/notebooks/{notebook_id}/graph")
-async def get_notebook_graph(notebook_id: str, repo: PostgresNotebookRepository = Depends(get_db)):
+async def get_notebook_graph(notebook_id: str, repo: Any = Depends(get_notebook_repo)):
     return await repo.get_notebook_graph(notebook_id)

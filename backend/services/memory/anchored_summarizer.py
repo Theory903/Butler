@@ -87,16 +87,17 @@ OUTPUT STRUCTURE:
         return await self._run_summarization(prompt)
 
     async def _run_summarization(self, prompt: str) -> str:
+        from domain.ml.contracts import ReasoningRequest
         try:
-            res = await self._ml.execute_inference(
-                profile_name="cloud_fast_general",
-                payload={
-                    "system": "You are Butler's Context Compression Engine. You specialize in technical summary maintenance.",
-                    "prompt": prompt,
-                    "temperature": 0.1,  # Low temperature for factual precision
-                }
+            req = ReasoningRequest(
+                system_prompt="You are Butler's Context Compression Engine. You specialize in technical summary maintenance.",
+                prompt=prompt,
+                temperature=0.1,
+                max_tokens=1024,
+                metadata={"purpose": "context_compression"}
             )
-            return res.get("generated_text", "").strip()
+            res = await self._ml.generate(req, preferred_tier="T1")
+            return res.content.strip()
         except Exception as e:
             logger.error(f"Anchored summarization failed: {e}")
             return ""

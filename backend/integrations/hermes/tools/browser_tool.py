@@ -37,7 +37,7 @@ Environment Variables:
   beyond project default. Common values: 600000 (10min), 1800000 (30min) (default: none)
 
 Usage:
-    from tools.browser_tool import browser_navigate, browser_snapshot, browser_click
+    from integrations.hermes.tools.browser_tool import browser_navigate, browser_snapshot, browser_click
     
     # Navigate to a page
     result = browser_navigate("https://example.com", task_id="task_123")
@@ -69,25 +69,25 @@ from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
 
 try:
-    from tools.website_policy import check_website_access
+    from integrations.hermes.tools.website_policy import check_website_access
 except Exception:
     check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
 
 try:
-    from tools.url_safety import is_safe_url as _is_safe_url
+    from integrations.hermes.tools.url_safety import is_safe_url as _is_safe_url
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
-from tools.browser_providers.base import CloudBrowserProvider
-from tools.browser_providers.browserbase import BrowserbaseProvider
-from tools.browser_providers.browser_use import BrowserUseProvider
-from tools.browser_providers.firecrawl import FirecrawlProvider
-from tools.tool_backend_helpers import normalize_browser_cloud_provider
+from integrations.hermes.tools.browser_providers.base import CloudBrowserProvider
+from integrations.hermes.tools.browser_providers.browserbase import BrowserbaseProvider
+from integrations.hermes.tools.browser_providers.browser_use import BrowserUseProvider
+from integrations.hermes.tools.browser_providers.firecrawl import FirecrawlProvider
+from integrations.hermes.tools.tool_backend_helpers import normalize_browser_cloud_provider
 
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
 # camofox REST API instead of the agent-browser CLI.
 try:
-    from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
+    from integrations.hermes.tools.browser_camofox import is_camofox_mode as _is_camofox_mode
 except ImportError:
     _is_camofox_mode = lambda: False  # noqa: E731
 
@@ -1020,7 +1020,7 @@ def _run_browser_command(
         logger.warning("browser command blocked on Termux: %s", error)
         return {"success": False, "error": error}
     
-    from tools.interrupt import is_interrupted
+    from integrations.hermes.tools.interrupt import is_interrupted
     if is_interrupted():
         return {"success": False, "error": "Interrupted"}
 
@@ -1321,7 +1321,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 
     # Camofox backend — delegate after safety checks pass
     if _is_camofox_mode():
-        from tools.browser_camofox import camofox_navigate
+        from integrations.hermes.tools.browser_camofox import camofox_navigate
         return camofox_navigate(url, task_id)
 
     effective_task_id = task_id or "default"
@@ -1430,7 +1430,7 @@ def browser_snapshot(
         JSON string with page snapshot
     """
     if _is_camofox_mode():
-        from tools.browser_camofox import camofox_snapshot
+        from integrations.hermes.tools.browser_camofox import camofox_snapshot
         return camofox_snapshot(full, task_id, user_task)
 
     effective_task_id = task_id or "default"
@@ -1479,7 +1479,7 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
         JSON string with click result
     """
     if _is_camofox_mode():
-        from tools.browser_camofox import camofox_click
+        from integrations.hermes.tools.browser_camofox import camofox_click
         return camofox_click(ref, task_id)
 
     effective_task_id = task_id or "default"
@@ -1515,7 +1515,7 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         JSON string with type result
     """
     if _is_camofox_mode():
-        from tools.browser_camofox import camofox_type
+        from integrations.hermes.tools.browser_camofox import camofox_type
         return camofox_type(ref, text, task_id)
 
     effective_task_id = task_id or "default"
@@ -1564,7 +1564,7 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     _SCROLL_PIXELS = 500
 
     if _is_camofox_mode():
-        from tools.browser_camofox import camofox_scroll
+        from integrations.hermes.tools.browser_camofox import camofox_scroll
         # Camofox REST API doesn't support pixel args; use repeated calls
         _SCROLL_REPEATS = 5
         result = None
@@ -1598,7 +1598,7 @@ def browser_back(task_id: Optional[str] = None) -> str:
         JSON string with navigation result
     """
     if _is_camofox_mode():
-        from tools.browser_camofox import camofox_back
+        from integrations.hermes.tools.browser_camofox import camofox_back
         return camofox_back(task_id)
 
     effective_task_id = task_id or "default"
@@ -1629,7 +1629,7 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         JSON string with key press result
     """
     if _is_camofox_mode():
-        from tools.browser_camofox import camofox_press
+        from integrations.hermes.tools.browser_camofox import camofox_press
         return camofox_press(key, task_id)
 
     effective_task_id = task_id or "default"
@@ -1671,7 +1671,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
     # --- Console output mode (original behaviour) ---
     if _is_camofox_mode():
-        from tools.browser_camofox import camofox_console
+        from integrations.hermes.tools.browser_camofox import camofox_console
         return camofox_console(clear, task_id)
 
     effective_task_id = task_id or "default"
@@ -1750,7 +1750,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate JS via Camofox's /tabs/{tab_id}/eval endpoint (if available)."""
-    from tools.browser_camofox import _ensure_tab, _post
+    from integrations.hermes.tools.browser_camofox import _ensure_tab, _post
     try:
         tab_info = _ensure_tab(task_id or "default")
         tab_id = tab_info.get("tab_id") or tab_info.get("id")
@@ -1843,7 +1843,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         JSON string with list of images (src and alt)
     """
     if _is_camofox_mode():
-        from tools.browser_camofox import camofox_get_images
+        from integrations.hermes.tools.browser_camofox import camofox_get_images
         return camofox_get_images(task_id)
 
     effective_task_id = task_id or "default"
@@ -1911,7 +1911,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         JSON string with vision analysis results and screenshot_path
     """
     if _is_camofox_mode():
-        from tools.browser_camofox import camofox_vision
+        from integrations.hermes.tools.browser_camofox import camofox_vision
         return camofox_vision(question, annotate, task_id)
 
     import base64
@@ -2023,7 +2023,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         try:
             response = call_llm(**call_kwargs)
         except Exception as _api_err:
-            from tools.vision_tools import (
+            from integrations.hermes.tools.vision_tools import (
                 _is_image_size_error, _resize_image_for_vision, _RESIZE_TARGET_BYTES,
             )
             if (_is_image_size_error(_api_err)
@@ -2134,7 +2134,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     # The inactivity reaper still frees idle resources.
     if _is_camofox_mode():
         try:
-            from tools.browser_camofox import camofox_close, camofox_soft_cleanup
+            from integrations.hermes.tools.browser_camofox import camofox_close, camofox_soft_cleanup
             if not camofox_soft_cleanup(task_id):
                 camofox_close(task_id)
         except Exception as e:
@@ -2305,7 +2305,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
+from integrations.hermes.tools.registry import registry, tool_error
 
 _BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
 

@@ -14,8 +14,8 @@ import sys
 import uuid
 from typing import Optional
 
-from tools.environments.base import BaseEnvironment, _popen_bash
-from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+from integrations.hermes.tools.environments.base import BaseEnvironment, _popen_bash
+from integrations.hermes.tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
 
 logger = logging.getLogger(__name__)
 
@@ -298,7 +298,7 @@ class DockerEnvironment(BaseEnvironment):
         # Persistent workspace via bind mounts from a configurable host directory
         # (TERMINAL_SANDBOX_DIR, default ~/.hermes/sandboxes/). Non-persistent
         # mode uses tmpfs (ephemeral, fast, gone on cleanup).
-        from tools.environments.base import get_sandbox_dir
+        from integrations.hermes.tools.environments.base import get_sandbox_dir
 
         # User-configured volume mounts (from config.yaml docker_volumes)
         volume_args = []
@@ -362,7 +362,7 @@ class DockerEnvironment(BaseEnvironment):
         # Mount credential files (OAuth tokens, etc.) declared by skills.
         # Read-only so the container can authenticate but not modify host creds.
         try:
-            from tools.credential_files import (
+            from integrations.hermes.tools.credential_files import (
                 get_credential_file_mounts,
                 get_skills_directory_mount,
                 get_cache_directory_mounts,
@@ -464,7 +464,7 @@ class DockerEnvironment(BaseEnvironment):
         explicit_forward_keys = set(self._forward_env)
         passthrough_keys: set[str] = set()
         try:
-            from tools.env_passthrough import get_all_passthrough
+            from integrations.hermes.tools.env_passthrough import get_all_passthrough
             passthrough_keys = set(get_all_passthrough())
         except Exception:
             pass

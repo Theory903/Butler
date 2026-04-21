@@ -18,14 +18,14 @@ What it does NOT own:
   - Event normalization (EventNormalizer in HermesAgentBackend)
 """
 
-from __future__ import annotations
-
+import contextlib
 import json
 import uuid
 import time
 import asyncio
 import structlog
 from datetime import datetime, UTC
+from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from redis.asyncio import Redis
@@ -34,7 +34,15 @@ from domain.tools.models import ToolDefinition, ToolExecution
 from domain.tools.contracts import ToolsServiceContract, ToolResult, ValidationResult, VerificationResult, IToolVerifier
 from domain.tools.exceptions import ToolErrors
 from domain.tools.hermes_compiler import ButlerToolSpec, HermesToolCompiler
+from core.observability import ButlerMetrics, get_metrics
 from domain.tools.hermes_dispatcher import ButlerToolDispatch, HermesEnvBridge
+from core.circuit_breaker import CircuitBreakerRegistry, CircuitOpenError
+from core.locks import LockManager
+
+from opentelemetry import trace
+from services.tools.sandbox_manager import SandboxManager
+
+tracer = trace.get_tracer(__name__)
 
 logger = structlog.get_logger(__name__)
 
@@ -55,10 +63,25 @@ class ToolExecutor(ToolsServiceContract):
         account_tier: str = "free",
         channel: str = "api",
         assurance_level: str = "AAL1",
+        breakers: CircuitBreakerRegistry | None = None,
+        lock_manager: LockManager | None = None,
+        health_agent: Any | None = None,
+        metrics: ButlerMetrics | None = None,
+        node_id: str = "unknown"
     ):
         self._db = db
         self._redis = redis
         self._verifier = verifier
+        self._breakers = breakers
+        self._locks = lock_manager
+        self._health = health_agent
+        self._metrics = metrics or get_metrics()
+        self._node_id = node_id
+        self._pending_key = f"butler:nodes:{node_id}:pending_tools"
+        self._max_pending = 50  # Hard throttle per node
+        
+        from services.tools.auditor import ToolAuditor
+        self._auditor = ToolAuditor()
 
         # Compiled ButlerToolSpecs — primary source of truth
         # If not injected (startup/test), compile on-demand
@@ -99,122 +122,207 @@ class ToolExecutor(ToolsServiceContract):
           9. Cache idempotent result if applicable
          10. Return ToolResult
         """
-        # 1. ButlerToolSpec lookup
-        spec = self._specs.get(tool_name)
-        if spec is None:
-            raise ToolErrors.precondition_failed(
-                f"Tool '{tool_name}' not in Butler's compiled ToolSpec registry. "
-                "Only compiled tools may be executed."
-            )
-        if spec.blocked:
-            raise ToolErrors.precondition_failed(
-                f"Tool '{tool_name}' is FORBIDDEN: {spec.block_reason}"
-            )
-
-        # 2. Idempotency check
-        if idempotency_key:
-            cached = await self._check_idempotent(idempotency_key)
-            if cached:
-                logger.info("tool_idempotent_cache_hit", tool_name=tool_name, key=idempotency_key)
-                return cached
-
-        # 3. Parameter validation against ButlerToolSpec input schema
-        if spec.input_schema:
-            validation = self._validate_params_against_spec(tool_name, params, spec)
-            if not validation.is_valid:
+        with tracer.start_as_current_span(
+            f"butler.tool.execute:{tool_name}",
+            attributes={
+                "tool": tool_name,
+                "account_id": account_id,
+                "session_id": session_id or "none",
+                "risk_tier": self._specs.get(tool_name).risk_tier.value if self._specs.get(tool_name) else "unknown"
+            }
+        ) as span:
+            # 1. ButlerToolSpec lookup
+            spec = self._specs.get(tool_name)
+            if spec is None:
                 raise ToolErrors.precondition_failed(
-                    f"Tool '{tool_name}' parameter validation failed: {validation.errors}"
+                    f"Tool '{tool_name}' not in Butler's compiled ToolSpec registry. "
+                    "Only compiled tools may be executed."
+                )
+            if spec.blocked:
+                raise ToolErrors.precondition_failed(
+                    f"Tool '{tool_name}' is FORBIDDEN: {spec.block_reason}"
                 )
 
-        # 4. Pre-execution verification
-        # ToolVerifier still runs against the legacy ToolDefinition for backward compat
-        # TODO Phase 5: migrate ToolVerifier to operate on ButlerToolSpec directly
-        tool_def = await self._get_tool_def_for_verifier(tool_name, spec)
-        if tool_def:
-            pre_check = await self._verifier.verify_preconditions(tool_def, params, account_id)
-            if not pre_check.passed:
-                raise ToolErrors.precondition_failed(pre_check.reason or "Pre-check failed")
+            # Adaptive Load Shedding: rejection based on Node Health
+            if self._health:
+                status = self._health.status
+                if status == "UNHEALTHY":
+                    self._metrics.record_load_shed(component="tool", reason="node_unhealthy")
+                    raise ToolErrors.service_degraded("Tool cluster node is offline for safety logic (Load Shedding).")
+                
+                # Reject L3 (Dangerous/Heavy) tools if DEGRADED
+                if status == "DEGRADED" and spec.risk_tier.value == "L3":
+                    self._metrics.record_load_shed(component="tool", reason="node_degraded_l3_reject")
+                    logger.warn("tool_load_shedding_active", 
+                                tool_name=tool_name, 
+                                risk_tier="L3", 
+                                node_id=self._node_id)
+                    raise ToolErrors.service_degraded(
+                        "High-resource tool rejected due to node resource pressure (Load Shedding)."
+                    )
 
-        # 5. Audit record
-        execution = ToolExecution(
-            tool_name=tool_name,
-            account_id=uuid.UUID(account_id) if account_id else uuid.uuid4(),
-            task_id=uuid.UUID(task_id) if task_id else None,
-            input_params=self._redact_params_for_audit(params, spec),
-            risk_tier=spec.risk_tier.value,
-            status="executing",
-            idempotency_key=idempotency_key,
-        )
-        self._db.add(execution)
-        await self._db.flush()
+            # Local Congestion Control: check pending task count
+            pending_count = int(await self._redis.get(self._pending_key) or 0)
+            if pending_count >= self._max_pending:
+                self._metrics.record_load_shed(component="tool", reason="node_saturated")
+                logger.error("tool_node_saturated", count=pending_count, node_id=self._node_id)
+                raise ToolErrors.service_degraded("Node task queue is saturated. Try again later.")
 
-        start_ms = int(time.monotonic() * 1000)
+            # 2. Idempotency Lock & Check
+            lock_id = f"tool:idempotency:{idempotency_key}" if idempotency_key else f"tool:run:{tool_name}:{session_id or 'anon'}"
+            
+            async with (self._locks.get_lock(lock_id, ttl_ms=(spec.timeout_seconds + 30) * 1000) if self._locks else contextlib.nullcontext()):
+                if idempotency_key:
+                    cached = await self._check_idempotent(idempotency_key)
+                    if cached:
+                        logger.info("tool_idempotent_cache_hit", tool_name=tool_name, key=idempotency_key)
+                        return cached
 
-        # 6. Dispatch
-        try:
-            butler_result = await asyncio.wait_for(
-                self._dispatcher.dispatch(
-                    tool_name=tool_name,
-                    params=params,
-                    task_id=task_id,
-                    session_id=session_id,
-                    account_id=account_id,
-                    tool_call_id=tool_call_id or str(execution.id),
-                    idempotency_key=idempotency_key,
-                ),
-                timeout=spec.timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            execution.status = "failed"
-            execution.error_data = {"error": "timeout", "timeout_s": spec.timeout_seconds}
-            execution.duration_ms = spec.timeout_seconds * 1000
-            execution.completed_at = datetime.now(UTC)
-            await self._db.commit()
-            raise ToolErrors.timeout(tool_name, spec.timeout_seconds)
+            # 3. Parameter validation against ButlerToolSpec input schema
+            if spec.input_schema:
+                validation = self._validate_params_against_spec(tool_name, params, spec)
+                if not validation.is_valid:
+                    raise ToolErrors.precondition_failed(
+                        f"Tool '{tool_name}' parameter validation failed: {validation.errors}"
+                    )
 
-        duration_ms = int(time.monotonic() * 1000) - start_ms
-
-        # 7. Post-execution verification
-        post_check = VerificationResult(passed=True, checks=[("dispatch", butler_result.success)])
-        if butler_result.success and spec.verification_mode in ("post", "both"):
+            # 4. Pre-execution verification
+            # ToolVerifier still runs against the legacy ToolDefinition for backward compat
+            # TODO Phase 5: migrate ToolVerifier to operate on ButlerToolSpec directly
+            tool_def = await self._get_tool_def_for_verifier(tool_name, spec)
             if tool_def:
-                raw_result = butler_result.output or {}
-                post_check = await self._verifier.verify_postconditions(tool_def, params, raw_result)
+                pre_check = await self._verifier.verify_preconditions(tool_def, params, account_id)
+                if not pre_check.passed:
+                    raise ToolErrors.precondition_failed(pre_check.reason or "Pre-check failed")
 
-        # 8. Commit audit record
-        execution.output_result = butler_result.output or {}
-        execution.status = "completed" if butler_result.success else "failed"
-        execution.verification_passed = post_check.passed
-        execution.duration_ms = duration_ms
-        execution.completed_at = datetime.now(UTC)
-        if not butler_result.success and butler_result.error:
-            execution.error_data = {"error": butler_result.error}
+            # 5. Audit record
+            execution = ToolExecution(
+                tool_name=tool_name,
+                account_id=uuid.UUID(account_id) if account_id else uuid.uuid4(),
+                task_id=uuid.UUID(task_id) if task_id else None,
+                input_params=self._redact_params_for_audit(params, spec),
+                risk_tier=spec.risk_tier.value,
+                status="executing",
+                idempotency_key=idempotency_key,
+            )
 
-        await self._db.commit()
+            # Rule: Tool Auditor check (Oracle-Grade v2.0)
+            # If the tool takes a 'command' or 'binary' parameter, we audit it.
+            # This is a defense-in-depth layer against malicious parameter injection.
+            if "command" in params or "binary" in params:
+                cmd = params.get("command") or params.get("binary")
+                if isinstance(cmd, str):
+                    cmd_list = cmd.split()
+                elif isinstance(cmd, list):
+                    cmd_list = cmd
+                else:
+                    cmd_list = []
+                
+                if cmd_list:
+                    self._auditor.audit_execution(cmd_list, account_id)
 
-        tool_result = ToolResult(
-            success=butler_result.success,
-            data=butler_result.output or {},
-            tool_name=tool_name,
-            execution_id=str(execution.id),
-            verification=post_check,
-            compensation=butler_result.compensation_ref,
-        )
+            self._db.add(execution)
+            await self._db.flush()
 
-        # 9. Cache idempotent result
-        if idempotency_key and butler_result.success:
-            await self._cache_idempotent(idempotency_key, tool_result)
+            start_ms = int(time.monotonic() * 1000)
 
-        logger.info(
-            "tool_executed",
-            tool_name=tool_name,
-            risk_tier=spec.risk_tier.value,
-            success=butler_result.success,
-            duration_ms=duration_ms,
-            execution_id=str(execution.id),
-        )
+            # 6. Dispatch
+            try:
+                # Oracle-Grade Hardening: Ensure sandbox is ready for high-risk tools
+                if spec.sandbox_profile == "docker" and session_id:
+                    manager = SandboxManager.get_instance()
+                    # Warm up the sandbox container (handles image pull, creation, etc.)
+                    await manager.get_sandbox(session_id)
+                    span.set_attribute("sandbox", "docker")
 
-        return tool_result
+                # Wrapped in Circuit Breaker for stability
+                async def _do_dispatch():
+                    return await asyncio.wait_for(
+                        self._dispatcher.dispatch(
+                            tool_name=tool_name,
+                            params=params,
+                            task_id=task_id,
+                            session_id=session_id,
+                            account_id=account_id,
+                            tool_call_id=tool_call_id or str(execution.id),
+                            idempotency_key=idempotency_key,
+                        ),
+                        timeout=spec.timeout_seconds,
+                    )
+
+                if self._breakers:
+                    # Use a specific breaker for tools, or generic if not found
+                    breaker = self._breakers.get_breaker(f"tool:{spec.risk_tier.value}")
+                    # Increment pending counter before dispatch
+                    await self._redis.incr(self._pending_key)
+                    try:
+                        butler_result = await breaker.call(_do_dispatch)
+                    finally:
+                        await self._redis.decr(self._pending_key)
+                else:
+                    await self._redis.incr(self._pending_key)
+                    try:
+                        butler_result = await _do_dispatch()
+                    finally:
+                        await self._redis.decr(self._pending_key)
+
+            except (asyncio.TimeoutError, CircuitOpenError) as e:
+                execution.status = "failed"
+                execution.error_data = {
+                    "error": "timeout" if isinstance(e, asyncio.TimeoutError) else "circuit_open",
+                    "detail": str(e)
+                }
+                execution.duration_ms = spec.timeout_seconds * 1000
+                execution.completed_at = datetime.now(UTC)
+                await self._db.commit()
+                if isinstance(e, asyncio.TimeoutError):
+                    raise ToolErrors.timeout(tool_name, spec.timeout_seconds)
+                else:
+                    raise ToolErrors.service_degraded(f"Tool subsystem '{spec.risk_tier.value}' is temporarily unavailable")
+
+            duration_ms = int(time.monotonic() * 1000) - start_ms
+
+            # 7. Post-execution verification
+            post_check = VerificationResult(passed=True, checks=[("dispatch", butler_result.success)])
+            if butler_result.success and spec.verification_mode in ("post", "both"):
+                if tool_def:
+                    raw_result = butler_result.output or {}
+                    post_check = await self._verifier.verify_postconditions(tool_def, params, raw_result)
+
+            # 8. Commit audit record
+            execution.output_result = butler_result.output or {}
+            execution.status = "completed" if butler_result.success else "failed"
+            execution.verification_passed = post_check.passed
+            execution.duration_ms = duration_ms
+            execution.completed_at = datetime.now(UTC)
+            if not butler_result.success and butler_result.error:
+                execution.error_data = {"error": butler_result.error}
+
+            await self._db.commit()
+
+            tool_result = ToolResult(
+                success=butler_result.success,
+                data=butler_result.output or {},
+                tool_name=tool_name,
+                execution_id=str(execution.id),
+                verification=post_check,
+                compensation=butler_result.compensation_ref,
+            )
+
+            # 9. Cache idempotent result
+            if idempotency_key and butler_result.success:
+                await self._cache_idempotent(idempotency_key, tool_result)
+
+            logger.info(
+                "tool_executed",
+                tool_name=tool_name,
+                risk_tier=spec.risk_tier.value,
+                success=butler_result.success,
+                duration_ms=duration_ms,
+                execution_id=str(execution.id),
+            )
+
+            return tool_result
 
     # ── Public: compensate ────────────────────────────────────────────────────
 

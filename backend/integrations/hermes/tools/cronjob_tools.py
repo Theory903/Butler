@@ -176,7 +176,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
         )
 
     # Validate containment after resolution
-    from tools.path_security import validate_within_dir
+    from integrations.hermes.tools.path_security import validate_within_dir
 
     scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -481,7 +481,7 @@ def check_cronjob_requirements() -> bool:
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from integrations.hermes.tools.registry import registry, tool_error
 
 registry.register(
     name="cronjob",

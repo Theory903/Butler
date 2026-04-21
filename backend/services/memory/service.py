@@ -54,6 +54,7 @@ class MemoryService(MemoryServiceContract):
         store: IMemoryWriteStore,           # was ButlerMemoryStore
         summarizer: AnchoredSummarizer,     # Context compression engine
         episodic: IMemoryRecorder | None = None,  # optional — attached post-construction
+        consent_manager: 'ConsentManager' = None, # Privacy/Scrubbing Boundary
     ):
         self._db = db
         self._redis = redis
@@ -68,6 +69,7 @@ class MemoryService(MemoryServiceContract):
         self._extraction = extraction
         self._store = store
         self._summarizer = summarizer
+        self._consent = consent_manager
 
     @property
     def episodic(self) -> IMemoryRecorder | None:
@@ -108,6 +110,7 @@ class MemoryService(MemoryServiceContract):
         )
 
         result = await self._store.write(write_req)
+        await self._db.commit()
 
         # 3. Return the STRUCT record for immediate API feedback
         if result.entry_id:
@@ -197,20 +200,26 @@ class MemoryService(MemoryServiceContract):
         # 1. Broad Retrieval
         scored_mems = await self._retrieval.search(account_id, query)
 
-        # 2. History
+        # 2. History (Recent turns)
         history = await self.get_session_history(account_id, session_id, limit=20)
 
-        # 3. Preferences & Dislikes (already handled in scored_mems signals, but we fetch explicit for prompting)
+        # 3. Session Summary (Anchor) — Rule #170 deterministic retrieval
+        raw_session = await self._redis.get(f"butler:session:{session_id}")
+        summary_anchor = None
+        if raw_session:
+            summary_anchor = json.loads(raw_session).get("running_summary")
+
+        # 4. Preferences & Dislikes
         stmt_pref = select(ExplicitPreference).where(ExplicitPreference.account_id == acc_id)
         res_pref = await self._db.execute(stmt_pref)
         preferences = list(res_pref.scalars().all())
 
-        # 4. Constraints
+        # 5. Constraints
         stmt_con = select(UserConstraint).where(UserConstraint.account_id == acc_id, UserConstraint.active)
         res_con = await self._db.execute(stmt_con)
         constraints = list(res_con.scalars().all())
 
-        # 5. Entity Resolving for the query
+        # 6. Entity Resolving
         resolved_entity = await self._resolution.resolve(account_id, query)
         entities = [resolved_entity] if resolved_entity else []
 
@@ -219,7 +228,8 @@ class MemoryService(MemoryServiceContract):
             memories=scored_mems,
             preferences=preferences,
             entities=entities,
-            constraints=constraints
+            constraints=constraints,
+            summary_anchor=summary_anchor
         )
 
     async def update_entity(self, account_id: str, entity_name: str, facts: dict) -> MemoryEntry:
@@ -261,6 +271,15 @@ class MemoryService(MemoryServiceContract):
         # 2. Trigger graph extraction from the full session log
         history = await self.get_session_history(account_id, session_id)
         full_text = "\n".join([f"{t.role}: {t.content}" for t in history])
+
+        acc_uuid = uuid.UUID(account_id)
+
+        # 3. Apply Consent & Scrubbing Boundary before neo4j structural logic
+        if self._consent:
+            if not self._consent.can_commit_to_graph(acc_uuid):
+                logger.info(f"Graph commit denied by ConsentManager policy for {account_id}")
+                return episode
+            full_text = await self._consent.scrub_episodic_stream(acc_uuid, full_text)
 
         await self._extraction.extract_and_store(
             account_id=account_id,

@@ -18,7 +18,7 @@ class OrchestratorResult(BaseModel):
     duration_ms: int = 0
     requires_approval: bool = False
     approval_id: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class OrchestratorServiceContract(DomainService):
     @abstractmethod
@@ -44,4 +44,9 @@ class OrchestratorServiceContract(DomainService):
     @abstractmethod
     async def retry_task(self, task_id: str) -> Task:
         """Retry a failed task."""
+        pass
+
+    @abstractmethod
+    async def record_interaction_outcome(self, user_id: str, tool_id: str, success: bool) -> None:
+        """Record the success/failure of an interaction for personalization."""
         pass

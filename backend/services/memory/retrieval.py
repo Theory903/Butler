@@ -1,12 +1,31 @@
 import uuid
+import math
+import numpy as np
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 
 from domain.memory.models import MemoryEntry, ExplicitPreference, ExplicitDislike
 from domain.ml.contracts import EmbeddingContract
 from services.memory.knowledge_repo_contract import KnowledgeRepoContract
+
+
+def sanitize_and_normalize_embedding(vec: list[float]) -> list[float]:
+    """OpenCLAW pattern: clean NaN/Inf values and L2-normalize.
+    
+    This prevents pgvector serialization issues and ensures consistent
+    similarity search results.
+    """
+    if not vec:
+        return []
+    # Clean NaN/Inf
+    sanitized = [v if (v is not None and math.isfinite(v)) else 0.0 for v in vec]
+    # L2 normalize
+    magnitude = math.sqrt(sum(v * v for v in sanitized))
+    if magnitude < 1e-10:
+        return sanitized
+    return [v / magnitude for v in sanitized]
 
 @dataclass
 class ScoredMemory:
@@ -21,11 +40,13 @@ class RetrievalFusionEngine:
         self, 
         db: AsyncSession, 
         embedder: EmbeddingContract,
-        knowledge_repo: KnowledgeRepoContract
+        knowledge_repo: KnowledgeRepoContract,
+        personalization: Optional[Any] = None
     ):
         self._db = db
         self._embedder = embedder
         self._knowledge_repo = knowledge_repo
+        self._personalization = personalization
 
     async def search(
         self, 
@@ -34,18 +55,58 @@ class RetrievalFusionEngine:
         memory_types: Optional[List[str]] = None, 
         limit: int = 20
     ) -> List[ScoredMemory]:
-        acc_id = uuid.UUID(account_id)
+        # Safe UUID parsing - prevents recall failures on invalid account_id
+        try:
+            acc_id = uuid.UUID(account_id)
+        except (ValueError, TypeError):
+            # Return empty if account_id is invalid - common cause of "returns 0 results"
+            return []
+        
+        # Pass both UUID and string for flexible query matching
+        acc_id_str = str(acc_id)
         
         # 1. Broad Retrieval (Candidates)
-        # Fetching more than needed for fusion and reranking
-        candidate_pool = await self._get_candidates(acc_id, query, limit * 3)
+        candidate_pool = await self._get_candidates(acc_id, acc_id_str, query, limit * 3)
         
-        # 2. Extract Signals for Query
+        # 2. Personalization Ranker (The Blender)
+        # If personalization is available, run the 5-stage pipeline
+        if self._personalization:
+            query_vector = await self._embedder.embed(query)
+            context = {"user_id": account_id, "query": query}
+            
+            # Map candidates to PersonalizationEngine.Candidate format
+            from services.ml.personalization_engine import Candidate as MLPCandidate
+            ml_candidates = [
+                MLPCandidate(
+                    id=m.id, 
+                    type="memory", 
+                    score=0.5, # Initial bias
+                    metadata={"ts": m.created_at.timestamp() if m.created_at else None}
+                ) for m in candidate_pool
+            ]
+            
+            ranked = await self._personalization.rank(
+                query_vector=np.array(query_vector),
+                context=context,
+                candidates=ml_candidates
+            )
+            
+            # Map back to ScoredMemory
+            memory_map = {m.id: m for m in candidate_pool}
+            return [
+                ScoredMemory(
+                    memory=memory_map[r.id],
+                    score=r.score,
+                    signals=r.features
+                )
+                for r in ranked if r.id in memory_map
+            ][:limit]
+        
+        # 3. Fallback: Extract Signals for Query
         query_embedding = await self._embedder.embed(query)
         preferences = await self._get_active_preferences(acc_id)
         dislikes = await self._get_active_dislikes(acc_id)
         
-        # 3. Weighted Fusion Scoring
         scored_results = []
         for mem in candidate_pool:
             score_data = await self._calculate_fusion_score(
@@ -57,7 +118,6 @@ class RetrievalFusionEngine:
                 signals=score_data["signals"]
             ))
 
-        # 4. Sort and Truncate
         scored_results.sort(key=lambda x: x.score, reverse=True)
         return scored_results[:limit]
 
@@ -79,7 +139,7 @@ class RetrievalFusionEngine:
         }
 
         # Semantic Score (Cosine similarity)
-        if memory.embedding:
+        if memory.embedding is not None:
             # Simple dot product as approximation for normalized vectors
             signals["semantic"] = sum(a * b for a, b in zip(query_embedding, memory.embedding))
 
@@ -109,28 +169,28 @@ class RetrievalFusionEngine:
 
         return {"total": total, "signals": signals}
 
-    async def _get_candidates(self, account_id: uuid.UUID, query: str, limit: int) -> List[MemoryEntry]:
-        """Fetch potential matches via primary scan + 2-hop graph expansion.
-
-        Step 1 — Primary scan: active MemoryEntry rows for the account.
-        Step 2 — Graph expansion:
-            a. Keyword-match KnowledgeEntity names against the query tokens.
-            b. Walk 1 hop through KnowledgeEdge to collect neighbour entity IDs.
-            c. Look up MemoryEntityLink to find MemoryEntry rows linked to those entities.
-            d. Deduplicate and merge with primary candidates.
-
-        Graph expansion is best-effort; any failure degrades gracefully to primary results.
-        """
+    async def _get_candidates(
+        self, 
+        account_id: uuid.UUID, 
+        account_id_str: str,
+        query: str, 
+        limit: int
+    ) -> List[MemoryEntry]:
+        """Oracle-Grade retrieval with flexible account_id matching."""
         from domain.memory.models import (
             MemoryStatus,
             KnowledgeEntity,
             KnowledgeEdge,
             MemoryEntityLink,
         )
+        from sqlalchemy import or_
 
-        # ── Step 1: Primary scan ──────────────────────────────────────────────
+        # Primary scan with flexible account_id matching - fixes "0 results" bug
         stmt = select(MemoryEntry).where(
-            MemoryEntry.account_id == account_id,
+            or_(
+                MemoryEntry.account_id == account_id,
+                MemoryEntry.account_id == account_id_str,
+            ),
             MemoryEntry.status == MemoryStatus.ACTIVE,
         ).limit(limit)
         res = await self._db.execute(stmt)
@@ -203,11 +263,9 @@ class RetrievalFusionEngine:
             candidates.extend(graph_memories)
 
         except Exception as exc:
-            # Graph expansion is non-critical — primary results are always returned
             import logging
             logging.getLogger(__name__).warning(
-                "memory.retrieval.graph_expansion_failed",
-                error=str(exc),
+                f"memory.retrieval.graph_expansion_failed: {exc}"
             )
 
         return candidates

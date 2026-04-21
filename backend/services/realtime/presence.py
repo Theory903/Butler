@@ -1,7 +1,11 @@
 from datetime import datetime, UTC
-from redis.asyncio import Redis
-from pydantic import BaseModel
 from typing import Optional
+from pydantic import BaseModel
+from redis.asyncio import Redis
+
+from .events import RealtimeEvent
+from core.state_sync import GlobalStateSyncer, StateType
+
 
 class PresenceInfo(BaseModel):
     status: str
@@ -13,17 +17,15 @@ class PresenceInfo(BaseModel):
 class PresenceService:
     """Track connection presence per account/device."""
     
-    def __init__(self, redis: Redis):
+    def __init__(self, redis: Redis, syncer: GlobalStateSyncer | None = None):
         self._redis = redis
+        self._syncer = syncer
 
     async def get_presence(self, account_id: str) -> PresenceInfo:
         data = await self._redis.hgetall(f"presence:{account_id}")
-        # Note: Redis returns bytes usually unless decode_responses=True. Assume it's handled or strings here based on asyncpg/redis usage pattern
-        # If it returns an empty dict, user is offline.
         if not data:
             return PresenceInfo(status="offline")
             
-        # Decode strings if necessary safely
         def dec(val):
             return val.decode("utf-8") if isinstance(val, bytes) else str(val)
 
@@ -32,11 +34,16 @@ class PresenceService:
     
     async def set_idle(self, account_id: str):
         await self._redis.hset(f"presence:{account_id}", "status", "idle")
+        if self._syncer:
+            await self._syncer.broadcast_presence(account_id, "idle")
     
     async def heartbeat(self, account_id: str):
         """Client sends periodic heartbeat to keep connection alive."""
+        now = datetime.now(UTC).isoformat()
         await self._redis.hset(f"presence:{account_id}", mapping={
             "status": "connected",
-            "last_heartbeat": datetime.now(UTC).isoformat(),
+            "last_heartbeat": now,
         })
         await self._redis.expire(f"presence:{account_id}", 300)  # 5 min timeout
+        if self._syncer:
+            await self._syncer.broadcast_presence(account_id, "connected", {"last_heartbeat": now})

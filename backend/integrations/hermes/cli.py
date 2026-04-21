@@ -57,21 +57,21 @@ except (ImportError, AttributeError):
 import threading
 import queue
 
-from agent.usage_pricing import (
+from integrations.hermes.agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
     format_duration_compact,
     format_token_count_compact,
 )
-from hermes_cli.banner import _format_context_length, format_banner_version_label
+from integrations.hermes.hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_constants import get_hermes_home, display_hermes_home
-from hermes_cli.env_loader import load_hermes_dotenv
+from integrations.hermes.hermes_constants import get_hermes_home, display_hermes_home
+from integrations.hermes.hermes_cli.env_loader import load_hermes_dotenv
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -113,7 +113,7 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
 
 def _parse_reasoning_config(effort: str) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict."""
-    from hermes_constants import parse_reasoning_effort
+    from integrations.hermes.hermes_constants import parse_reasoning_effort
     result = parse_reasoning_effort(effort)
     if effort and effort.strip() and result is None:
         logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
@@ -384,7 +384,7 @@ def load_cli_config() -> Dict[str, Any]:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
-    from hermes_cli.config import _expand_env_vars
+    from integrations.hermes.hermes_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
@@ -525,28 +525,28 @@ CLI_CONFIG = load_cli_config()
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
 # This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
 try:
-    from hermes_logging import setup_logging
+    from integrations.hermes.hermes_logging import setup_logging
     setup_logging(mode="cli")
 except Exception:
     pass  # Logging setup is best-effort — don't crash the CLI
 
 # Validate config structure early — print warnings before user hits cryptic errors
 try:
-    from hermes_cli.config import print_config_warnings
+    from integrations.hermes.hermes_cli.config import print_config_warnings
     print_config_warnings()
 except Exception:
     pass
 
 # Initialize the skin engine from config
 try:
-    from hermes_cli.skin_engine import init_skin_from_config
+    from integrations.hermes.hermes_cli.skin_engine import init_skin_from_config
     init_skin_from_config(CLI_CONFIG)
 except Exception:
     pass  # Skin engine is optional — default skin used if unavailable
 
 # Initialize tool preview length from config
 try:
-    from agent.display import set_tool_preview_max_len
+    from integrations.hermes.agent.display import set_tool_preview_max_len
     _tpl = CLI_CONFIG.get("display", {}).get("tool_preview_length", 0)
     set_tool_preview_max_len(int(_tpl) if _tpl else 0)
 except Exception:
@@ -558,7 +558,7 @@ except Exception:
 # close TCP transports bound to dead worker loops — producing
 # "Event loop is closed" / "Press ENTER to continue..." errors.
 try:
-    from agent.auxiliary_client import neuter_async_httpx_del
+    from integrations.hermes.agent.auxiliary_client import neuter_async_httpx_del
     neuter_async_httpx_del()
 except Exception:
     pass
@@ -572,23 +572,23 @@ from rich.text import Text as _RichText
 import fire
 
 # Import the agent and tool systems
-from run_agent import AIAgent
-from model_tools import get_tool_definitions, get_toolset_for_tool
+from integrations.hermes.run_agent import AIAgent
+from integrations.hermes.model_tools import get_tool_definitions, get_toolset_for_tool
 
 # Extracted CLI modules (Phase 3)
-from hermes_cli.banner import build_welcome_banner
-from hermes_cli.commands import SlashCommandCompleter, SlashCommandAutoSuggest
-from toolsets import get_all_toolsets, get_toolset_info, validate_toolset
+from integrations.hermes.hermes_cli.banner import build_welcome_banner
+from integrations.hermes.hermes_cli.commands import SlashCommandCompleter, SlashCommandAutoSuggest
+from integrations.hermes.toolsets import get_all_toolsets, get_toolset_info, validate_toolset
 
 # Cron job system for scheduled tasks (execution is handled by the gateway)
-from cron import get_job
+from integrations.hermes.cron import get_job
 
 # Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
-from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
-from tools.terminal_tool import set_sudo_password_callback, set_approval_callback
-from tools.skills_tool import set_secret_capture_callback
-from hermes_cli.callbacks import prompt_for_secret
-from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
+from integrations.hermes.tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
+from integrations.hermes.tools.terminal_tool import set_sudo_password_callback, set_approval_callback
+from integrations.hermes.tools.skills_tool import set_secret_capture_callback
+from integrations.hermes.hermes_cli.callbacks import prompt_for_secret
+from integrations.hermes.tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
 
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
@@ -610,7 +610,7 @@ def _run_cleanup():
     except Exception:
         pass
     try:
-        from tools.mcp_tool import shutdown_mcp_servers
+        from integrations.hermes.tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
     except Exception:
         pass
@@ -3283,7 +3283,7 @@ class HermesCLI:
             /rollback diff <N>        — preview changes since checkpoint N
             /rollback <N> <file>      — restore a single file from checkpoint N
         """
-        from tools.checkpoint_manager import format_checkpoint_list
+        from integrations.hermes.tools.checkpoint_manager import format_checkpoint_list
 
         if not hasattr(self, 'agent') or not self.agent:
             print("  No active agent session.")
@@ -3474,7 +3474,7 @@ class HermesCLI:
         Inspired by OpenAI Codex's separation of interrupt (stop current turn)
         from /stop (clean up background processes). See openai/codex#14602.
         """
-        from tools.process_registry import process_registry
+        from integrations.hermes.tools.process_registry import process_registry
 
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
@@ -3550,7 +3550,7 @@ class HermesCLI:
         """
         import asyncio as _asyncio
         import json as _json
-        from tools.vision_tools import vision_analyze_tool
+        from integrations.hermes.tools.vision_tools import vision_analyze_tool
 
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
@@ -4130,7 +4130,7 @@ class HermesCLI:
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):
                 try:
-                    from tools.todo_tool import TodoStore
+                    from integrations.hermes.tools.todo_tool import TodoStore
                     self.agent._todo_store = TodoStore()
                 except Exception:
                     pass
@@ -4216,7 +4216,7 @@ class HermesCLI:
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
             if hasattr(self.agent, "_todo_store"):
                 try:
-                    from tools.todo_tool import TodoStore
+                    from integrations.hermes.tools.todo_tool import TodoStore
                     self.agent._todo_store = TodoStore()
                 except Exception:
                     pass
@@ -4330,7 +4330,7 @@ class HermesCLI:
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
             if hasattr(self.agent, "_todo_store"):
                 try:
-                    from tools.todo_tool import TodoStore
+                    from integrations.hermes.tools.todo_tool import TodoStore
                     self.agent._todo_store = TodoStore()
                 except Exception:
                     pass
@@ -4958,7 +4958,7 @@ class HermesCLI:
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         import shlex
-        from tools.cronjob_tools import cronjob as cronjob_tool
+        from integrations.hermes.tools.cronjob_tools import cronjob as cronjob_tool
 
         def _cron_api(**kwargs):
             return json.loads(cronjob_tool(**kwargs))
@@ -5968,7 +5968,7 @@ class HermesCLI:
 
             # Clear any existing browser sessions so the next tool call uses the new backend
             try:
-                from tools.browser_tool import cleanup_all_browsers
+                from integrations.hermes.tools.browser_tool import cleanup_all_browsers
                 cleanup_all_browsers()
             except Exception:
                 pass
@@ -6069,7 +6069,7 @@ class HermesCLI:
             if current:
                 os.environ.pop("BROWSER_CDP_URL", None)
                 try:
-                    from tools.browser_tool import cleanup_all_browsers
+                    from integrations.hermes.tools.browser_tool import cleanup_all_browsers
                     cleanup_all_browsers()
                 except Exception:
                     pass
@@ -6110,7 +6110,7 @@ class HermesCLI:
                     print("   Status: ⚠ not reachable (Chrome may not be running)")
             else:
                 try:
-                    from tools.browser_tool import _get_cloud_provider
+                    from integrations.hermes.tools.browser_tool import _get_cloud_provider
                     provider = _get_cloud_provider()
                 except Exception:
                     provider = None
@@ -6578,7 +6578,7 @@ class HermesCLI:
         sees the updated tools on the next turn.
         """
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from integrations.hermes.tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
             # Capture old server names
             with _lock:
@@ -6747,7 +6747,7 @@ class HermesCLI:
         if not function_name or function_name.startswith("_"):
             return
         try:
-            from tools.voice_mode import play_beep
+            from integrations.hermes.tools.voice_mode import play_beep
             threading.Thread(
                 target=play_beep,
                 kwargs={"frequency": 1200, "duration": 0.06, "count": 1},
@@ -6791,7 +6791,7 @@ class HermesCLI:
         """Start capturing audio from the microphone."""
         if getattr(self, '_should_exit', False):
             return
-        from tools.voice_mode import create_audio_recorder, check_voice_requirements
+        from integrations.hermes.tools.voice_mode import create_audio_recorder, check_voice_requirements
 
         reqs = check_voice_requirements()
         if not reqs["audio_available"]:
@@ -6854,7 +6854,7 @@ class HermesCLI:
 
         # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
         try:
-            from tools.voice_mode import play_beep
+            from integrations.hermes.tools.voice_mode import play_beep
             play_beep(frequency=880, count=1)
         except Exception:
             pass
@@ -6906,7 +6906,7 @@ class HermesCLI:
 
             # Audio cue: double beep after stream stopped (no CoreAudio conflict)
             try:
-                from tools.voice_mode import play_beep
+                from integrations.hermes.tools.voice_mode import play_beep
                 play_beep(frequency=660, count=2)
             except Exception:
                 pass
@@ -6929,7 +6929,7 @@ class HermesCLI:
             except Exception:
                 pass
 
-            from tools.voice_mode import transcribe_recording
+            from integrations.hermes.tools.voice_mode import transcribe_recording
             result = transcribe_recording(wav_path, model=stt_model)
 
             if result.get("success") and result.get("transcript", "").strip():
@@ -6990,8 +6990,8 @@ class HermesCLI:
             return
         self._voice_tts_done.clear()
         try:
-            from tools.tts_tool import text_to_speech_tool
-            from tools.voice_mode import play_audio_file
+            from integrations.hermes.tools.tts_tool import text_to_speech_tool
+            from integrations.hermes.tools.voice_mode import play_audio_file
             import re
 
             # Strip markdown and non-speech content for cleaner TTS
@@ -7066,7 +7066,7 @@ class HermesCLI:
             _cprint(f"{_DIM}Voice mode is already enabled.{_RST}")
             return
 
-        from tools.voice_mode import check_voice_requirements, detect_audio_environment
+        from integrations.hermes.tools.voice_mode import check_voice_requirements, detect_audio_environment
 
         # Environment detection -- warn and block in incompatible environments
         env_check = detect_audio_environment()
@@ -7145,7 +7145,7 @@ class HermesCLI:
 
         # Stop any active TTS playback
         try:
-            from tools.voice_mode import stop_playback
+            from integrations.hermes.tools.voice_mode import stop_playback
             stop_playback()
         except Exception:
             pass
@@ -7164,7 +7164,7 @@ class HermesCLI:
         status = "enabled" if self._voice_tts else "disabled"
 
         if self._voice_tts:
-            from tools.tts_tool import check_tts_requirements
+            from integrations.hermes.tools.tts_tool import check_tts_requirements
             if not check_tts_requirements():
                 _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
 
@@ -7173,7 +7173,7 @@ class HermesCLI:
     def _show_voice_status(self):
         """Show current voice mode status."""
         from hermes_cli.config import load_config
-        from tools.voice_mode import check_voice_requirements
+        from integrations.hermes.tools.voice_mode import check_voice_requirements
 
         reqs = check_voice_requirements()
 
@@ -7623,7 +7623,7 @@ class HermesCLI:
 
             if self._voice_tts:
                 try:
-                    from tools.tts_tool import (
+                    from integrations.hermes.tools.tts_tool import (
                         _load_tts_config as _load_tts_cfg,
                         _get_provider as _get_prov,
                         _import_elevenlabs,
@@ -8303,7 +8303,7 @@ class HermesCLI:
         # Warn the user if tirith is enabled in config but not available,
         # so they know command security scanning is degraded.
         try:
-            from tools.tirith_security import ensure_installed
+            from integrations.hermes.tools.tirith_security import ensure_installed
             tirith_path = ensure_installed(log_failures=False)
             if tirith_path is None:
                 security_cfg = self.config.get("security", {}) or {}
@@ -8720,7 +8720,7 @@ class HermesCLI:
                 # stop_playback() is fast (just terminates a subprocess).
                 if not cli_ref._voice_tts_done.is_set():
                     try:
-                        from tools.voice_mode import stop_playback
+                        from integrations.hermes.tools.voice_mode import stop_playback
                         stop_playback()
                         cli_ref._voice_tts_done.set()
                     except Exception:
@@ -9521,7 +9521,7 @@ class HermesCLI:
                             # Check for background process notifications (completions
                             # and watch pattern matches) while agent is idle.
                             try:
-                                from tools.process_registry import process_registry
+                                from integrations.hermes.tools.process_registry import process_registry
                                 if not process_registry.completion_queue.empty():
                                     evt = process_registry.completion_queue.get_nowait()
                                     # Skip if the agent already consumed this via wait/poll/log
@@ -9654,7 +9654,7 @@ class HermesCLI:
                         # Drain process notifications (completions + watch matches)
                         # that arrived while the agent was running.
                         try:
-                            from tools.process_registry import process_registry
+                            from integrations.hermes.tools.process_registry import process_registry
                             while not process_registry.completion_queue.empty():
                                 evt = process_registry.completion_queue.get_nowait()
                                 # Skip if the agent already consumed this via wait/poll/log
@@ -9773,7 +9773,7 @@ class HermesCLI:
                 self._voice_recorder = None
             # Clean up old temp voice recordings
             try:
-                from tools.voice_mode import cleanup_temp_recordings
+                from integrations.hermes.tools.voice_mode import cleanup_temp_recordings
                 cleanup_temp_recordings()
             except Exception:
                 pass

@@ -16,10 +16,10 @@ Industry profiles layer on top of tiers to add vertical-specific
 capability unlocks (e.g. HIPAA mode for healthcare, FedRAMP for gov).
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional, Union, Any
+from domain.policy.capability_flags import CapabilityArea, TrustLevel
 
 
 class ProductTier(str, Enum):
@@ -28,47 +28,8 @@ class ProductTier(str, Enum):
     ENTERPRISE = "enterprise"
 
 
-class CapabilityFlag(str, Enum):
-    """Fine-grained capability flags checked during tool execution."""
-    # Memory
-    LONG_TERM_MEMORY       = "long_term_memory"
-    MEMORY_SEARCH          = "memory_search"
-    CROSS_SESSION_MEMORY   = "cross_session_memory"
-
-    # Tools
-    WEB_SEARCH             = "web_search"
-    FILE_READ              = "file_read"
-    FILE_WRITE             = "file_write"
-    CODE_EXECUTION         = "code_execution"
-    EXTERNAL_API_CALLS     = "external_api_calls"
-    EMAIL_SEND             = "email_send"
-    CALENDAR_WRITE         = "calendar_write"
-    CRON_JOBS              = "cron_jobs"
-    DEVICE_CONTROL         = "device_control"
-    MULTI_MODAL            = "multi_modal"
-
-    # ML
-    LOCAL_LLM              = "local_llm"
-    CLOUD_FRONTIER_LLM     = "cloud_frontier_llm"
-    TRI_ATTENTION          = "tri_attention"
-    CUSTOM_MODELS          = "custom_models"
-
-    # Platform
-    MULTI_DEVICE           = "multi_device"
-    MULTI_USER             = "multi_user"
-    RBAC                   = "rbac"
-    AUDIT_FULL             = "audit_full"
-    ADMIN_PLANE            = "admin_plane"
-    SSO                    = "sso"
-    DATA_EXPORT            = "data_export"
-    API_ACCESS             = "api_access"
-    WEBHOOKS               = "webhooks"
-    MCP_BRIDGE             = "mcp_bridge"
-
-    # Compliance
-    HIPAA_MODE             = "hipaa_mode"
-    FEDRAMP_MODE           = "fedramp_mode"
-    SOC2_AUDIT             = "soc2_audit"
+# CapabilityFlag is aliased to CapabilityArea for backward compatibility
+CapabilityFlag = CapabilityArea
 
 
 @dataclass(frozen=True)
@@ -88,42 +49,30 @@ class TierConfig:
 # ── Capability matrix ──────────────────────────────────────────────────────────
 
 _PERSONAL_CAPS = frozenset({
-    CapabilityFlag.WEB_SEARCH,
-    CapabilityFlag.FILE_READ,
-    CapabilityFlag.EMAIL_SEND,
-    CapabilityFlag.LONG_TERM_MEMORY,
-    CapabilityFlag.MEMORY_SEARCH,
-    CapabilityFlag.CLOUD_FRONTIER_LLM,
-    CapabilityFlag.MULTI_MODAL,
-    CapabilityFlag.API_ACCESS,
+    CapabilityArea.WEB_SEARCH,
+    CapabilityArea.SEARCH_ENGINE,
+    CapabilityArea.MESSAGING,
+    CapabilityArea.MEMORY_OPS,
+    CapabilityArea.GEN_AI_FACTORY,
 })
 
 _PRO_CAPS = _PERSONAL_CAPS | frozenset({
-    CapabilityFlag.FILE_WRITE,
-    CapabilityFlag.CODE_EXECUTION,
-    CapabilityFlag.EXTERNAL_API_CALLS,
-    CapabilityFlag.CALENDAR_WRITE,
-    CapabilityFlag.CRON_JOBS,
-    CapabilityFlag.CROSS_SESSION_MEMORY,
-    CapabilityFlag.LOCAL_LLM,
-    CapabilityFlag.TRI_ATTENTION,
-    CapabilityFlag.MULTI_DEVICE,
-    CapabilityFlag.DATA_EXPORT,
-    CapabilityFlag.WEBHOOKS,
-    CapabilityFlag.MCP_BRIDGE,
+    CapabilityArea.SOCIAL_PRESENCE,
+    CapabilityArea.CALENDAR_OPS,
+    CapabilityArea.DATA_ANALYSIS,
+    CapabilityArea.VISION_REASONING,
+    CapabilityArea.AUDIO_FLOW,
+    CapabilityArea.DELEGATION,
+    CapabilityArea.PLATFORM_PLUGINS,
+    CapabilityArea.SYSTEM_OPS,
+    CapabilityArea.STREAMS_MGMT,
 })
 
 _ENTERPRISE_CAPS = _PRO_CAPS | frozenset({
-    CapabilityFlag.DEVICE_CONTROL,
-    CapabilityFlag.CUSTOM_MODELS,
-    CapabilityFlag.MULTI_USER,
-    CapabilityFlag.RBAC,
-    CapabilityFlag.AUDIT_FULL,
-    CapabilityFlag.ADMIN_PLANE,
-    CapabilityFlag.SSO,
-    CapabilityFlag.HIPAA_MODE,
-    CapabilityFlag.FEDRAMP_MODE,
-    CapabilityFlag.SOC2_AUDIT,
+    CapabilityArea.MEETING_ASSISTANT,
+    CapabilityArea.IOT_CONTROL,
+    CapabilityArea.FINANCE_GATEWAY,
+    CapabilityArea.HEALTH_INTEGRATION,
 })
 
 TIER_CONFIGS: dict[ProductTier, TierConfig] = {
@@ -201,7 +150,7 @@ def check_capability(
     return TierCheckResult(allowed=allowed, tier=tier, capability=capability, reason=reason)
 
 
-def get_tier_config(tier: ProductTier) -> TierConfig | None:
+def get_tier_config(tier: ProductTier) -> Optional[TierConfig]:
     return TIER_CONFIGS.get(tier)
 
 

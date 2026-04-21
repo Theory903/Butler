@@ -20,8 +20,8 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
+from integrations.hermes.tools.environments.base import BaseEnvironment
+from integrations.hermes.tools.interrupt import is_interrupted
 
 
 @dataclass(frozen=True)
@@ -137,7 +137,7 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
             if _now - _last_activity_touch >= _ACTIVITY_INTERVAL:
                 _last_activity_touch = _now
                 try:
-                    from tools.environments.base import _get_activity_callback
+                    from integrations.hermes.tools.environments.base import _get_activity_callback
                     _cb = _get_activity_callback()
                 except Exception:
                     _cb = None

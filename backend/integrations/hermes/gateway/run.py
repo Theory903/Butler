@@ -382,7 +382,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     # Normalize: command uses hyphens, skill names may use hyphens or underscores
     normalized = command_name.lower().replace("_", "-")
     try:
-        from tools.skills_tool import _get_disabled_skill_names
+        from integrations.hermes.tools.skills_tool import _get_disabled_skill_names
         from agent.skill_utils import get_all_skills_dirs
         disabled = _get_disabled_skill_names()
 
@@ -570,7 +570,7 @@ class GatewayRunner:
         self._smart_model_routing = self._load_smart_model_routing()
 
         # Wire process registry into session store for reset protection
-        from tools.process_registry import process_registry
+        from integrations.hermes.tools.process_registry import process_registry
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
@@ -628,7 +628,7 @@ class GatewayRunner:
 
         # Ensure tirith security scanner is available (downloads if needed)
         try:
-            from tools.tirith_security import ensure_installed
+            from integrations.hermes.tools.tirith_security import ensure_installed
             ensure_installed(log_failures=False)
         except Exception:
             pass  # Non-fatal — fail-open at scan time if unavailable
@@ -663,7 +663,7 @@ class GatewayRunner:
     def _has_setup_skill(self) -> bool:
         """Check if the butler-agent-setup skill is installed."""
         try:
-            from tools.skill_manager_tool import _find_skill
+            from integrations.hermes.tools.skill_manager_tool import _find_skill
             return _find_skill("butler-agent-setup") is not None
         except Exception:
             return False
@@ -772,7 +772,7 @@ class GatewayRunner:
             # what's already saved and avoid overwriting newer entries.
             _current_memory = ""
             try:
-                from tools.memory_tool import get_memory_dir
+                from integrations.hermes.tools.memory_tool import get_memory_dir
                 _mem_dir = get_memory_dir()
                 for fname, label in [
                     ("MEMORY.md", "MEMORY (your personal notes)"),
@@ -1782,7 +1782,7 @@ class GatewayRunner:
         
         # Recover background processes from checkpoint (crash recovery)
         try:
-            from tools.process_registry import process_registry
+            from integrations.hermes.tools.process_registry import process_registry
             recovered = process_registry.recover_from_checkpoint()
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
@@ -1989,7 +1989,7 @@ class GatewayRunner:
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
-            from tools.process_registry import process_registry
+            from integrations.hermes.tools.process_registry import process_registry
             while process_registry.pending_watchers:
                 watcher = process_registry.pending_watchers.pop(0)
                 asyncio.create_task(self._run_process_watcher(watcher))
@@ -2339,17 +2339,17 @@ class GatewayRunner:
             # Global cleanup: kill any remaining tool subprocesses not tied
             # to a specific agent (catch-all for zombie prevention).
             try:
-                from tools.process_registry import process_registry
+                from integrations.hermes.tools.process_registry import process_registry
                 process_registry.kill_all()
             except Exception:
                 pass
             try:
-                from tools.terminal_tool import cleanup_all_environments
+                from integrations.hermes.tools.terminal_tool import cleanup_all_environments
                 cleanup_all_environments()
             except Exception:
                 pass
             try:
-                from tools.browser_tool import cleanup_all_browsers
+                from integrations.hermes.tools.browser_tool import cleanup_all_browsers
                 cleanup_all_browsers()
             except Exception:
                 pass
@@ -3954,7 +3954,7 @@ class GatewayRunner:
             
             # Check for pending process watchers (check_interval on background processes)
             try:
-                from tools.process_registry import process_registry
+                from integrations.hermes.tools.process_registry import process_registry
                 while process_registry.pending_watchers:
                     watcher = process_registry.pending_watchers.pop(0)
                     asyncio.create_task(self._run_process_watcher(watcher))
@@ -3966,7 +3966,7 @@ class GatewayRunner:
             # already handled by the per-process watcher task above, so we only
             # inject watch-type events here.
             try:
-                from tools.process_registry import process_registry as _pr
+                from integrations.hermes.tools.process_registry import process_registry as _pr
                 _watch_events = []
                 while not _pr.completion_queue.empty():
                     evt = _pr.completion_queue.get_nowait()
@@ -4298,13 +4298,13 @@ class GatewayRunner:
         self._evict_cached_agent(session_key)
 
         try:
-            from tools.env_passthrough import clear_env_passthrough
+            from integrations.hermes.tools.env_passthrough import clear_env_passthrough
             clear_env_passthrough()
         except Exception:
             pass
 
         try:
-            from tools.credential_files import clear_credential_files
+            from integrations.hermes.tools.credential_files import clear_credential_files
             clear_credential_files()
         except Exception:
             pass
@@ -5424,7 +5424,7 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from integrations.hermes.tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
@@ -5554,7 +5554,7 @@ class GatewayRunner:
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
-        from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
+        from integrations.hermes.tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
 
         # Read checkpoint config from config.yaml
         cp_cfg = {}
@@ -6090,7 +6090,7 @@ class GatewayRunner:
 
     async def _handle_yolo_command(self, event: MessageEvent) -> str:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
-        from tools.approval import (
+        from integrations.hermes.tools.approval import (
             disable_session_yolo,
             enable_session_yolo,
             is_session_yolo_enabled,
@@ -6626,7 +6626,7 @@ class GatewayRunner:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
         loop = asyncio.get_event_loop()
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from integrations.hermes.tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
             # Capture old server names before shutdown
             with _lock:
@@ -6718,7 +6718,7 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
 
-        from tools.approval import (
+        from integrations.hermes.tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
         )
 
@@ -6767,7 +6767,7 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
 
-        from tools.approval import (
+        from integrations.hermes.tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
         )
 
@@ -7327,7 +7327,7 @@ class GatewayRunner:
         Returns:
             The enriched message string with vision descriptions prepended.
         """
-        from tools.vision_tools import vision_analyze_tool
+        from integrations.hermes.tools.vision_tools import vision_analyze_tool
         import json as _json
 
         analysis_prompt = (
@@ -7402,7 +7402,7 @@ class GatewayRunner:
                 return f"{disabled_note}\n\n{user_text}"
             return disabled_note
 
-        from tools.transcription_tools import transcribe_audio
+        from integrations.hermes.tools.transcription_tools import transcribe_audio
         import asyncio
 
         enriched_parts = []
@@ -7569,7 +7569,7 @@ class GatewayRunner:
           - ``error``  — final message only when exit code != 0
           - ``off``    — no messages at all
         """
-        from tools.process_registry import process_registry
+        from integrations.hermes.tools.process_registry import process_registry
 
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
@@ -7611,9 +7611,9 @@ class GatewayRunner:
             if session.exited:
                 # --- Agent-triggered completion: inject synthetic message ---
                 # Skip if the agent already consumed the result via wait/poll/log
-                from tools.process_registry import process_registry as _pr_check
+                from integrations.hermes.tools.process_registry import process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
-                    from tools.ansi_strip import strip_ansi
+                    from integrations.hermes.tools.ansi_strip import strip_ansi
                     _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
                     synth_text = (
                         f"[SYSTEM: Background process {session_id} completed "
@@ -8684,7 +8684,7 @@ class GatewayRunner:
             # command approval blocks the agent thread (mirrors CLI input()).
             # The callback bridges sync→async to send the approval request
             # to the user immediately.
-            from tools.approval import (
+            from integrations.hermes.tools.approval import (
                 register_gateway_notify,
                 reset_current_session_key,
                 set_current_session_key,
@@ -9549,7 +9549,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Sync bundled skills on gateway start (fast -- skips unchanged)
     try:
-        from tools.skills_sync import sync_skills
+        from integrations.hermes.tools.skills_sync import sync_skills
         sync_skills(quiet=True)
     except Exception:
         pass
@@ -9675,7 +9675,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Close MCP server connections
     try:
-        from tools.mcp_tool import shutdown_mcp_servers
+        from integrations.hermes.tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
     except Exception:
         pass

@@ -76,18 +76,24 @@ class KnowledgeExtractionEngine:
             embedding = await self._embedder.embed(chunk_text)
             chunk_id = uuid.uuid4()
             
-            # 3. Extract Entities
-            extracted_entities = await self._extract_entities_from_chunk(account_id, chunk_text)
+            # 3. Extract Graph Elements
+            extracted_entities, extracted_relations = await self._extract_entities_from_chunk(account_id, chunk_text)
             
             # 4. Store in Neo4j (Source Attribution)
             # Link chunk to extracted entities for provenance
             entity_ids = []
+            entity_map = {}  # Resolves names locally
+            
             for ent_data in extracted_entities:
                 # Upsert entity to graph first
+                ent_name = ent_data.get("name")
+                if not ent_name:
+                    continue
+                    
                 ent = await self._neo4j_repo.upsert_entity(
                     account_id=acc_id,
                     entity_type=ent_data.get("type", "Topic"),
-                    name=ent_data.get("name"),
+                    name=ent_name,
                     summary=ent_data.get("summary"),
                     metadata={
                         "is_explicit": ent_data.get("is_explicit", True),
@@ -96,6 +102,23 @@ class KnowledgeExtractionEngine:
                     }
                 )
                 entity_ids.append(ent.id)
+                entity_map[ent_name.lower()] = ent.id
+            
+            # Upsert relational edges
+            for rel_data in extracted_relations:
+                src_name = rel_data.get("source", "").lower()
+                tgt_name = rel_data.get("target", "").lower()
+                
+                if src_name in entity_map and tgt_name in entity_map:
+                    await self._neo4j_repo.upsert_edge(
+                        account_id=acc_id,
+                        source_id=entity_map[src_name],
+                        target_id=entity_map[tgt_name],
+                        relation_type=rel_data.get("type", "RELATED_TO"),
+                        metadata={
+                            "is_explicit": rel_data.get("is_explicit", True)
+                        }
+                    )
             
             await self._neo4j_repo.store_chunk(
                 account_id=acc_id,
@@ -130,7 +153,7 @@ class KnowledgeExtractionEngine:
         logger.debug("Semantic splitting requested - falling back to recursive for Phase 11 baseline.")
         return self._recursive_split(text)
 
-    async def _extract_entities_from_chunk(self, account_id: str, text: str) -> List[Dict[str, Any]]:
+    async def _extract_entities_from_chunk(self, account_id: str, text: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Call LLM to extract entities following the 'Butler Preferred Schema'."""
         from domain.ml.contracts import ReasoningRequest
         prompt = BUTLER_EXTRACTION_PROMPT.format(text=text)
@@ -152,8 +175,8 @@ class KnowledgeExtractionEngine:
                 content = content.split("```")[1].split("```")[0].strip()
 
             data = json.loads(content)
-            return data.get("entities", [])
+            return data.get("entities", []), data.get("relations", [])
 
         except Exception as e:
             logger.error(f"Failed to extract entities for {account_id}: {e}")
-            return []
+            return [], []

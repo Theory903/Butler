@@ -23,7 +23,7 @@ import time
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
-from tools.registry import tool_error
+from integrations.hermes.tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 

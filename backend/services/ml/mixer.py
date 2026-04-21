@@ -2,6 +2,7 @@ import asyncio
 import structlog
 import time
 from typing import List, Dict, Any
+from core.observability import ButlerTracer, get_tracer
 from domain.ml.contracts import RetrievalCandidate, RerankResult
 
 logger = structlog.get_logger(__name__)
@@ -15,39 +16,67 @@ class CandidateMixer:
     3. AmbientState (Real-time Context) - T0
     """
 
-    def __init__(self, memory_svc=None, knowledge_svc=None, ambient_svc=None):
+    def __init__(self, memory_svc=None, knowledge_svc=None, ambient_svc=None, health_agent=None):
         self._memory = memory_svc
         self._knowledge = knowledge_svc
         self._ambient = ambient_svc
+        self._health_agent = health_agent
+        self._tracer = get_tracer()
         logger.info("candidate_mixer_initialized", 
                     sources={"memory": bool(memory_svc), 
                              "knowledge": bool(knowledge_svc), 
-                             "ambient": bool(ambient_svc)})
+                             "ambient": bool(ambient_svc)},
+                    adaptive=bool(health_agent))
 
     async def mix(self, query: str, limit: int = 100) -> List[RetrievalCandidate]:
         """Fetch and unite candidates from all available sources with diversity re-ranking."""
-        logger.debug("mixing_started", query=query, limit=limit)
         
-        start_time = time.monotonic()
+        # Adaptive Load Shedding: reduce budget if node is DEGRADED
+        effective_limit = limit
+        skip_heavy = False
+        
+        if self._health_agent:
+            status = self._health_agent.status
+            if status == "UNHEALTHY":
+                logger.warn("mixer_load_shedding_critical", query=query)
+                return []
+            elif status == "DEGRADED":
+                effective_limit = max(5, limit // 4)  # 25% budget
+                skip_heavy = True
+                logger.info("mixer_load_shedding_active", 
+                            query=query, 
+                            original_limit=limit, 
+                            effective_limit=effective_limit)
+
+        logger.debug("mixing_started", query=query, limit=effective_limit)
+        
+        with self._tracer.span("butler.ml.mix", attrs={"query": query, "limit": effective_limit}):
+            start_time = time.monotonic()
         
         # Parallel retrieval with timeout protection
         tasks = []
         source_weights = {}
 
         if self._memory:
-            tasks.append(self._fetch_from_memory(query, limit // 2))
+            tasks.append(self._fetch_from_memory(query, effective_limit // 2))
             source_weights["memory"] = 1.0
-        if self._knowledge:
-            tasks.append(self._fetch_from_knowledge(query, limit // 2))
+        
+        # In DEGRADED state, we skip heavier sources like knowledge graph to maintain latency
+        if self._knowledge and not skip_heavy:
+            tasks.append(self._fetch_from_knowledge(query, effective_limit // 2))
             source_weights["knowledge"] = 0.8
+        
         if self._ambient:
-            tasks.append(self._fetch_from_ambient(query, limit // 4))
+            tasks.append(self._fetch_from_ambient(query, max(1, effective_limit // 4)))
             source_weights["ambient"] = 0.6
         
         if not tasks:
             logger.warning("mixer_no_active_sources")
             return []
 
+        # diversity limit for source-specific results
+        final_diversity_limit = effective_limit
+        
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         all_candidates = []
@@ -67,7 +96,7 @@ class CandidateMixer:
         unique_candidates = self._deduplicate(all_candidates)
 
         # Diversity check: ensure top-N isn't dominated by a single source
-        final_candidates = self._apply_diversity(unique_candidates, limit)
+        final_candidates = self._apply_diversity(unique_candidates, final_diversity_limit)
 
         latency = (time.monotonic() - start_time) * 1000
         logger.info("mixing_completed", 

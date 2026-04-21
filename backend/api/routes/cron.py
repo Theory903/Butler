@@ -1,82 +1,75 @@
-"""Cron Routes — Phase 8b.
+"""Cron Routes — Phase 8b Hardened.
 
 HTTP interface for ButlerCronService.
-Allows users to manage their scheduled recurring actions.
-
-Endpoints:
-  GET    /cron/jobs                    — list all jobs for account
-  POST   /cron/jobs                    — create a new cron job
-  GET    /cron/jobs/{id}               — get a single job
-  POST   /cron/jobs/{id}/pause         — pause a job
-  POST   /cron/jobs/{id}/resume        — resume a paused job
-  DELETE /cron/jobs/{id}               — delete a job
-  GET    /cron/jobs/{id}/history       — run history (count + last_run_at)
-  POST   /cron/validate                — validate a cron expression without creating a job
-
-Security:
-  All routes require a valid JWT (account-scoped).
-  Jobs are account-scoped — users cannot access other accounts' jobs.
-  CronService enforces the 50 active jobs/account limit.
-
-RFC 9457 error format on all error paths.
+Aligned with Oracle-Grade reliability:
+- Uses persistent SQLAlchemy models.
+- Uses APScheduler with JobStore.
+- RFC 9457 error compliance.
 """
 
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Optional
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
-from services.cron.cron_service import (
-    ButlerCronService,
-    CreateCronJobRequest,
-    CronJob,
-    CronJobStatus,
-    CronValidationError,
-    validate_cron_expression,
-)
+from core.deps import get_cron_service, get_db
+from services.cron.cron_service import ButlerCronService
+from domain.cron.models import ButlerCronJob, ButlerCronRun, CronJobStatus, CronDeliveryMode
 
 logger = structlog.get_logger(__name__)
 
+router = APIRouter(prefix="/cron", tags=["cron"])
 
 # ── Request / Response schemas ────────────────────────────────────────────────
 
 class CreateJobRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
-    cron_expression: str = Field(..., description="5-field crontab expression: min hour dom month dow")
-    action: str = Field(..., description="Tool name or skill ID to invoke")
-    payload: dict = Field(default_factory=dict)
+    cron_expression: str = Field(..., description="5-field crontab expression")
+    delivery_mode: CronDeliveryMode = Field(default=CronDeliveryMode.ORCHESTRATOR)
+    delivery_meta: dict = Field(default_factory=dict, description="action/payload or url/payload")
     timezone: str = "UTC"
     description: str = ""
-    max_runs: int = Field(default=-1, description="-1 for unlimited")
 
 
 class ValidateRequest(BaseModel):
     cron_expression: str
 
 
-def _serialize_job(job: CronJob) -> dict:
+def _serialize_job(job: ButlerCronJob) -> dict:
     return {
-        "id": job.id,
+        "id": str(job.id),
         "account_id": job.account_id,
         "name": job.name,
         "description": job.description,
-        "cron_expression": job.cron_expression,
+        "cron_expression": job.expression,
         "timezone": job.timezone,
-        "action": job.action,
-        "payload": job.payload,
+        "delivery_mode": job.delivery_mode.value,
+        "delivery_meta": job.delivery_meta,
         "status": job.status.value,
-        "run_count": job.run_count,
-        "max_runs": job.max_runs,
-        "error_streak": job.error_streak,
         "created_at": job.created_at.isoformat(),
+        "updated_at": job.updated_at.isoformat(),
         "last_run_at": job.last_run_at.isoformat() if job.last_run_at else None,
         "next_run_at": job.next_run_at.isoformat() if job.next_run_at else None,
-        "expires_at": job.expires_at.isoformat() if job.expires_at else None,
     }
+
+
+def _bad_request(title: str, detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={
+            "type": "https://butler.lasmoid.ai/problems/bad-request",
+            "title": title,
+            "status": 400,
+            "detail": detail,
+        },
+    )
 
 
 def _not_found(job_id: str) -> HTTPException:
@@ -91,183 +84,166 @@ def _not_found(job_id: str) -> HTTPException:
     )
 
 
-def _forbidden() -> HTTPException:
-    return HTTPException(
-        status_code=403,
-        detail={
-            "type": "https://butler.lasmoid.ai/problems/forbidden",
-            "title": "Forbidden",
-            "status": 403,
-            "detail": "This cron job belongs to a different account.",
-        },
-    )
+# ── GET /cron/jobs ────────────────────────────────────────────────────────────
+
+@router.get("/jobs", summary="List all cron jobs for the account")
+async def list_jobs(
+    account_id: str = "demo", 
+    status: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+) -> dict:
+    query = select(ButlerCronJob).where(ButlerCronJob.account_id == account_id)
+    if status:
+        query = query.where(ButlerCronJob.status == status)
+    
+    result = await db.execute(query)
+    jobs = result.scalars().all()
+    
+    return {
+        "jobs": [_serialize_job(j) for j in jobs],
+        "count": len(jobs),
+        "ts": int(time.time()),
+    }
 
 
-# ── Cron Router ───────────────────────────────────────────────────────────────
+# ── POST /cron/jobs ───────────────────────────────────────────────────────────
 
-def create_cron_router(
-    cron_service: ButlerCronService | None = None,
-) -> APIRouter:
-    """Create the /cron route group.
-
-    Args:
-        cron_service: ButlerCronService instance. If None, a fresh instance
-                      is created (suitable for tests). In production, inject
-                      the singleton wired at startup.
-    """
-    svc = cron_service or ButlerCronService()
-    router = APIRouter(prefix="/cron", tags=["cron"])
-
-    # ── GET /cron/jobs ────────────────────────────────────────────────────────
-
-    @router.get("/jobs", summary="List all cron jobs for the account")
-    async def list_jobs(account_id: str = "demo", status: Optional[str] = None) -> dict:
-        filter_status = CronJobStatus(status) if status else None
-        jobs = svc.list_jobs(account_id, status=filter_status)
-        return {
-            "jobs": [_serialize_job(j) for j in jobs],
-            "count": len(jobs),
-            "ts": int(time.time()),
-        }
-
-    # ── POST /cron/jobs ───────────────────────────────────────────────────────
-
-    @router.post("/jobs", status_code=201, summary="Create a new cron job")
-    async def create_job(body: CreateJobRequest, account_id: str = "demo") -> dict:
-        req = CreateCronJobRequest(
+@router.post("/jobs", status_code=201, summary="Create a new cron job")
+async def create_job(
+    body: CreateJobRequest, 
+    account_id: str = "demo",
+    db: AsyncSession = Depends(get_db),
+    svc: ButlerCronService = Depends(get_cron_service)
+) -> dict:
+    try:
+        job = await svc.create_job(
+            db=db,
             account_id=account_id,
             name=body.name,
-            cron_expression=body.cron_expression,
-            action=body.action,
-            payload=body.payload,
-            timezone=body.timezone,
+            expression=body.cron_expression,
+            delivery_mode=body.delivery_mode,
+            delivery_meta=body.delivery_meta,
             description=body.description,
-            max_runs=body.max_runs,
+            timezone_str=body.timezone
         )
-        try:
-            job = svc.create(req)
-        except CronValidationError as e:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "type": "https://butler.lasmoid.ai/problems/invalid-cron-expression",
-                    "title": "Invalid Cron Expression",
-                    "status": 422,
-                    "detail": str(e),
-                },
-            )
-        except ValueError as e:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "type": "https://butler.lasmoid.ai/problems/cron-limit-exceeded",
-                    "title": "Cron Job Limit Exceeded",
-                    "status": 429,
-                    "detail": str(e),
-                },
-            )
+        await db.commit()
+    except ValueError as e:
+        raise _bad_request("Cron Creation Error", str(e))
+    except Exception as e:
+        logger.error("cron_create_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
-        logger.info("cron_job_created", job_id=job.id, account_id=account_id, action=body.action)
-        return _serialize_job(job)
+    return _serialize_job(job)
 
-    # ── GET /cron/jobs/{job_id} ───────────────────────────────────────────────
 
-    @router.get("/jobs/{job_id}", summary="Get a single cron job")
-    async def get_job(job_id: str, account_id: str = "demo") -> dict:
-        job = svc.get(job_id)
-        if job is None:
-            raise _not_found(job_id)
-        if job.account_id != account_id:
-            raise _forbidden()
-        return _serialize_job(job)
+# ── GET /cron/jobs/{job_id} ───────────────────────────────────────────────────
 
-    # ── POST /cron/jobs/{job_id}/pause ────────────────────────────────────────
+@router.get("/jobs/{job_id}", summary="Get a single cron job")
+async def get_job(
+    job_id: str, 
+    account_id: str = "demo",
+    db: AsyncSession = Depends(get_db)
+) -> dict:
+    job = await db.get(ButlerCronJob, uuid.UUID(job_id))
+    if job is None or job.account_id != account_id:
+        raise _not_found(job_id)
+    return _serialize_job(job)
 
-    @router.post("/jobs/{job_id}/pause", summary="Pause a cron job")
-    async def pause_job(job_id: str, account_id: str = "demo") -> dict:
-        job = svc.get(job_id)
-        if job is None:
-            raise _not_found(job_id)
-        if job.account_id != account_id:
-            raise _forbidden()
-        ok = svc.pause(job_id)
-        if not ok:
-            raise HTTPException(status_code=409, detail={
-                "type": "https://butler.lasmoid.ai/problems/cron-not-pausable",
-                "title": "Cannot Pause",
-                "status": 409,
-                "detail": f"Job '{job_id}' is in status '{job.status.value}' and cannot be paused.",
-            })
-        return {"job_id": job_id, "status": "paused", "ts": int(time.time())}
 
-    # ── POST /cron/jobs/{job_id}/resume ──────────────────────────────────────
+# ── POST /cron/jobs/{job_id}/pause ────────────────────────────────────────────
 
-    @router.post("/jobs/{job_id}/resume", summary="Resume a paused cron job")
-    async def resume_job(job_id: str, account_id: str = "demo") -> dict:
-        job = svc.get(job_id)
-        if job is None:
-            raise _not_found(job_id)
-        if job.account_id != account_id:
-            raise _forbidden()
-        ok = svc.resume(job_id)
-        if not ok:
-            status = svc.get(job_id).status.value if svc.get(job_id) else "unknown"
-            raise HTTPException(status_code=409, detail={
-                "type": "https://butler.lasmoid.ai/problems/cron-not-resumable",
-                "title": "Cannot Resume",
-                "status": 409,
-                "detail": f"Job '{job_id}' is in status '{status}' and cannot be resumed.",
-            })
-        return {"job_id": job_id, "status": "active", "ts": int(time.time())}
+@router.post("/jobs/{job_id}/pause", summary="Pause a cron job")
+async def pause_job(
+    job_id: str, 
+    account_id: str = "demo",
+    db: AsyncSession = Depends(get_db),
+    svc: ButlerCronService = Depends(get_cron_service)
+) -> dict:
+    uid = uuid.UUID(job_id)
+    job = await db.get(ButlerCronJob, uid)
+    if job is None or job.account_id != account_id:
+        raise _not_found(job_id)
+    
+    await svc.pause_job(db, uid)
+    await db.commit()
+    
+    return {"job_id": job_id, "status": "paused", "ts": int(time.time())}
 
-    # ── DELETE /cron/jobs/{job_id} ────────────────────────────────────────────
 
-    @router.delete("/jobs/{job_id}", status_code=200, summary="Delete a cron job")
-    async def delete_job(job_id: str, account_id: str = "demo") -> dict:
-        job = svc.get(job_id)
-        if job is None:
-            raise _not_found(job_id)
-        if job.account_id != account_id:
-            raise _forbidden()
-        svc.delete(job_id)
-        logger.info("cron_job_deleted", job_id=job_id, account_id=account_id)
-        return {"job_id": job_id, "deleted": True, "ts": int(time.time())}
+# ── POST /cron/jobs/{job_id}/resume ───────────────────────────────────────────
 
-    # ── GET /cron/jobs/{job_id}/history ──────────────────────────────────────
+@router.post("/jobs/{job_id}/resume", summary="Resume a paused cron job")
+async def resume_job(
+    job_id: str, 
+    account_id: str = "demo",
+    db: AsyncSession = Depends(get_db),
+    svc: ButlerCronService = Depends(get_cron_service)
+) -> dict:
+    uid = uuid.UUID(job_id)
+    job = await db.get(ButlerCronJob, uid)
+    if job is None or job.account_id != account_id:
+        raise _not_found(job_id)
+    
+    await svc.resume_job(db, uid)
+    await db.commit()
+    
+    return {"job_id": job_id, "status": "active", "ts": int(time.time())}
 
-    @router.get("/jobs/{job_id}/history", summary="Run history for a cron job")
-    async def job_history(job_id: str, account_id: str = "demo") -> dict:
-        job = svc.get(job_id)
-        if job is None:
-            raise _not_found(job_id)
-        if job.account_id != account_id:
-            raise _forbidden()
-        return {
-            "job_id": job_id,
-            "run_count": job.run_count,
-            "last_run_at": job.last_run_at.isoformat() if job.last_run_at else None,
-            "error_streak": job.error_streak,
-            "status": job.status.value,
-            "ts": int(time.time()),
-        }
 
-    # ── POST /cron/validate ───────────────────────────────────────────────────
+# ── DELETE /cron/jobs/{job_id} ────────────────────────────────────────────────
 
-    @router.post("/validate", summary="Validate a cron expression without creating a job")
-    async def validate_expression(body: ValidateRequest) -> dict:
-        try:
-            validate_cron_expression(body.cron_expression)
-            return {
-                "valid": True,
-                "expression": body.cron_expression,
-                "ts": int(time.time()),
-            }
-        except CronValidationError as e:
-            return {
-                "valid": False,
-                "expression": body.cron_expression,
-                "error": str(e),
-                "ts": int(time.time()),
-            }
+@router.delete("/jobs/{job_id}", status_code=200, summary="Delete a cron job")
+async def delete_job(
+    job_id: str, 
+    account_id: str = "demo",
+    db: AsyncSession = Depends(get_db),
+    svc: ButlerCronService = Depends(get_cron_service)
+) -> dict:
+    uid = uuid.UUID(job_id)
+    job = await db.get(ButlerCronJob, uid)
+    if job is None or job.account_id != account_id:
+        raise _not_found(job_id)
+    
+    await svc.delete_job(db, uid)
+    await db.commit()
+    
+    return {"job_id": job_id, "deleted": True, "ts": int(time.time())}
 
+
+# ── GET /cron/jobs/{job_id}/history ──────────────────────────────────────────
+
+@router.get("/jobs/{job_id}/history", summary="Run history for a cron job")
+async def job_history(
+    job_id: str, 
+    account_id: str = "demo",
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db)
+) -> dict:
+    uid = uuid.UUID(job_id)
+    job = await db.get(ButlerCronJob, uid)
+    if job is None or job.account_id != account_id:
+        raise _not_found(job_id)
+        
+    query = select(ButlerCronRun).where(ButlerCronRun.job_id == uid).order_by(ButlerCronRun.triggered_at.desc()).limit(limit)
+    res = await db.execute(query)
+    runs = res.scalars().all()
+    
+    return {
+        "job_id": job_id,
+        "runs": [
+            {
+                "id": str(r.id),
+                "triggered_at": r.triggered_at.isoformat(),
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+                "status": r.status,
+                "error": r.error_message,
+                "result": r.result_meta
+            } for r in runs
+        ],
+        "ts": int(time.time()),
+    }
+
+
+def create_cron_router() -> APIRouter:
+    """Legacy support for main.py router inclusion."""
     return router

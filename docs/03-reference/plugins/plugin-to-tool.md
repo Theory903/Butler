@@ -394,3 +394,9 @@ BLOCKED_PATTERNS = [
 ---
 
 *Next: See [run-first-system.md](./run-first-system.md) to run it all*
+
+## Harvested Capabilities: Plugin-to-Tool Translation
+**Source: OpenClaw Provider Models**
+- **Unified Tool Invocation Layer:** Translating external capabilities (like web fetch, custom API, or file operation) into standardized MCP protocol shapes that the Butler Orchestrator understands.
+- **Tool Interception Hooks:** Granular hooks (`tool_call:before`, `tool_call:after`) strictly to enforce rate limiting, data scrubbing, and privacy boundary controls before passing arguments to the active sandboxes.
+

@@ -37,9 +37,9 @@ import uuid
 from typing import Dict, Any, Optional, Union
 from urllib.parse import urlencode
 import fal_client
-from tools.debug_helpers import DebugSession
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled
+from integrations.hermes.tools.debug_helpers import DebugSession
+from integrations.hermes.tools.managed_tool_gateway import resolve_managed_tool_gateway
+from integrations.hermes.tools.tool_backend_helpers import managed_nous_tools_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -642,7 +642,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
+from integrations.hermes.tools.registry import registry, tool_error
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",

@@ -53,6 +53,9 @@ logs/
 site/
 .publi[c]/
 *.md.bak
+# Saved plan file (do not commit)
+docs/plans/2026-04-19-butler-ai-os-reference-harvest-plan.md
+docs/03-reference/system/reference-harvest-map.md
 
 ## Database
 *.db

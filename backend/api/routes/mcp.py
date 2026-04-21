@@ -218,7 +218,12 @@ async def _dispatch(payload: dict, account: AccountContext, cache: Redis, reques
         try:
             from services.tools.mcp_bridge import get_mcp_bridge
             bridge = get_mcp_bridge()
-            call_result = await bridge.call_tool("butler_native", tool_name, tool_args)
+            call_result = await bridge.call_tool(
+                "butler_native",
+                tool_name,
+                tool_args,
+                account_id=account.account_id
+            )
             if not call_result.success:
                 return _err(req_id, -32000, call_result.error or "Tool execution failed")
             return _ok(req_id, {"content": call_result.content, "isError": False})

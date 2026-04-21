@@ -7,8 +7,8 @@ class IntentResult(BaseModel):
     label: str
     confidence: float
     complexity: str  # simple, complex
-    requires_tools: bool
-    requires_memory: bool
+    requires_tools: bool = False
+    requires_memory: bool = False
     requires_approval: bool = False
     estimated_duration: int = 1  # seconds
     
@@ -48,7 +48,7 @@ class ReasoningRequest(BaseModel):
 class ReasoningResponse(BaseModel):
     content: str
     raw_response: Optional[Dict[str, Any]] = None
-    usage: Dict[str, int] = Field(default_factory=dict) # prompt_tokens, completion_tokens
+    usage: Dict[str, Any] = Field(default_factory=dict) # prompt_tokens, completion_tokens, timing (can be float)
     model_version: str
 
 class IntentClassifierContract(DomainService):
@@ -131,3 +131,7 @@ class IModelRegistry(DomainService):
     @abstractmethod
     def list_entries(self) -> List[Dict[str, Any]]:
         """Return all registered model entries (name, tier, status)."""
+
+    @abstractmethod
+    def get_fallback_profiles(self, tier: int, exclude_name: str) -> List[Any]:
+        """Return potential fallback models for a given tier."""

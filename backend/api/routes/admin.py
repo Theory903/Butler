@@ -78,19 +78,134 @@ def create_admin_router(
     cold_store=None,         # TurboQuantColdStore | None
     smart_router=None,       # ButlerSmartRouter | None
     audit_redis=None,        # Redis | None
+    cluster_redis=None,      # Redis | None — for cluster inspector
 ) -> APIRouter:
     """Create the /admin route group.
 
     Args:
-        registry:     CircuitBreakerRegistry instance (defaults to singleton).
-        cold_store:   TurboQuantColdStore for /admin/memory/stats.
-        smart_router: ButlerSmartRouter for /admin/routing/decision dry-run.
-        audit_redis:  Redis for /admin/audit/recent.
+        registry:      CircuitBreakerRegistry instance (defaults to singleton).
+        cold_store:    TurboQuantColdStore for /admin/memory/stats.
+        smart_router:  ButlerSmartRouter for /admin/routing/decision dry-run.
+        audit_redis:   Redis for /admin/audit/recent.
+        cluster_redis: Redis for /admin/cluster/status (node aggregation).
     """
     cb_registry = registry or get_circuit_breaker_registry()
     router = APIRouter(prefix="/admin", tags=["admin"])
 
-    # ── 1. GET /admin/circuit-breakers ────────────────────────────────────────
+    # ── 1. GET /metrics ──────────────────────────────────────────────────────
+    @router.get("/metrics", summary="Prometheus metrics (text format)")
+    async def metrics():
+        """Scrape target for Prometheus."""
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+        from fastapi import Response
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    # ── 0. GET /admin/cluster/status ─────────────────────────────────────────
+
+    @router.get("/cluster/status", summary="Real-time cluster-wide health dashboard")
+    async def cluster_status() -> dict:
+        """Aggregate health metadata from all live nodes registered in Redis.
+
+        Returns a node-by-node breakdown plus cluster-level roll-up:
+        - healthy_nodes / degraded_nodes / unhealthy_nodes counts
+        - cluster_status: HEALTHY | DEGRADED | CRITICAL
+        - per-node: cpu, mem, pending_tools, status, uptime
+        """
+        if cluster_redis is None:
+            return {
+                "cluster_status": "UNKNOWN",
+                "note": "cluster_redis not wired",
+                "nodes": [],
+                "ts": int(time.time()),
+            }
+
+        try:
+            # Scan for all node registry keys (TTL-managed by HealthAgent heartbeat)
+            node_keys = await cluster_redis.keys("butler:nodes:*")
+            # Filter out sub-keys like butler:nodes:<id>:pending_tools
+            registry_keys = [k for k in node_keys if k.count(b":") == 2]
+
+            nodes = []
+            for key in registry_keys:
+                raw = await cluster_redis.get(key)
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+                node_id = data.get("node_id", key.decode().split(":")[-1])
+
+                # Fetch pending tool count from the node-local counter
+                pending_key = f"butler:nodes:{node_id}:pending_tools"
+                pending_raw = await cluster_redis.get(pending_key)
+                pending_tools = int(pending_raw) if pending_raw else 0
+
+                # Uptime: registered nodes store started_at or updated_at
+                started_at = data.get("started_at") or data.get("updated_at", time.time())
+                uptime_s = max(0, time.time() - float(started_at))
+
+                nodes.append({
+                    "node_id": node_id,
+                    "status": data.get("status", "UNKNOWN"),
+                    "version": data.get("version", "unknown"),
+                    "cpu_percent": data.get("cpu_percent", 0),
+                    "memory_percent": data.get("memory_percent", 0),
+                    "pending_tools": pending_tools,
+                    "uptime_s": round(uptime_s, 1),
+                    "last_heartbeat": data.get("updated_at", time.time()),
+                })
+
+            # Cluster-wide roll-up
+            total = len(nodes)
+            healthy = sum(1 for n in nodes if n["status"] == "HEALTHY")
+            degraded = sum(1 for n in nodes if n["status"] == "DEGRADED")
+            unhealthy = sum(1 for n in nodes if n["status"] == "UNHEALTHY")
+
+            # Cluster health: CRITICAL if >50% unhealthy, DEGRADED if any degraded/unhealthy
+            if total == 0:
+                cluster_health = "NO_NODES"
+            elif unhealthy / max(total, 1) > 0.5:
+                cluster_health = "CRITICAL"
+            elif degraded + unhealthy > 0:
+                cluster_health = "DEGRADED"
+            else:
+                cluster_health = "HEALTHY"
+
+            total_pending = sum(n["pending_tools"] for n in nodes)
+
+            logger.info(
+                "cluster_status_polled",
+                total=total,
+                healthy=healthy,
+                degraded=degraded,
+                unhealthy=unhealthy,
+                cluster_health=cluster_health,
+            )
+
+            return {
+                "cluster_status": cluster_health,
+                "summary": {
+                    "total_nodes": total,
+                    "healthy": healthy,
+                    "degraded": degraded,
+                    "unhealthy": unhealthy,
+                    "total_pending_tools": total_pending,
+                },
+                "nodes": sorted(nodes, key=lambda n: n["node_id"]),
+                "ts": int(time.time()),
+            }
+
+        except Exception as exc:
+            logger.error("cluster_status_failed", error=str(exc))
+            return {
+                "cluster_status": "UNKNOWN",
+                "error": str(exc),
+                "nodes": [],
+                "ts": int(time.time()),
+            }
+
 
     @router.get("/circuit-breakers", summary="List all circuit breaker states")
     async def list_circuit_breakers() -> dict:

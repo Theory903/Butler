@@ -99,12 +99,13 @@ _HERMES_TOOL_TIER_MAP: dict[str, dict] = {
     "memory_recall":        {"tier": RiskTier.L0, "owner": "memory",       "sandbox": "none",   "side_effects": []},
     "session_search":       {"tier": RiskTier.L0, "owner": "memory",       "sandbox": "none",   "side_effects": []},
     "list_files":           {"tier": RiskTier.L0, "owner": "tools",        "sandbox": "none",   "side_effects": []},
-    "read_file":            {"tier": RiskTier.L0, "owner": "tools",        "sandbox": "local",  "side_effects": []},
+    "read_file":            {"tier": RiskTier.L0, "owner": "tools",        "sandbox": "docker", "side_effects": []},
     "clarify":              {"tier": RiskTier.L0, "owner": "orchestrator", "sandbox": "none",   "side_effects": []},
     "get_time":             {"tier": RiskTier.L0, "owner": "tools",        "sandbox": "none",   "side_effects": []},
     "fuzzy_match":          {"tier": RiskTier.L0, "owner": "tools",        "sandbox": "none",   "side_effects": []},
     "url_safety_check":     {"tier": RiskTier.L0, "owner": "security",     "sandbox": "none",   "side_effects": ["network"]},
     "osv_check":            {"tier": RiskTier.L0, "owner": "security",     "sandbox": "none",   "side_effects": ["network"]},
+    "system_stats":         {"tier": RiskTier.L0, "owner": "tools",        "sandbox": "none",   "side_effects": []},
 
     # ── L1: logged — no approval, audit trail ─────────────────────────────
     "transcribe_audio":     {"tier": RiskTier.L1, "owner": "audio",        "sandbox": "none",   "side_effects": []},
@@ -117,8 +118,8 @@ _HERMES_TOOL_TIER_MAP: dict[str, dict] = {
     "get_skill_plan":       {"tier": RiskTier.L1, "owner": "tools",        "sandbox": "none",   "side_effects": []},
 
     # ── L2: confirm — one-click approval ──────────────────────────────────
-    "write_file":           {"tier": RiskTier.L2, "owner": "tools",        "sandbox": "local",  "side_effects": ["file_write"]},
-    "patch_file":           {"tier": RiskTier.L2, "owner": "tools",        "sandbox": "local",  "side_effects": ["file_write"]},
+    "write_file":           {"tier": RiskTier.L2, "owner": "tools",        "sandbox": "docker", "side_effects": ["file_write"]},
+    "patch_file":           {"tier": RiskTier.L2, "owner": "tools",        "sandbox": "docker", "side_effects": ["file_write"]},
     "send_message":         {"tier": RiskTier.L2, "owner": "communication","sandbox": "none",   "side_effects": ["message"]},
     "create_cron_job":      {"tier": RiskTier.L2, "owner": "automation",   "sandbox": "none",   "side_effects": []},
     "delete_cron_job":      {"tier": RiskTier.L2, "owner": "automation",   "sandbox": "none",   "side_effects": []},
@@ -130,7 +131,7 @@ _HERMES_TOOL_TIER_MAP: dict[str, dict] = {
     # ── L3: restricted — elevated assurance + explicit approval ───────────
     "run_terminal":         {"tier": RiskTier.L3, "owner": "tools",        "sandbox": "docker", "side_effects": ["process_spawn", "file_write", "network"]},
     "code_execution":       {"tier": RiskTier.L3, "owner": "tools",        "sandbox": "docker", "side_effects": ["code_execute", "file_write"]},
-    "browser_automation":   {"tier": RiskTier.L3, "owner": "search",       "sandbox": "local",  "side_effects": ["network"]},
+    "browser_automation":   {"tier": RiskTier.L3, "owner": "search",       "sandbox": "docker", "side_effects": ["network"]},
     "firecrawl":            {"tier": RiskTier.L3, "owner": "search",       "sandbox": "none",   "side_effects": ["network", "external_api"]},
     "homeassistant_control":{"tier": RiskTier.L3, "owner": "device",       "sandbox": "none",   "side_effects": ["device", "external_api"]},
     "rl_training":          {"tier": RiskTier.L3, "owner": "ml",           "sandbox": "docker", "side_effects": ["code_execute", "file_write"]},

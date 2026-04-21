@@ -1,0 +1,196 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Butler — Kubernetes manifests
+#
+# Resources:
+#   Namespace, ConfigMap (log settings), Deployment, Service,
+#   HorizontalPodAutoscaler, PodDisruptionBudget
+#
+# Logging strategy:
+#   BUTLER_LOG_MODE=json  → ECS newline-delimited JSON on stdout
+#   NODE_ID=$(HOSTNAME)   → pod name in every log line
+#   Fluentd / Fluent Bit sidecar or DaemonSet picks up stdout and ships to ELK/Loki
+# ──────────────────────────────────────────────────────────────────────────────
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: butler
+
+---
+# ── Logging ConfigMap ──────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: butler-log-config
+  namespace: butler
+data:
+  BUTLER_LOG_MODE: "json"
+  BUTLER_LOG_COLOR: "false"
+  NO_COLOR: "1"
+  LOG_LEVEL: "INFO"
+  APP_ENV: "production"
+
+---
+# ── Deployment ─────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: butler
+  namespace: butler
+  labels:
+    app: butler
+    version: "1.0.0"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: butler
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0 # zero-downtime
+  template:
+    metadata:
+      labels:
+        app: butler
+        version: "1.0.0"
+      annotations:
+        # Prometheus scrape (if you expose /metrics)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+
+      containers:
+        - name: butler
+          image: ghcr.io/your-org/butler:1.0.0 # replace with your registry
+          imagePullPolicy: Always
+
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+
+          envFrom:
+            - configMapRef:
+                name: butler-log-config
+            - secretRef:
+                name: butler-secrets # DB_URL, REDIS_URL, etc.
+
+          env:
+            # Inject pod name → appears as node_id in every log line
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+            # Inject namespace
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+      terminationGracePeriodSeconds: 30
+
+---
+# ── Service ────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: butler
+  namespace: butler
+spec:
+  selector:
+    app: butler
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
+  type: ClusterIP
+
+---
+# ── HorizontalPodAutoscaler ────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: butler
+  namespace: butler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: butler
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# ── PodDisruptionBudget — at least 1 pod always available ─────────────────────
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: butler
+  namespace: butler
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: butler

@@ -2,9 +2,39 @@
 
 > **For:** Product, Leadership, Engineering
 > **Status:** Implementation-ready
-> **Version:** 3.1
-> **Reference:** Corrected specification with boundary fixes, durable runtime direction, and RFC 9457 error model
+> **Version:** 3.2
+> **Reference:** Four foundations (Identity → Context → Intent → Action) + client-server split
 > **Quick Nav:** [index.md](./index.md) - AI-optimized navigation
+
+---
+
+## Core Design Principle
+
+Every feature must answer ONE of four questions:
+
+| Question | Service | What it determines |
+|----------|---------|------------------|
+| **WHO?** | Identity | Voice face, user profile |
+| **WHERE + WHEN + WHAT around?** | Context | Location, device proximity, time, environment |
+| **WHAT WANT?** | Intent | Command, question, request, conversation |
+| **HOW RESPOND?** | Response | Spoken, visual, notification, action |
+
+Reference: [perfect-design.md](./perfect-design.md) - Complete four foundations documentation
+
+---
+
+## Client-Server Split
+
+| Client (latency + privacy) | Server (intelligence + memory) |
+|--------------------------|-------------------------------|
+| Wake word detection | ASR (Automatic Speech Recognition) |
+| VAD (Voice Activity Detection) | Intent classification |
+| Sensor data collection | User profile management |
+| Local embedding extraction | Cross-device context |
+| Matter/IoT control | Response generation |
+| Audio playback | Memory storage |
+
+Reference: [client-server-split.md](./client-server-split.md) - Complete split mapping
 
 ---
 
@@ -42,6 +72,22 @@ The system is designed around KISS and SOLID principles, with a production targe
 - **security-first defaults**
 - **clear service ownership**
 - **implementation through modular services**
+
+---
+
+## No Random Features Rule
+
+Butler ONLY responds when explicitly prompted or when monitoring critical context. Features are NEVER added randomly.
+
+| Allowed | Explicitly Rejected |
+|---------|-------------------|
+| Responding to explicit commands | Unsolicited news alerts |
+| Answering direct questions | Random fun facts |
+| Following user-set reminders | Unprompted recommendations |
+| Acting on detected emergencies | Tracking without consent |
+| Providing requested information | Random notifications |
+
+This ensures Butler is helpful WITHOUT being intrusive.
 
 ---
 
@@ -555,6 +601,37 @@ Standard error types:
 
 ---
 
+---
+
+## Agentic Guidelines (v3.2) - Oracle-Grade Hardening
+
+Reference: Based on OpenClaw SOTA patterns for prompt cache stability and safety.
+
+### 1. Deterministic Prompt Assembly
+Treat prompt-cache stability as a correctness/performance-critical requirement.
+- **Ordering**: Any logic that assembles tool payloads, registries, or history MUST use deterministic ordering (e.g., sort keys, stable IDs).
+- **Prefix Isolation**: Keep static segments (system prompt, tool metadata, policy blocks) at the top. Keep dynamic segments (timestamps, ephemeral state) below the cache boundary.
+- **Mutation Rules**: Do not rewrite history bytes turn-to-turn unless invalidation is intentional. Mutate the tail, not the prefix.
+
+### 2. Context & Session Isolation
+- **Boundary Enforcement**: Every agent run must be strictly isolated by `account_id` and `session_id`.
+- **Contamination Guard**: Domain services must verify credentials per recall/write operation. Never share module-level mutable state for auth.
+
+### 3. Stable Tool Ordering
+- **Freeze per Run**: Once a toolset is compiled for a workflow run, its order and versions must remain stable until completion or terminal failure.
+- **Reordering Penalty**: Mid-run reordering breaks cache stability and tool-calling predictability.
+
+### 4. Watcher & Approval Interception
+- **Watcher Pattern**: High-risk actions (spending, writing to primary DB, external messaging) must resolve through a `PolicyGate` node.
+- **Interception**: The `ButlerACPServer` or `DurableExecutor` must intercept tool proposals that hit risk thresholds (L2+) and suspend for human decision.
+
+### 5. Durable Workflow Hygiene
+- **Replay Safety**: Workflow nodes must be idempotent. Replaying a node must not duplicate side effects.
+- **Side-Effect Separation**: Separate pure state transitions (updating DAG state) from effectful activities (calling external APIs).
+- **Resumption**: Execution must resume from the last committed checkpoint, never "restart from vibes."
+
+---
+
 ## Document Version History
 
 | Version | Date | Changes |
@@ -563,6 +640,7 @@ Standard error types:
 | 2.0 | 2026-04-16 | Implementation-ready |
 | 3.0 | 2026-04-17 | Production-ready status |
 | 3.1 | 2026-04-18 | Durable runtime and boundary clarifications |
+| 3.2 | 2026-04-20 | SOTA Agentic Guidelines (Deterministic prompts, isolation, hygiene) |
 
 ---
 

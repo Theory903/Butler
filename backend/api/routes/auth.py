@@ -6,6 +6,7 @@ Errors flow up as Problem exceptions and are handled by the global handler.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,7 +73,7 @@ async def register(
 ) -> TokenResponse:
     """Register a new account and receive tokens."""
     tokens = await auth.register(req.email, req.password, req.display_name)
-    return TokenResponse(**tokens.model_dump())
+    return TokenResponse(**asdict(tokens))
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -89,7 +90,7 @@ async def login(
         user_agent=request.headers.get("User-Agent"),
         device_id=request.headers.get("X-Device-ID"),
     )
-    return TokenResponse(**tokens.model_dump())
+    return TokenResponse(**asdict(tokens))
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -99,7 +100,7 @@ async def refresh(
 ) -> TokenResponse:
     """Rotate refresh token and get a new token pair."""
     tokens = await auth.refresh_token(req.refresh_token)
-    return TokenResponse(**tokens.model_dump())
+    return TokenResponse(**asdict(tokens))
 
 
 @router.post("/logout", status_code=204)
@@ -114,12 +115,12 @@ async def logout(
 @router.post("/switch", response_model=TokenResponse)
 async def switch_account(
     target_aid: str,
-    sid: str = Depends(get_current_sid),
     auth: AuthService = Depends(_get_auth_service),
+    sid: str = Depends(get_current_sid),
 ) -> TokenResponse:
     """Switch active account context."""
     tokens = await auth.switch_account(sid, target_aid)
-    return TokenResponse(**tokens.model_dump())
+    return TokenResponse(**asdict(tokens))
 
 
 @router.get("/.well-known/jwks.json", include_in_schema=True)
@@ -202,7 +203,7 @@ async def login_passkey_verify(
         user_agent=request.headers.get("User-Agent"),
         device_id=request.headers.get("X-Device-ID"),
     )
-    return TokenResponse(**tokens.model_dump())
+    return TokenResponse(**asdict(tokens))
 
 
 # ── OIDC / OAuth 2.1 ───────────────────────────────────────────────────────
@@ -353,9 +354,9 @@ async def redeem_recovery_code(
     req: RedeemRecoveryCodeRequest,
     auth: AuthService = Depends(_get_auth_service),
 ) -> TokenResponse:
-    """Redeem a recovery code to obtain a new AAL2 session."""
+    """Exchange a valid recovery code for a session."""
     tokens = await auth.redeem_recovery_code(req.email, req.code)
-    return TokenResponse(**tokens.model_dump())
+    return TokenResponse(**asdict(tokens))
 
 
 @router.post("/password/reset/initiate", status_code=202)

@@ -1,4 +1,5 @@
-from datetime import datetime, UTC
+from datetime import datetime, timezone
+UTC = timezone.utc
 from typing import Optional
 from domain.orchestrator.models import Task, TaskTransition
 from domain.orchestrator.exceptions import OrchestratorErrors

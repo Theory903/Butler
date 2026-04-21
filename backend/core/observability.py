@@ -163,9 +163,18 @@ class ButlerTracer:
                     merged["butler.session_id"] = session_id
                 for k, v in merged.items():
                     span.set_attribute(k, str(v))
-                yield span
-        except Exception:
-            yield None  # Never breaks the hot path
+                
+                # Context propagation for log correlation
+                trace_id = self.get_current_trace_id()
+                with structlog.contextvars.bound_contextvars(trace_id=trace_id):
+                    yield span
+        except Exception as e:
+            # ONLY catch internal OTel failures. Application errors from 'yield'
+            # are propagated naturally because they are not caught here (re-raised by 'with').
+            # We catch here ONLY if start_as_current_span or the setup logic fails.
+            logger.debug("otel_span_internal_error", error=str(e))
+            # DO NOT yield again here. Let the exception propagate.
+            raise
 
     def record_error(self, exc: Exception) -> None:
         """Record an exception on the current active span."""
@@ -182,6 +191,19 @@ class ButlerTracer:
     @property
     def is_available(self) -> bool:
         return self._tracer is not None
+
+    def get_current_trace_id(self) -> str | None:
+        """Get hex string of current trace id. Safe for log correlation."""
+        if self._tracer is None:
+            return None
+        try:
+            from opentelemetry import trace
+            span_context = trace.get_current_span().get_span_context()
+            if span_context.is_valid:
+                return format(span_context.trace_id, "032x")
+        except Exception:
+            pass
+        return None
 
 
 # ── ButlerMetrics ──────────────────────────────────────────────────────────────
@@ -254,6 +276,31 @@ class ButlerMetrics:
             self._acp_pending = Gauge(
                 "butler_acp_requests_pending",
                 "Number of pending ACP approval requests",
+            )
+            self.GAUGE_CLUSTER_HEALTH = Gauge(
+                "butler_cluster_health_value",
+                "Current global cluster health (0=Critical, 1=Degraded, 2=Healthy, -1=NoNodes)",
+            )
+            # Node Health & Resource Metrics
+            self._node_cpu = Gauge(
+                "butler_node_cpu_percent",
+                "Current CPU usage percentage of the node",
+                ["node_id"],
+            )
+            self._node_mem = Gauge(
+                "butler_node_memory_percent",
+                "Current Memory usage percentage of the node",
+                ["node_id"],
+            )
+            self._node_status = Gauge(
+                "butler_node_status_value",
+                "Current node health status (0=Healthy, 1=Degraded, 2=Unhealthy)",
+                ["node_id"],
+            )
+            self._load_shed_events = Counter(
+                "butler_load_shed_events_total",
+                "Total number of load shedding events (rejections or throttling)",
+                ["node_id", "service", "reason"],
             )
             # Gateway edge counters — read by /internal/metrics/summary
             self._rate_limit_hits = Counter(
@@ -357,6 +404,25 @@ class ButlerMetrics:
             return
         try:
             self._acp_pending.set(count)
+        except Exception:
+            pass
+
+    def record_node_resource(self, node_id: str, cpu: float, mem: float, status: str) -> None:
+        if not self._available:
+            return
+        try:
+            self._node_cpu.labels(node_id=node_id).set(cpu)
+            self._node_mem.labels(node_id=node_id).set(mem)
+            _status_map = {"HEALTHY": 0, "DEGRADED": 1, "UNHEALTHY": 2, "STARTING": 0}
+            self._node_status.labels(node_id=node_id).set(_status_map.get(status, 2))
+        except Exception:
+            pass
+
+    def record_load_shed(self, node_id: str, service: str, reason: str) -> None:
+        if not self._available:
+            return
+        try:
+            self._load_shed_events.labels(node_id=node_id, service=service, reason=reason).inc()
         except Exception:
             pass
 

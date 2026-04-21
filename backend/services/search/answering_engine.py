@@ -166,10 +166,17 @@ class AnsweringEngine:
     Depends on ISearchAdapter — any adapter (SearxNG, Brave, mock) can be injected.
     """
 
-    def __init__(self, search_adapter: ISearchAdapter, llm_runtime: Any = None) -> None:
+    def __init__(
+        self,
+        search_adapter: ISearchAdapter,
+        llm: Any = None,
+        breakers: Any | None = None,
+    ) -> None:
         self._search = search_adapter
-        self._llm = llm_runtime
+        self._llm = llm
+        self._breakers = breakers
         self._classifier = QueryClassifier()
+
 
     async def classify(
         self, query: str, chat_history: list[dict[str, str]] | None = None

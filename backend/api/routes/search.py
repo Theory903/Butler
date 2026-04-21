@@ -1,15 +1,18 @@
+from typing import Any, cast
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from domain.auth.contracts import AccountContext
 from api.routes.gateway import get_current_account
-from services.search.service import SearchService
-from services.search.extraction import ContentExtractor
 
 # Dependency injection for routing
-async def get_search_service() -> SearchService:
+async def get_search_service() -> Any:
+    from services.search.extraction import ContentExtractor
+    from services.search.service import SearchService
+
     extractor = ContentExtractor()
-    return SearchService(extractor)
+    return cast(Any, SearchService(extractor))
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -21,7 +24,7 @@ class SearchRequest(BaseModel):
 async def search(
     req: SearchRequest,
     account: AccountContext = Depends(get_current_account),
-    svc: SearchService = Depends(get_search_service)
+    svc: Any = Depends(get_search_service)
 ):
     # Depending on architecture, we might just return the Pydantic dict representation of EvidencePack
     # Since EvidencePack is a dataclass, we can return it safely with FastAPI

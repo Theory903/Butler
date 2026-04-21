@@ -86,6 +86,7 @@ class HealthProbeResult:
             "status": status_label,
             "state": state.value,
             "version": version,
+            "debug_marker": "antigravity_v1",
             "ts": int(time.time()),
             "checks": self.dep_results,
             "circuit_breakers": self.breaker_results,
@@ -221,8 +222,11 @@ class HealthChecker:
             label = "ready"
             code  = 200
 
+        import os
         body = result.to_dict(status_label=label, version=self._version)
         body["state"] = startup_state.value
+        body["pid"] = os.getpid()
+        body["cwd"] = os.getcwd()
         return body, code
 
 

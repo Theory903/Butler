@@ -172,7 +172,7 @@ def _normalize_command_for_detection(command: str) -> str:
     null bytes, and normalizes Unicode fullwidth characters so that
     obfuscation techniques cannot bypass the pattern-based detection.
     """
-    from tools.ansi_strip import strip_ansi
+    from integrations.hermes.tools.ansi_strip import strip_ansi
 
     # Strip all ANSI escape sequences (CSI, OSC, DCS, 8-bit C1, etc.)
     command = strip_ansi(command)
@@ -724,7 +724,7 @@ def check_all_command_guards(command: str, env_type: str,
     # Only catch ImportError (module not installed).
     tirith_result = {"action": "allow", "findings": [], "summary": ""}
     try:
-        from tools.tirith_security import check_command_security
+        from integrations.hermes.tools.tirith_security import check_command_security
         tirith_result = check_command_security(command)
     except ImportError:
         pass  # tirith module not installed — allow

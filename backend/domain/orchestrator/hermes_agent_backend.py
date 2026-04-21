@@ -347,6 +347,11 @@ class HermesAgentBackend:
         compiled_specs: dict[str, ButlerToolSpec],
         max_iterations: int = 30,
     ):
+        if not compiled_specs:
+            logger.warning(
+                "hermes_backend_specs_missing",
+                message="Agent backend initialized without compiled tool specs. Tool use will be disabled.",
+            )
         self._compiled_specs = compiled_specs
         self._max_iterations = max_iterations
 
@@ -437,12 +442,16 @@ class HermesAgentBackend:
         )
 
         # Queue for passing events from sync Hermes callbacks → async generator
-        event_queue: asyncio.Queue[ButlerEvent | Exception | None] = asyncio.Queue()
-        loop = asyncio.get_event_loop()
+        # Max size prevents memory bloat during massive stream bursts
+        event_queue: asyncio.Queue[ButlerEvent | Exception | None] = asyncio.Queue(maxsize=1000)
+        loop = asyncio.get_running_loop()
 
         # ── Callback factory: sync callbacks that post to async queue ────────
         def _post(event: ButlerEvent) -> None:
-            loop.call_soon_threadsafe(event_queue.put_nowait, event)
+            try:
+                loop.call_soon_threadsafe(event_queue.put_nowait, event)
+            except asyncio.QueueFull:
+                logger.warning("hermes_event_queue_full", event_type=type(event).__name__)
 
         def _post_error(exc: Exception) -> None:
             loop.call_soon_threadsafe(event_queue.put_nowait, exc)
@@ -587,21 +596,24 @@ class HermesAgentBackend:
             trace_id=ctx.trace_id,
         )
 
-        try:
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self._run_agent_sync(
-                    ctx=ctx,
-                    butler_toolset_names=butler_toolset_names,
-                    on_thinking=_on_thinking,
-                    on_stream_delta=_on_stream_delta,
-                    on_tool_start=_on_tool_start,
-                    on_tool_complete=_on_tool_complete,
-                    on_done=_post_done,
-                    on_error=_post_error,
-                    usage_holder=usage_holder,
-                )
+        # Run Hermes in a dedicated thread to avoid blocking the event loop
+        # We use loop.run_in_executor with a custom name for easier profiling
+        _agent_task = loop.run_in_executor(
+            None,
+            lambda: self._run_agent_sync(
+                ctx=ctx,
+                butler_toolset_names=butler_toolset_names,
+                on_thinking=_on_thinking,
+                on_stream_delta=_on_stream_delta,
+                on_tool_start=_on_tool_start,
+                on_tool_complete=_on_tool_complete,
+                on_done=_post_done,
+                on_error=_post_error,
+                usage_holder=usage_holder,
             )
+        )
+        try:
+            await _agent_task
         except Exception as exc:
             # Executor itself threw — classify and emit
             problem_uri, status, retryable = _classify_exception(exc)

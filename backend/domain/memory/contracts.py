@@ -9,6 +9,7 @@ class ContextPack(BaseModel):
     relevant_memories: list
     preferences: list
     entities: list
+    summary_anchor: Optional[str] = None
     context_token_budget: int
 
 class MemoryServiceContract(DomainService):

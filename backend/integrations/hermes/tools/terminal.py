@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # The terminal tool polls this during command execution so it can kill
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
-from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
+from integrations.hermes.tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
@@ -63,8 +63,8 @@ from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — r
 # =============================================================================
 
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
-from tools.environments.singularity import _get_scratch_dir
-from tools.tool_backend_helpers import (
+from integrations.hermes.tools.environments.singularity import _get_scratch_dir
+from integrations.hermes.tools.tool_backend_helpers import (
     coerce_modal_mode,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,
@@ -136,7 +136,7 @@ def set_approval_callback(cb):
 # =============================================================================
 
 # Dangerous command detection + approval now consolidated in tools/approval.py
-from tools.approval import (
+from integrations.hermes.tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
 )
 
@@ -499,13 +499,13 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 
 
 # Environment classes now live in tools/environments/
-from tools.environments.local import LocalEnvironment as _LocalEnvironment
-from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
-from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
-from tools.environments.docker import DockerEnvironment as _DockerEnvironment
-from tools.environments.modal import ModalEnvironment as _ModalEnvironment
-from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
-from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+from integrations.hermes.tools.environments.local import LocalEnvironment as _LocalEnvironment
+from integrations.hermes.tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
+from integrations.hermes.tools.environments.ssh import SSHEnvironment as _SSHEnvironment
+from integrations.hermes.tools.environments.docker import DockerEnvironment as _DockerEnvironment
+from integrations.hermes.tools.environments.modal import ModalEnvironment as _ModalEnvironment
+from integrations.hermes.tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
+from integrations.hermes.tools.managed_tool_gateway import is_managed_tool_gateway_ready
 
 
 # Tool description for LLM
@@ -716,16 +716,20 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
-        return _DockerEnvironment(
-            image=image, cwd=cwd, timeout=timeout,
-            cpu=cpu, memory=memory, disk=disk,
-            persistent_filesystem=persistent, task_id=task_id,
-            volumes=volumes,
-            host_cwd=host_cwd,
-            auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
-            forward_env=docker_forward_env,
-            env=docker_env,
-        )
+        try:
+            return _DockerEnvironment(
+                image=image, cwd=cwd, timeout=timeout,
+                cpu=cpu, memory=memory, disk=disk,
+                persistent_filesystem=persistent, task_id=task_id,
+                volumes=volumes,
+                host_cwd=host_cwd,
+                auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
+                forward_env=docker_forward_env,
+                env=docker_env,
+            )
+        except Exception as e:
+            logger.warning("docker_env_creation_failed_falling_back_to_local", error=str(e))
+            return _LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "singularity":
         return _SingularityEnvironment(
@@ -788,7 +792,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     elif env_type == "daytona":
         # Lazy import so daytona SDK is only required when backend is selected.
-        from tools.environments.daytona import DaytonaEnvironment as _DaytonaEnvironment
+        from integrations.hermes.tools.environments.daytona import DaytonaEnvironment as _DaytonaEnvironment
         return _DaytonaEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=memory, disk=disk,
@@ -818,7 +822,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # Check the process registry -- skip cleanup for sandboxes with active
     # background processes (their _last_activity gets refreshed to keep them alive).
     try:
-        from tools.process_registry import process_registry
+        from integrations.hermes.tools.process_registry import process_registry
         for task_id in list(_last_activity.keys()):
             if process_registry.has_active_processes(task_id):
                 _last_activity[task_id] = current_time  # Keep sandbox alive
@@ -850,7 +854,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         # Invalidate stale file_ops cache entry (Bug fix: prevents
         # ShellFileOperations from referencing a dead sandbox)
         try:
-            from tools.file_tools import clear_file_ops_cache
+            from integrations.hermes.tools.file_tools import clear_file_ops_cache
             clear_file_ops_cache(task_id)
         except ImportError:
             pass
@@ -978,7 +982,7 @@ def cleanup_vm(task_id: str):
 
     # Invalidate stale file_ops cache entry
     try:
-        from tools.file_tools import clear_file_ops_cache
+        from integrations.hermes.tools.file_tools import clear_file_ops_cache
         clear_file_ops_cache(task_id)
     except ImportError:
         pass
@@ -1348,8 +1352,8 @@ def terminal_tool(
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
-            from tools.approval import get_current_session_key
-            from tools.process_registry import process_registry
+            from integrations.hermes.tools.approval import get_current_session_key
+            from integrations.hermes.tools.process_registry import process_registry
 
             session_key = get_current_session_key(default="")
             effective_cwd = workdir or cwd
@@ -1497,7 +1501,7 @@ def terminal_tool(
 
             # Strip ANSI escape sequences so the model never sees terminal
             # formatting — prevents it from copying escapes into file writes.
-            from tools.ansi_strip import strip_ansi
+            from integrations.hermes.tools.ansi_strip import strip_ansi
             output = strip_ansi(output)
 
             # Redact secrets from command output (catches env/printenv leaking keys)
@@ -1543,7 +1547,7 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "docker":
-            from tools.environments.docker import find_docker
+            from integrations.hermes.tools.environments.docker import find_docker
             docker = find_docker()
             if not docker:
                 logger.error("Docker executable not found in PATH or common install locations")
@@ -1684,7 +1688,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from integrations.hermes.tools.registry import registry
 
 TERMINAL_SCHEMA = {
     "name": "terminal",

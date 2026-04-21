@@ -1,4 +1,4 @@
-"""MCPBridgeAdapter — Phase 6d.
+"""MCPBridgeAdapter — Phase 8b Hardened.
 
 Model Context Protocol (MCP) bridge. Exposes Butler's tool registry
 as an MCP server and allows Butler to consume external MCP tool servers
@@ -17,28 +17,28 @@ Two directions:
 Sovereignty rules:
   - MCPBridgeAdapter is a pure adapter. No business logic here.
   - All tool calls route through ButlerToolDispatch (policy gate).
-    MCP servers never bypass ButlerToolPolicyGate.
-  - Remote MCP tools get risk_tier="T2_medium" by default unless
-    explicitly declared otherwise in the server manifest.
+  - Remote MCP tools get risk_tier="T2_medium" by default.
   - MCP payloads are converted to ButlerToolSpec before dispatch.
-  - No MCP session state is stored in memory beyond the request scope.
+  - SSRF protection enforced on all outbound HTTP calls.
+  - Stdio transport uses asynchronous process execution.
 
 MCP Protocol reference:
   https://spec.modelcontextprotocol.io/specification/
-
-Protocol version: 2025-03-26 (draft)
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import structlog
+from core.network import safe_request
+from domain.tools.contracts import ToolsServiceContract
 
 logger = structlog.get_logger(__name__)
 
@@ -86,15 +86,8 @@ class MCPCallResult:
 # ── MCP Bridge Adapter ────────────────────────────────────────────────────────
 
 class MCPBridgeAdapter:
-    """Butler ↔ MCP protocol adapter.
+    """Butler ↔ MCP protocol adapter."""
 
-    Usage:
-        bridge = MCPBridgeAdapter()
-        bridge.register_server(config)                    # inbound registration
-        result = await bridge.call_tool("server_id", "tool_name", params)
-    """
-
-    # MCP JSON-RPC method names
     _METHOD_LIST_TOOLS = "tools/list"
     _METHOD_CALL_TOOL  = "tools/call"
     _METHOD_INITIALIZE = "initialize"
@@ -102,8 +95,9 @@ class MCPBridgeAdapter:
     def __init__(self) -> None:
         self._servers: dict[str, MCPServerConfig] = {}
         self._tool_index: dict[str, MCPTool] = {}  # "server_id::tool_name" → MCPTool
+        self._native_service: ToolsServiceContract | None = None
 
-    # ── Server registration ────────────────────────────────────────────────────
+    # ── Server registration ───────────────────────────────────────────────────
 
     def register_server(self, config: MCPServerConfig) -> None:
         """Register an external MCP server and index its tools."""
@@ -118,36 +112,56 @@ class MCPBridgeAdapter:
             transport=config.transport,
         )
 
-    def register_tool(self, server_id: str, tool: MCPTool) -> None:
-        """Register a single tool from a server (e.g. after discovery)."""
-        key = f"{server_id}::{tool.name}"
-        self._tool_index[key] = tool
-        if server_id in self._servers:
-            self._servers[server_id].tools.append(tool)
+    def load_manifest_from_file(self, path: str) -> None:
+        """Bootstrap server configurations from an MCP manifest JSON file."""
+        if not os.path.exists(path):
+            logger.info("mcp_manifest_not_found", path=path)
+            return
 
-    def deregister_server(self, server_id: str) -> int:
-        """Remove a server and all its tools. Returns count removed."""
-        if server_id not in self._servers:
-            return 0
-        # Remove tool index entries
-        keys = [k for k in self._tool_index if k.startswith(f"{server_id}::")]
-        for k in keys:
-            del self._tool_index[k]
-        del self._servers[server_id]
-        logger.info("mcp_server_deregistered", server_id=server_id, tools_removed=len(keys))
-        return len(keys)
+        try:
+            if os.path.getsize(path) == 0:
+                logger.info("mcp_manifest_empty", path=path)
+                return
 
-    # ── Tool resolution ────────────────────────────────────────────────────────
+            with open(path, "r") as f:
+                manifest = json.load(f)
+                mcp_config = manifest.get("mcpServers", {})
+                for server_id, cfg in mcp_config.items():
+                    command = cfg.get("command")
+                    args = cfg.get("args", [])
+                    url = cfg.get("url")
+                    
+                    if command:
+                        transport = "stdio"
+                        full_command = [command] + args
+                    elif url:
+                        transport = "http"
+                        full_command = None
+                    else:
+                        continue
+
+                    server_cfg = MCPServerConfig(
+                        server_id=server_id,
+                        name=server_id,
+                        transport=transport,
+                        command=full_command,
+                        url=url,
+                        env=cfg.get("env", {}),
+                    )
+                    self.register_server(server_cfg)
+            logger.info("mcp_manifest_loaded", path=path, servers=len(self._servers))
+        except Exception as e:
+            logger.error("mcp_manifest_error", path=path, error=str(e))
+
+    def register_native_service(self, service: ToolsServiceContract) -> None:
+        """Register Butler's own tool service to expose native tools via MCP."""
+        self._native_service = service
+        logger.info("mcp_native_service_registered")
+
+    # ── Tool resolution ───────────────────────────────────────────────────────
 
     def find_tool(self, server_id: str, tool_name: str) -> MCPTool | None:
         return self._tool_index.get(f"{server_id}::{tool_name}")
-
-    def find_tool_any_server(self, tool_name: str) -> MCPTool | None:
-        """Find the first registered tool with this name across all servers."""
-        for key, tool in self._tool_index.items():
-            if tool.name == tool_name:
-                return tool
-        return None
 
     def list_registered_tools(self, server_id: str | None = None) -> list[dict]:
         tools = self._tool_index.values()
@@ -164,212 +178,165 @@ class MCPBridgeAdapter:
             for t in tools
         ]
 
-    def list_servers(self) -> list[dict]:
-        return [
-            {
-                "server_id": s.server_id,
-                "name": s.name,
-                "transport": s.transport,
-                "enabled": s.enabled,
-                "tool_count": len(s.tools),
-            }
-            for s in self._servers.values()
-        ]
-
-    # ── MCP tool call dispatch ─────────────────────────────────────────────────
+    # ── MCP tool call dispatch ────────────────────────────────────────────────
 
     async def call_tool(
         self,
         server_id: str,
         tool_name: str,
         params: dict,
+        account_id: str | None = None,
     ) -> MCPCallResult:
-        """Dispatch a tool call to an MCP server.
-
-        In production, this routes over stdio or HTTP based on the server's
-        transport config. For Phase 6d, we implement the dispatch protocol
-        with a simulated backend that validates the MCP message format.
-        Phase 7 wires in real subprocess/HTTP transports.
-        """
+        """Dispatch a tool call to an MCP server or native service."""
         start = time.monotonic()
         call_id = str(uuid.uuid4())
 
+        # Native dispatch (Butler-as-server)
+        if server_id == "butler_native":
+            return await self._dispatch_native(tool_name, params, account_id, start, call_id)
+
+        # External dispatch (Butler-as-client)
         tool = self.find_tool(server_id, tool_name)
         if tool is None:
             return MCPCallResult(
-                tool_name=tool_name,
-                server_id=server_id,
-                success=False,
-                content=[],
-                error=f"Tool '{tool_name}' not found on server '{server_id}'",
-                call_id=call_id,
+                tool_name=tool_name, server_id=server_id, success=False, content=[],
+                error=f"Tool '{tool_name}' not found on server '{server_id}'", call_id=call_id
             )
 
         config = self._servers.get(server_id)
         if not config or not config.enabled:
             return MCPCallResult(
-                tool_name=tool_name,
-                server_id=server_id,
-                success=False,
-                content=[],
-                error=f"Server '{server_id}' not registered or disabled",
-                call_id=call_id,
+                tool_name=tool_name, server_id=server_id, success=False, content=[],
+                error=f"Server '{server_id}' not registered or disabled", call_id=call_id
             )
 
         # Build MCP JSON-RPC request
-        mcp_request = self._build_call_request(tool_name, params, call_id)
+        request = {
+            "jsonrpc": "2.0",
+            "id": call_id,
+            "method": self._METHOD_CALL_TOOL,
+            "params": {"name": tool_name, "arguments": params},
+        }
 
-        # Dispatch over transport
         try:
-            raw_response = await self._dispatch(config, mcp_request, tool.timeout_s)
+            raw_response = await self._dispatch(config, request, tool.timeout_s)
             duration_ms = (time.monotonic() - start) * 1000
 
             if "error" in raw_response:
                 return MCPCallResult(
-                    tool_name=tool_name,
-                    server_id=server_id,
-                    success=False,
-                    content=[],
-                    error=str(raw_response["error"]),
-                    duration_ms=duration_ms,
-                    call_id=call_id,
+                    tool_name=tool_name, server_id=server_id, success=False, content=[],
+                    error=str(raw_response["error"]), duration_ms=duration_ms, call_id=call_id
                 )
 
             content = raw_response.get("result", {}).get("content", [])
             return MCPCallResult(
-                tool_name=tool_name,
-                server_id=server_id,
-                success=True,
-                content=content,
-                duration_ms=duration_ms,
-                call_id=call_id,
+                tool_name=tool_name, server_id=server_id, success=True, content=content,
+                duration_ms=duration_ms, call_id=call_id
             )
 
-        except asyncio.TimeoutError:
+        except Exception as e:
             duration_ms = (time.monotonic() - start) * 1000
-            logger.warning(
-                "mcp_tool_timeout",
-                server_id=server_id,
-                tool_name=tool_name,
-                timeout_s=tool.timeout_s,
-            )
             return MCPCallResult(
-                tool_name=tool_name,
-                server_id=server_id,
-                success=False,
-                content=[],
-                error=f"Timeout after {tool.timeout_s}s",
-                duration_ms=duration_ms,
-                call_id=call_id,
+                tool_name=tool_name, server_id=server_id, success=False, content=[],
+                error=str(e), duration_ms=duration_ms, call_id=call_id
             )
 
-    # ── Butler-as-MCP-server (outbound) ───────────────────────────────────────
-
-    def build_tools_list_response(self, butler_tools: list[dict]) -> dict:
-        """Convert Butler tool definitions to MCP tools/list response.
-
-        Used when Butler acts as an MCP server for external clients.
-        """
-        mcp_tools = []
-        for t in butler_tools:
-            mcp_tools.append({
-                "name": t.get("name", ""),
-                "description": t.get("description", ""),
-                "inputSchema": t.get("input_schema", {"type": "object", "properties": {}}),
-            })
-        return {
-            "jsonrpc": "2.0",
-            "result": {"tools": mcp_tools},
-        }
-
-    def parse_tool_call_request(self, mcp_request: dict) -> tuple[str, dict] | None:
-        """Parse an inbound MCP tools/call request.
-
-        Returns (tool_name, params) or None if malformed.
-        """
-        if mcp_request.get("method") != self._METHOD_CALL_TOOL:
-            return None
-        params = mcp_request.get("params", {})
-        tool_name = params.get("name")
-        arguments = params.get("arguments", {})
-        if not tool_name:
-            return None
-        return tool_name, arguments
-
-    # ── Protocol helpers ───────────────────────────────────────────────────────
-
-    @staticmethod
-    def _build_call_request(tool_name: str, params: dict, call_id: str) -> dict:
-        return {
-            "jsonrpc": "2.0",
-            "id": call_id,
-            "method": MCPBridgeAdapter._METHOD_CALL_TOOL,
-            "params": {
-                "name": tool_name,
-                "arguments": params,
-            },
-        }
-
-    async def _dispatch(
-        self,
-        config: MCPServerConfig,
-        request: dict,
-        timeout_s: int,
-    ) -> dict:
-        """Route an MCP request to the server over its transport.
-
-        Phase 6d: simulated dispatch (logs + returns stub).
-        Phase 7:  implement stdio subprocess + HTTP transports.
-        """
-        logger.debug(
-            "mcp_dispatch",
-            server_id=config.server_id,
-            transport=config.transport,
-            method=request.get("method"),
-        )
-
+    async def _dispatch(self, config: MCPServerConfig, request: dict, timeout_s: int) -> dict:
+        """Route an MCP request to the server over its transport."""
         match config.transport:
             case "http" | "sse":
                 return await self._dispatch_http(config, request, timeout_s)
             case "stdio":
                 return await self._dispatch_stdio(config, request, timeout_s)
             case _:
-                return {"result": {"content": [{"type": "text", "text": "[simulated mcp response]"}]}}
+                return {"error": {"code": -32000, "message": f"Transport '{config.transport}' not implemented"}}
 
     async def _dispatch_http(self, config: MCPServerConfig, request: dict, timeout_s: int) -> dict:
-        """HTTP/SSE MCP transport — Phase 7 will implement real HTTP calls."""
+        """HTTP MCP transport with SSRF protection."""
         if not config.url:
             return {"error": {"code": -32000, "message": "No URL configured for HTTP transport"}}
+        
         try:
-            import httpx
-            async with httpx.AsyncClient(timeout=timeout_s) as client:
-                resp = await client.post(
-                    f"{config.url}/mcp",
-                    json=request,
-                    headers={"Content-Type": "application/json"},
-                )
-                return resp.json()
-        except ImportError:
-            return {"result": {"content": [{"type": "text", "text": "[httpx not available]"}]}}
-        except Exception as exc:
-            return {"error": {"code": -32000, "message": str(exc)}}
+            resp = await safe_request(
+                "POST",
+                f"{config.url}/mcp",
+                json=request,
+                headers={"Content-Type": "application/json"},
+                timeout=timeout_s
+            )
+            return resp.json()
+        except Exception as e:
+            return {"error": {"code": -32000, "message": str(e)}}
 
     async def _dispatch_stdio(self, config: MCPServerConfig, request: dict, timeout_s: int) -> dict:
-        """Stdio subprocess MCP transport — Phase 7 will spawn real subprocess."""
+        """Stdio subprocess MCP transport with JSON-RPC piping."""
         if not config.command:
             return {"error": {"code": -32000, "message": "No command configured for stdio transport"}}
-        # Simulated — Phase 7 replaces with asyncio.create_subprocess_exec
-        logger.debug("mcp_stdio_simulated", command=config.command[0] if config.command else "?")
-        return {"result": {"content": [{"type": "text", "text": "[stdio simulated]"}]}}
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *config.command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, **config.env},
+            )
+
+            payload = json.dumps(request) + "\n"
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(input=payload.encode()),
+                timeout=timeout_s
+            )
+
+            if process.returncode != 0:
+                err_msg = stderr.decode().strip() or f"Process exited with {process.returncode}"
+                return {"error": {"code": -32000, "message": f"MCP stdio error: {err_msg}"}}
+
+            return json.loads(stdout.decode().strip())
+
+        except asyncio.TimeoutError:
+            return {"error": {"code": -32000, "message": "MCP stdio timeout"}}
+        except Exception as e:
+            return {"error": {"code": -32000, "message": str(e)}}
+
+    async def _dispatch_native(
+        self, tool_name: str, params: dict, account_id: str | None, start: float, call_id: str
+    ) -> MCPCallResult:
+        """Dispatch call to Butler's native ToolsService."""
+        if not self._native_service:
+            return MCPCallResult(
+                tool_name=tool_name, server_id="butler_native", success=False, content=[],
+                error="Native tool service not registered", call_id=call_id
+            )
+
+        try:
+            # Route through the authenticated execute flow
+            result = await self._native_service.execute(
+                tool_name=tool_name,
+                params=params,
+                account_id=account_id or "system", # Fallback for system-level triggers
+            )
+            duration_ms = (time.monotonic() - start) * 1000
+            
+            # Convert ButlerToolResult to MCP content
+            content = [{"type": "text", "text": str(result.data)}]
+            return MCPCallResult(
+                tool_name=tool_name, server_id="butler_native", success=result.success, content=content,
+                duration_ms=duration_ms, call_id=call_id
+            )
+        except Exception as e:
+            duration_ms = (time.monotonic() - start) * 1000
+            return MCPCallResult(
+                tool_name=tool_name, server_id="butler_native", success=False, content=[],
+                error=str(e), duration_ms=duration_ms, call_id=call_id
+            )
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
 
 _bridge: MCPBridgeAdapter | None = None
 
-
 def get_mcp_bridge() -> MCPBridgeAdapter:
-    """Return the global MCPBridgeAdapter instance (lazy-init)."""
     global _bridge  # noqa: PLW0603
     if _bridge is None:
         _bridge = MCPBridgeAdapter()

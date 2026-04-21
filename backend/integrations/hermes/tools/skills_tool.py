@@ -54,7 +54,7 @@ Available tools:
 - skill_view: Load full skill content (progressive disclosure tier 2-3)
 
 Usage:
-    from tools.skills_tool import skills_list, skill_view, check_skills_requirements
+    from integrations.hermes.tools.skills_tool import skills_list, skill_view, check_skills_requirements
 
     # List all skills (returns metadata only - token efficient)
     result = skills_list()
@@ -76,7 +76,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
-from tools.registry import registry, tool_error
+from integrations.hermes.tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -1011,7 +1011,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
 
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
-            from tools.path_security import validate_within_dir, has_traversal_component
+            from integrations.hermes.tools.path_security import validate_within_dir, has_traversal_component
 
             # Security: Prevent path traversal attacks
             if has_traversal_component(file_path):
@@ -1224,7 +1224,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         ]
         if available_env_names:
             try:
-                from tools.env_passthrough import register_env_passthrough
+                from integrations.hermes.tools.env_passthrough import register_env_passthrough
 
                 register_env_passthrough(available_env_names)
             except Exception:
@@ -1243,7 +1243,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         missing_cred_files: list = []
         if required_cred_files_raw:
             try:
-                from tools.credential_files import register_credential_files
+                from integrations.hermes.tools.credential_files import register_credential_files
 
                 missing_cred_files = register_credential_files(required_cred_files_raw)
                 if missing_cred_files:

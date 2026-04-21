@@ -106,7 +106,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         platform_name, rest = deliver.split(":", 1)
         platform_key = platform_name.lower()
 
-        from tools.send_message_tool import _parse_target_ref
+        from integrations.hermes.tools.send_message_tool import _parse_target_ref
 
         parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(platform_key, rest)
         if is_explicit:
@@ -230,7 +230,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             job["id"], platform_name, chat_id, thread_id,
         )
 
-    from tools.send_message_tool import _send_to_platform
+    from integrations.hermes.tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
     platform_map = {
@@ -534,7 +534,7 @@ def _build_job_prompt(job: dict) -> str:
     if not skill_names:
         return prompt
 
-    from tools.skills_tool import skill_view
+    from integrations.hermes.tools.skills_tool import skill_view
 
     parts = []
     skipped: list[str] = []

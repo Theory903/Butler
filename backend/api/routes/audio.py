@@ -1,19 +1,19 @@
 import base64
 import json
 import logging
-from typing import Optional, List
+from typing import Any, Optional, List
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException
 from pydantic import BaseModel, Field
 
-from services.audio import AudioService
 from services.audio.models import TranscribeResult, MeetingTranscript, TTSResult, MusicMatch
-from services.audio.errors import AudioError
 
 logger = logging.getLogger(__name__)
 
 # ─── Dependencies ───
 
-async def get_audio_service() -> AudioService:
+async def get_audio_service() -> Any:
+    from services.audio import AudioService
+
     svc = AudioService()
     try:
         yield svc
@@ -51,12 +51,12 @@ class MusicIDRequest(BaseModel):
 # ─── REST Endpoints ───
 
 @router.post("/stt", response_model=TranscribeResult)
-async def transcribe(req: STTRequest, svc: AudioService = Depends(get_audio_service)):
+async def transcribe(req: STTRequest, svc: Any = Depends(get_audio_service)):
     """Convert speech to text with dual-strategy pass."""
     return await svc.transcribe(req.audio_data, req.language, req.quality_mode)
 
 @router.post("/meeting", response_model=MeetingTranscript)
-async def process_meeting(req: MeetingRequest, svc: AudioService = Depends(get_audio_service)):
+async def process_meeting(req: MeetingRequest, svc: Any = Depends(get_audio_service)):
     """Process a meeting audio file with diarization and multi-speaker transcription."""
     return await svc.process_meeting(
         req.audio_data, 
@@ -66,7 +66,7 @@ async def process_meeting(req: MeetingRequest, svc: AudioService = Depends(get_a
     )
 
 @router.post("/enroll")
-async def enroll_voice(req: EnrollmentRequest, svc: AudioService = Depends(get_audio_service)):
+async def enroll_voice(req: EnrollmentRequest, svc: Any = Depends(get_audio_service)):
     """Enrolls a user's voice for future speaker identification."""
     success = await svc.enroll_user_voice(req.account_id, req.audio_data)
     if not success:
@@ -74,7 +74,7 @@ async def enroll_voice(req: EnrollmentRequest, svc: AudioService = Depends(get_a
     return {"status": "success", "message": f"Voice enrolled for account {req.account_id}"}
 
 @router.post("/tts")
-async def synthesize(req: TTSRequest, svc: AudioService = Depends(get_audio_service)):
+async def synthesize(req: TTSRequest, svc: Any = Depends(get_audio_service)):
     """Synthesize text to speech with optional voice cloning."""
     result = await svc.synthesize(
         req.text, 
@@ -90,14 +90,14 @@ async def synthesize(req: TTSRequest, svc: AudioService = Depends(get_audio_serv
     }
 
 @router.post("/music/identify", response_model=MusicMatch)
-async def identify_music(req: MusicIDRequest, svc: AudioService = Depends(get_audio_service)):
+async def identify_music(req: MusicIDRequest, svc: Any = Depends(get_audio_service)):
     """Identify music from audio fingerprint."""
     return await svc.identify_music(req.audio_data)
 
 # ─── Streaming WebSocket ───
 
 @router.websocket("/stream")
-async def audio_stream(websocket: WebSocket, svc: AudioService = Depends(get_audio_service)):
+async def audio_stream(websocket: WebSocket, svc: Any = Depends(get_audio_service)):
     """
     WebSocket endpoint for real-time audio streaming.
     Protocol:
@@ -110,6 +110,8 @@ async def audio_stream(websocket: WebSocket, svc: AudioService = Depends(get_aud
     
     # In a prod scenario, we use a buffer and VAD for endpointing
     # This is a simplified version of the streaming logic
+    from services.audio.errors import AudioError
+
     try:
         while True:
             data = await websocket.receive_text()

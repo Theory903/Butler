@@ -435,7 +435,7 @@ def _get_or_create_env(task_id: str):
     terminal and file tools use, creating one if it doesn't exist yet.
     Returns ``(env, env_type)`` tuple.
     """
-    from tools.terminal_tool import (
+    from integrations.hermes.tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
@@ -855,7 +855,7 @@ def _execute_remote(
         )
 
     # Strip ANSI escape sequences
-    from tools.ansi_strip import strip_ansi
+    from integrations.hermes.tools.ansi_strip import strip_ansi
     stdout_text = strip_ansi(stdout_text)
 
     # Redact secrets
@@ -917,7 +917,7 @@ def execute_code(
         return tool_error("No code provided.")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
-    from tools.terminal_tool import _get_env_config
+    from integrations.hermes.tools.terminal_tool import _get_env_config
     env_type = _get_env_config()["env_type"]
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)
@@ -925,7 +925,7 @@ def execute_code(
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
     # Import per-thread interrupt check (cooperative cancellation)
-    from tools.interrupt import is_interrupted as _is_interrupted
+    from integrations.hermes.tools.interrupt import is_interrupted as _is_interrupted
 
     # Resolve config
     _cfg = _load_config()
@@ -992,7 +992,7 @@ def execute_code(
         _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                               "PASSWD", "AUTH")
         try:
-            from tools.env_passthrough import is_env_passthrough as _is_passthrough
+            from integrations.hermes.tools.env_passthrough import is_env_passthrough as _is_passthrough
         except Exception:
             _is_passthrough = lambda _: False  # noqa: E731
         child_env = {}
@@ -1154,7 +1154,7 @@ def execute_code(
 
         # Strip ANSI escape sequences so the model never sees terminal
         # formatting — prevents it from copying escapes into file writes.
-        from tools.ansi_strip import strip_ansi
+        from integrations.hermes.tools.ansi_strip import strip_ansi
         stdout_text = strip_ansi(stdout_text)
         stderr_text = strip_ansi(stderr_text)
 
@@ -1361,7 +1361,7 @@ EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from integrations.hermes.tools.registry import registry, tool_error
 
 registry.register(
     name="execute_code",

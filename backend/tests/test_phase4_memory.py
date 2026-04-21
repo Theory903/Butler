@@ -144,6 +144,47 @@ class TestButlerMemoryStore:
         assert StorageTier.COLD in result.tiers_written
         cold.index.assert_called_once()
 
+    @patch("services.ml.embeddings.EmbeddingService.embed", new_callable=AsyncMock)
+    def test_postgres_backend_warm_skips_qdrant(self, mock_embed):
+        mock_embed.return_value = [0.1] * 1536
+        store = _make_memory_store()
+
+        from infrastructure.config import settings
+        previous_backend = settings.VECTOR_STORE_BACKEND
+        settings.VECTOR_STORE_BACKEND = "postgres"
+
+        class BombQdrantClient:
+            @property
+            def client(self):
+                raise AssertionError("qdrant client should not be used for postgres vector backend")
+
+        try:
+            with patch("services.memory.memory_store.qdrant_client", BombQdrantClient()):
+                result = asyncio.run(store._write_warm(_req(memory_type="episode")))
+        finally:
+            settings.VECTOR_STORE_BACKEND = previous_backend
+
+        assert result is None
+
+    @patch("services.ml.embeddings.EmbeddingService.embed", new_callable=AsyncMock)
+    def test_postgres_backend_struct_persists_embedding(self, mock_embed):
+        vector = [0.1] * 1536
+        mock_embed.return_value = vector
+        db = _make_db()
+        store = _make_memory_store(db=db)
+
+        from infrastructure.config import settings
+        previous_backend = settings.VECTOR_STORE_BACKEND
+        settings.VECTOR_STORE_BACKEND = "postgres"
+
+        try:
+            asyncio.run(store._write_struct(_req(memory_type="episode", content="vector me")))
+        finally:
+            settings.VECTOR_STORE_BACKEND = previous_backend
+
+        entry = db.add.call_args.args[0]
+        assert entry.embedding == vector
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 16: ButlerSessionStore

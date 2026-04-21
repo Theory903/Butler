@@ -9,6 +9,8 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from infrastructure.config import settings
+
 # Load all models so Alembic can detect them for autogenerate
 from infrastructure.database import Base  # noqa: F401
 import domain.auth.models  # noqa: F401
@@ -16,10 +18,10 @@ import domain.memory.models  # noqa: F401
 import domain.memory.notebook_models  # noqa: F401
 
 # -- future phases will import here:
-# import domain.orchestrator.models
-# import domain.tools.models
-# import domain.communication.models
-# import domain.device.models
+import domain.orchestrator.models  # noqa: F401
+import domain.tools.models  # noqa: F401
+import domain.communication.models  # noqa: F401
+import domain.device.models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
@@ -54,6 +56,11 @@ def do_run_migrations(connection) -> None:
 
 async def run_async_migrations() -> None:
     """Run migrations using the async engine."""
+    # Override URL with environment settings if available
+    url = settings.DATABASE_URL
+    # Alembic/SQLAlchemy configuration expects '%' to be escaped as '%%'
+    config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

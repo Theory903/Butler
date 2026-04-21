@@ -1,17 +1,27 @@
 {
-  "include": [
-    "backend"
-  ],
+  "venvPath": "backend",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+
+  "include": ["backend"],
   "exclude": [
     "**/.venv",
-    "**/__pycache__"
+    "**/__pycache__",
+    "**/node_modules",
+    "**/*.egg-info",
+    "backend/backend",
   ],
+
   "executionEnvironments": [
     {
-      "root": ".",
-      "extraPaths": [
-        "."
-      ]
-    }
-  ]
+      "root": "backend",
+      "extraPaths": ["backend", "."],
+    },
+  ],
+
+  "reportMissingImports": "warning",
+  "reportMissingModuleSource": "none",
+  "reportMissingTypeStubs": false,
+  "reportGeneralTypeIssues": "warning",
 }

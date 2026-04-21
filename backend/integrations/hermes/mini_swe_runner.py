@@ -119,15 +119,15 @@ def create_environment(
         Environment instance with execute() and cleanup() methods
     """
     if env_type == "local":
-        from tools.environments.local import LocalEnvironment
+        from integrations.hermes.tools.environments.local import LocalEnvironment
         return LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
-        from tools.environments.docker import DockerEnvironment
+        from integrations.hermes.tools.environments.docker import DockerEnvironment
         return DockerEnvironment(image=image, cwd=cwd, timeout=timeout, **kwargs)
     
     elif env_type == "modal":
-        from tools.environments.modal import ModalEnvironment
+        from integrations.hermes.tools.environments.modal import ModalEnvironment
         return ModalEnvironment(image=image, cwd=cwd, timeout=timeout, **kwargs)
     
     else:
@@ -200,7 +200,7 @@ class MiniSWERunner:
             }
             self.client = OpenAI(**client_kwargs)
         else:
-            from agent.auxiliary_client import resolve_provider_client
+            from integrations.hermes.agent.auxiliary_client import resolve_provider_client
             self.client, _ = resolve_provider_client("openrouter", model=model)
             if self.client is None:
                 # Fallback: try auto-detection

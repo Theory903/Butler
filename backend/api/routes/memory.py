@@ -17,6 +17,28 @@ from core.deps import get_db, get_cache as get_redis, get_memory_service
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
+
+def _serialize_memory_entry(entry: Any) -> dict[str, Any]:
+    return {
+        "id": str(entry.id),
+        "account_id": str(entry.account_id),
+        "memory_type": entry.memory_type,
+        "content": entry.content,
+        "importance": entry.importance,
+        "confidence": entry.confidence,
+        "source": entry.source,
+        "session_id": entry.session_id,
+        "tags": entry.tags,
+        "status": entry.status.value if hasattr(entry.status, "value") else str(entry.status),
+        "metadata": entry.metadata_col,
+        "valid_from": entry.valid_from.isoformat() if entry.valid_from else None,
+        "valid_until": entry.valid_until.isoformat() if entry.valid_until else None,
+        "superseded_by": str(entry.superseded_by) if entry.superseded_by else None,
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
+        "last_accessed_at": entry.last_accessed_at.isoformat() if entry.last_accessed_at else None,
+        "access_count": entry.access_count,
+    }
+
 class StoreMemoryRequest(BaseModel):
     memory_type: str
     content: dict
@@ -38,7 +60,8 @@ async def store_memory(
     svc: MemoryService = Depends(get_memory_service)
 ):
     """Store a memory with automatic evolution and understanding."""
-    return await svc.store(str(account.account_id), req.memory_type, req.content, **req.kwargs)
+    entry = await svc.store(str(account.account_id), req.memory_type, req.content, **req.kwargs)
+    return _serialize_memory_entry(entry)
 
 @router.post("/recall")
 async def recall(
@@ -47,7 +70,8 @@ async def recall(
     svc: MemoryService = Depends(get_memory_service)
 ):
     """Hybrid weighted retrieval across all backends."""
-    return await svc.recall(str(account.account_id), req.query, req.memory_types, req.limit)
+    entries = await svc.recall(str(account.account_id), req.query, req.memory_types or [], req.limit)
+    return [_serialize_memory_entry(entry) for entry in entries]
 
 @router.post("/context", response_model=Any)
 async def get_context_pack(

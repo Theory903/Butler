@@ -99,7 +99,7 @@ class JWKSManager:
             payload,
             signing_key.private_pem,
             algorithm="RS256",
-            headers={"kid": signing_key.key_id},
+            headers={"kid": signing_key.key_id, "typ": "at+jwt"},
         )
 
     def sign_refresh_token(
@@ -136,7 +136,13 @@ class JWKSManager:
 
     # ── Token verification ─────────────────────────────────────────────────────
 
-    def verify_token(self, token: str) -> dict:
+    def verify_token(
+        self,
+        token: str,
+        audience: str | None = None,
+        issuer: str | None = None,
+        leeway: int = 0,
+    ) -> dict:
         """Verify JWT signature by looking up kid in JWKS pool."""
         header = jwt.get_unverified_header(token)
         kid = header.get("kid")
@@ -151,8 +157,9 @@ class JWKSManager:
             token,
             key.public_pem,
             algorithms=["RS256"],
-            issuer=self._issuer,
-            audience=self._audience,
+            issuer=issuer or self._issuer,
+            audience=audience or self._audience,
+            leeway=leeway,
             options={"require": ["exp", "iat", "sub", "jti", "iss", "aud"]},
         )
 

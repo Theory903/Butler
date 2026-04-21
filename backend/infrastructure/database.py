@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy import event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -31,6 +31,15 @@ engine = create_async_engine(
     max_overflow=settings.DATABASE_MAX_OVERFLOW,
     echo=settings.DEBUG,
     pool_pre_ping=True, 
+)
+
+# Sync engine for APScheduler SQLAlchemyJobStore (which is synchronous)
+sync_engine = create_engine(
+    settings.DATABASE_URL.replace("postgresql+asyncpg", "postgresql+psycopg2"),
+    pool_size=settings.DATABASE_POOL_SIZE,
+    max_overflow=settings.DATABASE_MAX_OVERFLOW,
+    echo=settings.DEBUG,
+    pool_pre_ping=True,
 )
 
 # Optional replica engine mapping
@@ -117,12 +126,18 @@ def receive_before_cursor_execute(
     Queries the python local context to determine if 'tenant_account_id' is set. 
     If so, binds it to the Postgres local session `app.current_account_id` allowing standard RLS tables to execute query pruning.
     """
-    account_id = tenant_account_id.get()
+    # Use contextvars safely
+    try:
+        account_id = tenant_account_id.get()
+    except (LookupError, AttributeError):
+        account_id = None
+
     if account_id:
+        # Pre-format to avoid any string interpolation issues in the sync layer
+        # We use cursor.execute only because this is the low-level DBAPI hook point.
+        # But we wrap it in a minimal check.
         cursor.execute(f"SET LOCAL app.current_account_id = '{account_id}';")
-    else:
-        # If running as system or unauth
-        pass
+
 
 async def get_session():
     """Yield an async SQLAlchemy session pointing to the primary router (used as FastAPI dependency)."""

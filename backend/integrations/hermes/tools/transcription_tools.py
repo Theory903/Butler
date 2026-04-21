@@ -16,7 +16,7 @@ Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac
 
 Usage::
 
-    from tools.transcription_tools import transcribe_audio
+    from integrations.hermes.tools.transcription_tools import transcribe_audio
 
     result = transcribe_audio("/path/to/audio.ogg")
     if result["success"]:
@@ -34,8 +34,8 @@ from typing import Optional, Dict, Any
 from urllib.parse import urljoin
 
 from utils import is_truthy_value
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
+from integrations.hermes.tools.managed_tool_gateway import resolve_managed_tool_gateway
+from integrations.hermes.tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
 
 logger = logging.getLogger(__name__)
 

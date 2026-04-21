@@ -1,11 +1,10 @@
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from domain.orchestrator.meeting_telemetry import meeting_telemetry
-from services.audio.service import AudioService
 from api.routes.gateway import _get_orchestrator
 from infrastructure.database import async_session_factory
 from core.deps import get_cache
@@ -14,13 +13,15 @@ import importlib
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/voice", tags=["voice", "realtime"])
 
-def get_audio_service() -> AudioService:
+def get_audio_service() -> Any:
+    from services.audio.service import AudioService
+
     return AudioService()
 
 @router.websocket("/stream")
 async def voice_stream(
     websocket: WebSocket,
-    audio_svc: AudioService = Depends(get_audio_service),
+    audio_svc: Any = Depends(get_audio_service),
     cache=Depends(get_cache)
 ):
     """
@@ -62,7 +63,7 @@ async def voice_stream(
                             meeting_telemetry.append_transcript(session_id, text, role="user")
                             
                             # 2. Re-route into Butler's Hermes Agent Backend
-                            from api.schemas.gateway import ChatRequest
+                            from api.routes.gateway import ChatRequest
                             req = ChatRequest(
                                 message=text,
                                 session_id=session_id

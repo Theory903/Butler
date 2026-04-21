@@ -53,15 +53,15 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
     get_async_text_auxiliary_client,
 )
-from tools.debug_helpers import DebugSession
-from tools.managed_tool_gateway import (
+from integrations.hermes.tools.debug_helpers import DebugSession
+from integrations.hermes.tools.managed_tool_gateway import (
     build_vendor_gateway_url,
     read_nous_access_token as _read_nous_access_token,
     resolve_managed_tool_gateway,
 )
-from tools.tool_backend_helpers import managed_nous_tools_enabled
-from tools.url_safety import is_safe_url
-from tools.website_policy import check_website_access
+from integrations.hermes.tools.tool_backend_helpers import managed_nous_tools_enabled
+from integrations.hermes.tools.url_safety import is_safe_url
+from integrations.hermes.tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
@@ -897,7 +897,7 @@ def _get_exa_client():
 
 def _exa_search(query: str, limit: int = 10) -> dict:
     """Search using the Exa SDK and return results as a dict."""
-    from tools.interrupt import is_interrupted
+    from integrations.hermes.tools.interrupt import is_interrupted
     if is_interrupted():
         return {"error": "Interrupted", "success": False}
 
@@ -929,7 +929,7 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
     Returns a list of result dicts matching the structure expected by the
     LLM post-processing pipeline (url, title, content, metadata).
     """
-    from tools.interrupt import is_interrupted
+    from integrations.hermes.tools.interrupt import is_interrupted
     if is_interrupted():
         return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
 
@@ -959,7 +959,7 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
 
 def _parallel_search(query: str, limit: int = 5) -> dict:
     """Search using the Parallel SDK and return results as a dict."""
-    from tools.interrupt import is_interrupted
+    from integrations.hermes.tools.interrupt import is_interrupted
     if is_interrupted():
         return {"error": "Interrupted", "success": False}
 
@@ -994,7 +994,7 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
     Returns a list of result dicts matching the structure expected by the
     LLM post-processing pipeline (url, title, content, metadata).
     """
-    from tools.interrupt import is_interrupted
+    from integrations.hermes.tools.interrupt import is_interrupted
     if is_interrupted():
         return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
 
@@ -1077,7 +1077,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     }
     
     try:
-        from tools.interrupt import is_interrupted
+        from integrations.hermes.tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
@@ -1267,7 +1267,7 @@ async def web_extract_tool(
                 # Batch scraping adds complexity without much benefit for small numbers of URLs
                 results: List[Dict[str, Any]] = []
 
-                from tools.interrupt import is_interrupted as _is_interrupted
+                from integrations.hermes.tools.interrupt import is_interrupted as _is_interrupted
                 for url in safe_urls:
                     if _is_interrupted():
                         results.append({"url": url, "error": "Interrupted", "title": ""})
@@ -1560,7 +1560,7 @@ async def web_crawl_tool(
                 return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
                     "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}]}, ensure_ascii=False)
 
-            from tools.interrupt import is_interrupted as _is_int
+            from integrations.hermes.tools.interrupt import is_interrupted as _is_int
             if _is_int():
                 return tool_error("Interrupted", success=False)
 
@@ -1671,7 +1671,7 @@ async def web_crawl_tool(
         if instructions:
             logger.info("Instructions parameter ignored (not supported in crawl API)")
         
-        from tools.interrupt import is_interrupted as _is_int
+        from integrations.hermes.tools.interrupt import is_interrupted as _is_int
         if _is_int():
             return tool_error("Interrupted", success=False)
 
@@ -2042,7 +2042,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
+from integrations.hermes.tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",

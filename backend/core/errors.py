@@ -151,3 +151,21 @@ class InternalError(Problem):
             status=500,
             detail=detail,
         )
+
+
+class ServiceUnavailableProblem(Problem):
+    def __init__(self, detail: str = "The service is currently under high load or maintenance.") -> None:
+        super().__init__(
+            type="service-unavailable",
+            title="Service Unavailable",
+            status=503,
+            detail=detail,
+        )
+
+
+class GatewayErrors:
+    @staticmethod
+    def unhealthy_node() -> ServiceUnavailableProblem:
+        return ServiceUnavailableProblem(
+            detail="This cluster node is currently unhealthy and cannot process requests safely."
+        )

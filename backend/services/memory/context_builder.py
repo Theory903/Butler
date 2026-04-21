@@ -18,24 +18,26 @@ class ContextBuilder:
         memories: List[ScoredMemory],
         preferences: List[ExplicitPreference],
         entities: List[Dict],
-        constraints: List[UserConstraint]
+        constraints: List[UserConstraint],
+        summary_anchor: str | None = None,
     ) -> ContextPack:
         """Assembles a ContextPack while staying within the token budget."""
         
         # NOTE: In a real implementation, we would use tiktoken or similar to count tokens.
         # Here we use estimated characters as a proxy for the Butler Phase 11 baseline.
         
-        # 1. Priorities (Highest to Lowest)
-        # 1. Constraints (System instructions)
-        # 2. History (Recent conversation)
-        # 3. Preferences (User identity)
-        # 4. Memories (Long-term facts)
-        
+        # Rule #170: Deterministic ordering of context items
+        processed_preferences = sorted(
+            [{"key": p.key, "value": p.value} for p in preferences],
+            key=lambda x: x["key"]
+        )
+
         return ContextPack(
             session_history=history,
             relevant_memories=[m.memory for m in memories],
-            preferences=[{"key": p.key, "value": p.value} for p in preferences],
+            preferences=processed_preferences,
             entities=entities,
+            summary_anchor=summary_anchor,
             context_token_budget=self._token_budget
         )
 
@@ -43,6 +45,10 @@ class ContextBuilder:
         """Helper to flatten the context pack into a string for the LLM system prompt."""
         sections = []
         
+        # Rule #170: Consistent ordering of sections
+        if pack.summary_anchor:
+            sections.append(f"PAST CONVERSATION SUMMARY (ANCHOR):\n{pack.summary_anchor}")
+
         if pack.preferences:
             pref_str = "\n".join([f"- {p['key']}: {p['value']}" for p in pack.preferences])
             sections.append(f"USER PREFERENCES:\n{pref_str}")

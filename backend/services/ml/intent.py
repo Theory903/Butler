@@ -36,16 +36,24 @@ class IntentClassifier(IntentClassifierContract):
         if self._runtime:
             return await self._llm_classify(text, fallback=t1_result)
         
-        # Fallback if no runtime
-        res = t1_result or IntentResult(
+        # Fallback if no runtime - use constructor to avoid frozen model error
+        if t1_result:
+            return IntentResult(
+                label=t1_result.label,
+                confidence=t1_result.confidence,
+                complexity=t1_result.complexity,
+                requires_tools=t1_result.requires_tools,
+                requires_memory=t1_result.requires_memory,
+                tier="T1",
+            )
+        return IntentResult(
             label="general",
             confidence=0.5,
             complexity="simple",
             requires_tools=False,
             requires_memory=True,
+            tier="T1",
         )
-        res.tier = "T1"
-        return res
     
     def _pattern_match(self, text: str) -> IntentResult | None:
         text_lower = text.lower().strip()
@@ -62,6 +70,7 @@ class IntentClassifier(IntentClassifierContract):
             "send": (["send", "email", "message", "text"], "tool_action", True),
             "schedule": (["schedule", "calendar", "meeting"], "tool_action", True),
             "remember": (["remember", "note", "save"], "memory_write", False),
+            "system_stats": (["system stats", "cpu", "disk usage", "system load", "health metrics"], "tool_action", True),
         }
         
         text_lower = text.lower()
@@ -88,7 +97,7 @@ class IntentClassifier(IntentClassifierContract):
             # Default to T2 (local) for intent refinement
             res = await self._runtime.execute_inference("local_reasoning_qwen3", {"prompt": prompt})
             if res["status"] == "success":
-                data = json.loads(res["generated_text"])
+                data = json.loads(res["content"])
                 return IntentResult(
                     label=data["label"],
                     confidence=data["confidence"],

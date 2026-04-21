@@ -8,8 +8,10 @@ from domain.ml.contracts import IntentClassifierContract, IntentResult
 
 
 class IntakeResult(BaseModel):
+    label: str
     intent: str
     confidence: float
+    complexity: str
     mode: str
     requires_tools: bool
     requires_memory: bool
@@ -52,8 +54,10 @@ class IntakeProcessor:
         mode = self._select_mode(intent)
 
         return IntakeResult(
+            label=intent.label,
             intent=intent.label,
             confidence=intent.confidence,
+            complexity=intent.complexity,
             mode=mode,
             requires_tools=intent.requires_tools,
             requires_memory=intent.requires_memory,

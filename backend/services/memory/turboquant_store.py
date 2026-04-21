@@ -27,13 +27,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import os
 import pickle
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 try:
     import torch

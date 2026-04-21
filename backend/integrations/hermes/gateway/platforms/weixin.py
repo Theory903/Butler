@@ -1593,7 +1593,7 @@ class WeixinAdapter(BasePlatformAdapter):
         return await self.send_document(chat_id, audio_path, caption=caption or "", metadata=metadata)
 
     async def _download_remote_media(self, url: str) -> str:
-        from tools.url_safety import is_safe_url
+        from integrations.hermes.tools.url_safety import is_safe_url
 
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")

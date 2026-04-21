@@ -1,61 +1,82 @@
-"""Butler Durable Executor — Phase 1B.
+"""Butler Durable Executor.
 
-Replaced stub logic with RuntimeKernel dispatch.
+Durable workflow execution for Butler DAG-based orchestration.
 
-What changed:
-  - _execute_step() no longer pattern-matches on step action strings.
-    The RuntimeKernel chooses the execution strategy per task; the executor
-    commits state transitions before and after.
-  - _build_response() stub is gone. Content comes from kernel output.
-  - Hermes is never imported here. Executor talks to RuntimeKernel only.
-  - ApprovalRequired, compensation, retry logic are preserved and hardened.
-
-The executor's job:
-  1. Create Task in PostgreSQL
-  2. Commit pending → executing before kernel runs
-  3. Call kernel.execute() or kernel.execute_streaming()
-  4. Normalize result through MemoryWritePolicy for any memory writes
-  5. Commit executing → completed/failed with full output
-  6. Cache hot state in Redis
-
-This file never knows whether Hermes, a workflow DAG, or a deterministic
-tool call ran. That is RuntimeKernel's domain.
+Responsibilities:
+- Lower plans into durable DAGs when needed
+- Step workflow state through WorkflowEngine
+- Execute ready nodes through RuntimeKernel
+- Persist node outcomes and task transitions
+- Suspend and resume on approvals/signals
+- Provide streaming execution for direct task runs
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
-import uuid
-import structlog
 import time
-from datetime import datetime, timedelta, UTC
-from typing import AsyncGenerator
-from sqlalchemy.ext.asyncio import AsyncSession
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Protocol, Sequence
+
+import structlog
 from redis.asyncio import Redis
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from domain.orchestrator.models import Workflow, Task, ApprovalRequest
-from domain.orchestrator.state import TaskStateMachine
-from domain.orchestrator.runtime_kernel import RuntimeKernel, ExecutionContext, ExecutionStrategy
+from core.locks import LockManager
+from core.observability import get_tracer
+from domain.events.schemas import (
+    ButlerEvent,
+    StreamApprovalRequiredEvent,
+    StreamErrorEvent,
+)
 from domain.memory.contracts import MemoryServiceContract
+from domain.orchestrator.models import Task, Workflow, WorkflowEvent
+from domain.orchestrator.runtime_kernel import (
+    ExecutionContext,
+    ExecutionMessage,
+    RuntimeKernel,
+)
+from domain.orchestrator.state import TaskStateMachine
+from domain.orchestrator.workflow_dag import PlanLowerer, WorkflowDAG
 from domain.tools.contracts import ToolsServiceContract
-from domain.events.schemas import ButlerEvent, StreamApprovalRequiredEvent, StreamErrorEvent
 from services.orchestrator.planner import Plan, Step
+from services.workflow.engine import WorkflowEngine
 
-from domain.plugins.plugin_bus import ButlerPluginBus
-from domain.hooks.hook_bus import ButlerHookBus
-
+UTC = timezone.utc
 logger = structlog.get_logger(__name__)
 
 
+class ApprovalServiceContract(Protocol):
+    """Contract for approval request creation."""
+
+    async def create(
+        self,
+        db: AsyncSession,
+        account_id: str,
+        tool_name: str,
+        description: str,
+        task_id: str,
+        workflow_id: str,
+        approval_type: str,
+    ):
+        """Create an approval request."""
+
+
 class ApprovalRequired(Exception):
-    """Raised when a task step requires human approval."""
+    """Raised when a workflow node requires explicit human approval."""
+
     def __init__(
         self,
         approval_type: str,
         description: str,
         risk_tier: str = "L2",
         tool_name: str | None = None,
-    ):
+    ) -> None:
         self.approval_type = approval_type
         self.description = description
         self.risk_tier = risk_tier
@@ -63,316 +84,296 @@ class ApprovalRequired(Exception):
         super().__init__(f"Approval required: {description}")
 
 
+@dataclass(frozen=True, slots=True)
 class WorkflowResult:
-    """Butler-canonical result from a completed workflow."""
-    def __init__(
-        self,
-        workflow_id: str,
-        content: str,
-        actions: list,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        duration_ms: int = 0,
-    ):
-        self.workflow_id = workflow_id
-        self.content = content
-        self.actions = actions
-        self.input_tokens = input_tokens
-        self.output_tokens = output_tokens
-        self.duration_ms = duration_ms
+    """Canonical result from a completed workflow execution."""
+
+    workflow_id: str
+    content: str
+    actions: Sequence[dict[str, object]] = field(default_factory=tuple)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    duration_ms: int = 0
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class DurableExecutor:
-    """Execute workflow tasks with durable state persistence.
-
-    The executor owns:
-      - PostgreSQL task lifecycle (pending → executing → completed/failed)
-      - Redis hot cache writes
-      - ApprovalRequest creation on gated tool proposals
-      - Compensation on failure
-
-    The executor does NOT own:
-      - Which execution strategy to use (RuntimeKernel decides)
-      - Which LLM to call (ButlerSmartRouter decides — Phase 5)
-      - Which memory to write (MemoryWritePolicy decides)
-      - Which tool to run (ButlerToolDispatch + ButlerToolPolicyGate decide)
-    """
+    """Execute Butler workflows with durable checkpoint-aware semantics."""
 
     def __init__(
         self,
+        *,
         db: AsyncSession,
         redis: Redis,
         kernel: RuntimeKernel,
         memory_service: MemoryServiceContract,
         tools_service: ToolsServiceContract,
         state_machine: TaskStateMachine,
-        # Assembled by OrchestratorService at startup — not imported here
+        approval_service: ApprovalServiceContract | None = None,
         system_prompt: str = "",
         model: str = "",
-        plugin_bus: ButlerPluginBus | None = None,
-        hook_bus: ButlerHookBus | None = None,
-    ):
+        lock_manager: LockManager | None = None,
+        blender: object | None = None,
+        smart_router: object | None = None,
+        feature_service: object | None = None,
+        redaction_service: object | None = None,
+        safety_service: object | None = None,
+    ) -> None:
         self._db = db
         self._redis = redis
         self._kernel = kernel
         self._memory = memory_service
         self._tools = tools_service
         self._sm = state_machine
+        self._approval_service = approval_service
         self._system_prompt = system_prompt
         self._model = model
-        self._plugin_bus = plugin_bus
-        self._hook_bus = hook_bus
-
-    # ── Main execution path ───────────────────────────────────────────────────
+        self._locks = lock_manager
+        self._blender = blender
+        self._router = smart_router
+        self._features = feature_service
+        self._redactor = redaction_service
+        self._safety = safety_service
+        self._tracer = get_tracer()
 
     async def execute_workflow(self, workflow: Workflow, plan: Plan) -> WorkflowResult:
-        """Execute a plan as a series of durable tasks.
+        """Execute a durable workflow plan through the DAG engine."""
+        workflow_start_ms = int(time.monotonic() * 1000)
 
-        For HERMES_AGENT strategy: the entire plan may be handled by a single
-        kernel run. For WORKFLOW_DAG strategy: each step is a separate task.
-        """
-        results: list[dict] = []
-        total_input_tokens = 0
-        total_output_tokens = 0
-        workflow_start = int(time.monotonic() * 1000)
-
-        for step in plan.steps:
-            task = Task(
-                workflow_id=workflow.id,
-                task_type=step.action,
-                status="pending",
-                input_data=step.params,
-            )
-            self._db.add(task)
+        if not workflow.plan_schema:
+            dag = PlanLowerer.lower(plan)
+            workflow.plan_schema = dag.model_dump()
             await self._db.flush()
-            await self._cache_task_state(task)
 
-            try:
-                # ── Butler commits: pending → executing BEFORE kernel runs ──
-                transition = self._sm.transition(task, "executing", "auto")
-                self._db.add(transition)
-                await self._db.flush()
+        engine = WorkflowEngine(self._db, self._redis, self._sm)
+        await engine.step_workflow(str(workflow.id))
 
-                result = await self._execute_step_via_kernel(task, step, workflow)
+        last_content = ""
+        max_iterations = 50
+        iteration = 0
 
-                if self._hook_bus:
-                    await self._hook_bus.emit(
-                        "butler:agent:end",
-                        {
-                            "account_id": str(workflow.account_id),
-                            "session_id": workflow.session_id,
-                            "task_id": str(task.id),
-                            "success": True,
-                        }
-                    )
+        while iteration < max_iterations:
+            iteration += 1
+            await self._db.refresh(workflow)
 
-                # ── Butler commits: executing → completed AFTER kernel runs ──
-                task.output_data = result
-                task.completed_at = datetime.now(UTC)
-                transition = self._sm.transition(task, "completed", "auto")
-                self._db.add(transition)
+            if workflow.status != "active":
+                break
 
-                total_input_tokens += result.get("input_tokens", 0)
-                total_output_tokens += result.get("output_tokens", 0)
-                results.append(result)
+            state_snapshot = workflow.state_snapshot or {}
+            running_nodes = state_snapshot.get("running_nodes", {}) or {}
+            progressed = False
 
-            except ApprovalRequired as e:
-                transition = self._sm.transition(task, "awaiting_approval", "approval_needed")
-                self._db.add(transition)
-
-                approval = ApprovalRequest(
-                    task_id=task.id,
-                    workflow_id=workflow.id,
-                    account_id=workflow.account_id,
-                    approval_type=e.approval_type,
-                    description=e.description,
-                    expires_at=datetime.now(UTC) + timedelta(hours=24),
-                )
-                self._db.add(approval)
-                await self._db.commit()
-                await self._cache_task_state(task)
-
-                # Return partial result — workflow resumes on approval
-                return WorkflowResult(
-                    workflow_id=str(workflow.id),
-                    content="[Paused: awaiting approval]",
-                    actions=[],
-                    input_tokens=total_input_tokens,
-                    output_tokens=total_output_tokens,
-                    duration_ms=int(time.monotonic() * 1000) - workflow_start,
+            for node_id, node_data in list(running_nodes.items()):
+                node_task_id = (
+                    node_data.get("task_id") if isinstance(node_data, dict) else node_data
                 )
 
-            except Exception as exc:
-                task.error_data = {"error": str(exc), "type": type(exc).__name__}
-                task.completed_at = datetime.now(UTC)
-                transition = self._sm.transition(task, "failed", "error")
-                self._db.add(transition)
+                if node_task_id in {
+                    "awaiting_approval",
+                    "awaiting_signal",
+                    "awaiting_wait",
+                }:
+                    continue
 
-                if self._hook_bus:
-                    await self._hook_bus.emit(
-                        "butler:agent:end",
-                        {
-                            "account_id": str(workflow.account_id),
-                            "session_id": workflow.session_id,
-                            "task_id": str(task.id),
-                            "success": False,
-                        }
-                    )
-
-                if task.retries < task.max_retries:
-                    task.retries += 1
-                    transition = self._sm.transition(task, "pending", "retry")
-                    self._db.add(transition)
+                task = await self._load_node_task(node_task_id=node_task_id)
+                if task is None:
                     logger.warning(
-                        "task_retrying",
-                        task_id=str(task.id),
-                        retries=task.retries,
-                        error=str(exc),
+                        "durable_executor_task_missing",
+                        workflow_id=str(workflow.id),
+                        node_id=node_id,
+                        task_id=node_task_id,
                     )
-                else:
-                    await self._compensate(workflow, results)
+                    continue
+
+                if task.status != "pending":
+                    continue
+
+                progressed = True
+
+                try:
+                    result = await self._load_or_execute_node_result(
+                        workflow=workflow,
+                        task=task,
+                        node_id=node_id,
+                    )
+
+                    if result.content:
+                        last_content = result.content
+
+                    task.output_data = {
+                        "content": result.content,
+                        "actions": list(result.actions),
+                        "input_tokens": result.input_tokens,
+                        "output_tokens": result.output_tokens,
+                        "duration_ms": result.duration_ms,
+                        "metadata": dict(result.metadata),
+                    }
+                    task.completed_at = datetime.now(UTC)
+
+                    if task.status != "completed":
+                        transition = self._sm.transition(task, "completed", "auto")
+                        self._db.add(transition)
+
+                    await engine.complete_task_node(
+                        str(workflow.id),
+                        node_id,
+                        str(task.id),
+                        task.output_data,
+                    )
+
+                except ApprovalRequired as exc:
+                    await self._handle_approval_required(
+                        task=task,
+                        workflow=workflow,
+                        error=exc,
+                    )
                     await self._db.commit()
-                    raise
+                    return WorkflowResult(
+                        workflow_id=str(workflow.id),
+                        content=last_content,
+                        actions=(),
+                        duration_ms=int(time.monotonic() * 1000) - workflow_start_ms,
+                        metadata={"status": "awaiting_approval"},
+                    )
 
-            await self._db.commit()
-            await self._cache_task_state(task)
+                except Exception as exc:
+                    logger.exception(
+                        "durable_executor_task_failure",
+                        workflow_id=str(workflow.id),
+                        task_id=str(task.id),
+                        node_id=node_id,
+                    )
+                    await self._handle_task_failure(
+                        task=task,
+                        workflow=workflow,
+                        exc=exc,
+                    )
+                    await self._db.commit()
+                    break
 
-        duration_ms = int(time.monotonic() * 1000) - workflow_start
-        all_completed = len(results) == len(plan.steps) and all(r is not None for r in results)
-        workflow.status = "completed" if all_completed else "failed"
-        workflow.completed_at = datetime.now(UTC)
-        await self._db.commit()
+            await self._db.refresh(workflow)
 
-        # Build final content from kernel results
-        content = self._assemble_content(results)
-        actions = [r for r in results if r and r.get("action")]
+            if workflow.status != "active":
+                break
+
+            if not progressed:
+                stepped = await engine.step_workflow(str(workflow.id))
+                if not stepped:
+                    state_snapshot = workflow.state_snapshot or {}
+                    running_nodes = state_snapshot.get("running_nodes", {}) or {}
+                    pending_states = {
+                        str(value.get("task_id") if isinstance(value, dict) else value)
+                        for value in running_nodes.values()
+                    }
+
+                    if any(state.startswith("awaiting_") for state in pending_states):
+                        logger.info(
+                            "durable_executor_workflow_suspended",
+                            workflow_id=str(workflow.id),
+                            running_nodes=running_nodes,
+                        )
+                        break
+
+                    logger.info(
+                        "durable_executor_no_further_progress",
+                        workflow_id=str(workflow.id),
+                    )
+                    break
+
+                await asyncio.sleep(0.1)
+
+        await self._db.refresh(workflow)
+
+        duration_ms = int(time.monotonic() * 1000) - workflow_start_ms
+        metadata: dict[str, object] = {}
+
+        if workflow.status == "failed":
+            metadata["error"] = "workflow_failed"
+            content = "Butler could not complete the workflow."
+        else:
+            content = last_content or "[Durable workflow completed]"
 
         return WorkflowResult(
             workflow_id=str(workflow.id),
             content=content,
-            actions=actions,
-            input_tokens=total_input_tokens,
-            output_tokens=total_output_tokens,
+            actions=(),
             duration_ms=duration_ms,
+            metadata=metadata,
         )
 
     async def execute_streaming(
         self,
+        *,
         workflow: Workflow,
-        plan: Plan,
-        messages: list[dict],
+        task: Task,
+        messages: Sequence[ExecutionMessage],
     ) -> AsyncGenerator[ButlerEvent, None]:
-        """Streaming variant — yields Butler canonical events from RuntimeKernel.
-
-        Used by the Gateway's SSE/WebSocket path.
-        Memory writes, task state, and approvals are all handled here,
-        interleaved with the yielded events.
-        """
-        # Create the primary execution task
-        task = Task(
-            workflow_id=workflow.id,
-            task_type=plan.steps[0].action if plan.steps else "respond",
-            status="pending",
-            input_data={"plan": plan.to_dict()},
-        )
-        self._db.add(task)
-        await self._db.flush()
+        """Stream execution events for a single task through RuntimeKernel."""
         await self._cache_task_state(task)
 
-        # Build ExecutionContext for the kernel
-        strategy = self._kernel.choose_strategy(task, workflow)
-        ctx = ExecutionContext(
-            task=task,
-            workflow=workflow,
-            strategy=strategy,
-            model=self._model,
-            toolset=[],        # Populated by OrchestratorService (Phase 2)
-            system_prompt=self._system_prompt,
-            messages=messages,
-            trace_id=f"trc_{uuid.uuid4().hex[:12]}",
-            account_id=str(workflow.account_id),
-            session_id=workflow.session_id,
+        session_lock = f"session:{workflow.session_id}"
+        lock_context = (
+            self._locks.get_lock(session_lock, ttl=60)
+            if self._locks is not None
+            else contextlib.nullcontext()
         )
 
-        # Butler commits: pending → executing BEFORE yielding any kernel events
-        transition = self._sm.transition(task, "executing", "auto")
-        self._db.add(transition)
-        await self._db.flush()
-        await self._db.commit()
-        await self._cache_task_state(task)
-
-        if self._hook_bus:
-            await self._hook_bus.emit(
-                "butler:agent:start",
-                {
-                    "account_id": str(workflow.account_id),
-                    "session_id": workflow.session_id,
-                    "task_id": str(task.id),
-                    "model": self._model,
-                }
+        async with lock_context:
+            strategy = self._kernel.choose_strategy(task, workflow)
+            trace_id = self._tracer.get_current_trace_id() or f"trc_{uuid.uuid4().hex[:12]}"
+            context = ExecutionContext(
+                task=task,
+                workflow=workflow,
+                strategy=strategy,
+                model=self._model,
+                toolset=self._extract_toolset(),
+                system_prompt=self._system_prompt,
+                messages=messages,
+                trace_id=trace_id,
+                account_id=str(workflow.account_id),
+                session_id=workflow.session_id,
             )
 
+            transition = self._sm.transition(task, "executing", "auto")
+            self._db.add(transition)
+            await self._db.flush()
+            await self._db.commit()
+            await self._cache_task_state(task)
+
         failed = False
-        start_time = time.monotonic()
+
         try:
-            async for event in self._kernel.execute_streaming(ctx):
-                # Intercept approval events to create ApprovalRequest in DB
+            async for event in self._kernel.execute_streaming(context):
                 if isinstance(event, StreamApprovalRequiredEvent):
-                    approval = ApprovalRequest(
-                        task_id=task.id,
-                        workflow_id=workflow.id,
-                        account_id=workflow.account_id,
-                        approval_type=event.payload.get("approval_type", "tool_execution"),
-                        description=event.payload.get("description", ""),
-                        expires_at=datetime.now(UTC) + timedelta(hours=24),
+                    await self._handle_streaming_approval(
+                        task=task,
+                        workflow=workflow,
+                        event=event,
                     )
-                    self._db.add(approval)
-                    # Update approval_id in event payload
-                    event.payload["approval_id"] = str(approval.id) if hasattr(approval, "id") else "pending"
-
-                    transition = self._sm.transition(task, "awaiting_approval", "approval_needed")
-                    self._db.add(transition)
-                    await self._db.commit()
-                    await self._cache_task_state(task)
-
                 elif isinstance(event, StreamErrorEvent):
                     failed = True
-
                 yield event
 
-        except Exception as exc:
+        except Exception:
             failed = True
-            logger.exception("executor_streaming_exception", task_id=str(task.id))
-            from domain.events.schemas import StreamErrorEvent as SErr
-            yield SErr(
-                account_id=ctx.account_id,
-                session_id=ctx.session_id,
+            logger.exception(
+                "durable_executor_streaming_exception",
+                workflow_id=str(workflow.id),
                 task_id=str(task.id),
-                trace_id=ctx.trace_id,
+            )
+            yield StreamErrorEvent(
+                account_id=str(workflow.account_id),
+                session_id=workflow.session_id,
+                task_id=str(task.id),
+                trace_id=(self._tracer.get_current_trace_id() or f"trc_{uuid.uuid4().hex[:12]}"),
                 payload={
-                    "type": "https://butler.lasmoid.ai/problems/internal-error",
-                    "title": "InternalError",
+                    "title": "ExecutionError",
                     "status": 500,
-                    "detail": str(exc),
-                    "retryable": False,
+                    "detail": "Butler could not complete the streamed execution.",
                 },
             )
 
         finally:
-            # Emit hook for agent end
-            if self._hook_bus:
-                await self._hook_bus.emit(
-                    "butler:agent:end",
-                    {
-                        "account_id": str(workflow.account_id),
-                        "session_id": workflow.session_id,
-                        "task_id": str(task.id),
-                        "success": not failed,
-                        "duration_ms": int((time.monotonic() - start_time) * 1000),
-                    }
-                )
-
-            # Butler commits final state AFTER kernel finishes
             final_status = "failed" if failed else "completed"
             task.completed_at = datetime.now(UTC)
             transition = self._sm.transition(task, final_status, "auto")
@@ -380,116 +381,278 @@ class DurableExecutor:
             await self._db.commit()
             await self._cache_task_state(task)
 
-    # ── Kernel dispatch for non-streaming step ─────────────────────────────
+    async def _load_node_task(self, *, node_task_id: object) -> Task | None:
+        """Load a workflow node task safely from its identifier."""
+        try:
+            task_uuid = uuid.UUID(str(node_task_id))
+        except (TypeError, ValueError):
+            logger.error(
+                "durable_executor_invalid_task_id",
+                task_id=node_task_id,
+            )
+            return None
+
+        return await self._db.get(Task, task_uuid)
+
+    async def _load_or_execute_node_result(
+        self,
+        *,
+        workflow: Workflow,
+        task: Task,
+        node_id: str,
+    ) -> WorkflowResult:
+        """Replay a memoized node result or execute the node through the kernel."""
+        history = await self._db.execute(
+            select(WorkflowEvent).where(
+                WorkflowEvent.workflow_id == workflow.id,
+                WorkflowEvent.node_id == node_id,
+                WorkflowEvent.event_type == "node_end",
+            )
+        )
+        memoized_event = history.scalars().first()
+        if memoized_event is not None:
+            logger.info(
+                "durable_executor_replay_node",
+                workflow_id=str(workflow.id),
+                node_id=node_id,
+            )
+            return self._workflow_result_from_payload(
+                workflow_id=str(workflow.id),
+                payload=memoized_event.output_data or {},
+            )
+
+        transition = self._sm.transition(task, "executing", "auto")
+        self._db.add(transition)
+        await self._db.flush()
+
+        dag = WorkflowDAG.model_validate(workflow.plan_schema)
+        node = next((item for item in dag.nodes if item.id == node_id), None)
+        if node is None:
+            raise ValueError(f"Node {node_id!r} not found in workflow DAG")
+
+        step = Step(action=node.tool_name or "respond", params=node.inputs)
+        result_payload = await self._execute_step_via_kernel(
+            task=task,
+            step=step,
+            workflow=workflow,
+            node_id=node_id,
+        )
+        return self._workflow_result_from_payload(
+            workflow_id=str(workflow.id),
+            payload=result_payload,
+        )
+
+    async def _handle_approval_required(
+        self,
+        *,
+        task: Task,
+        workflow: Workflow,
+        error: ApprovalRequired,
+    ) -> None:
+        """Suspend a task and create an approval request."""
+        transition = self._sm.transition(task, "awaiting_approval", "approval_needed")
+        self._db.add(transition)
+
+        if self._approval_service is None:
+            raise RuntimeError("Approval is required but no approval service is configured.")
+
+        await self._approval_service.create(
+            self._db,
+            str(workflow.account_id),
+            error.tool_name or task.tool_name or "unknown",
+            error.description,
+            str(task.id),
+            str(workflow.id),
+            approval_type=error.approval_type,
+        )
+        await self._db.flush()
+
+    async def _handle_task_failure(
+        self,
+        *,
+        task: Task,
+        workflow: Workflow,
+        exc: Exception,
+    ) -> None:
+        """Move a task through failure and retry handling."""
+        task.error_data = {
+            "error": str(exc),
+            "type": type(exc).__name__,
+        }
+        task.completed_at = datetime.now(UTC)
+
+        transition_failed = self._sm.transition(task, "failed", "error")
+        self._db.add(transition_failed)
+
+        if task.retries < task.max_retries:
+            task.retries += 1
+            transition_retry = self._sm.transition(task, "pending", "retry")
+            self._db.add(transition_retry)
+            logger.warning(
+                "durable_executor_task_retrying",
+                task_id=str(task.id),
+                retries=task.retries,
+            )
+        else:
+            workflow.status = "failed"
+            logger.error(
+                "durable_executor_task_failed_max_retries",
+                task_id=str(task.id),
+                workflow_id=str(workflow.id),
+            )
+
+        await self._db.flush()
+
+    async def _handle_streaming_approval(
+        self,
+        *,
+        task: Task,
+        workflow: Workflow,
+        event: StreamApprovalRequiredEvent,
+    ) -> None:
+        """Create approval state for a streaming task."""
+        if self._approval_service is None:
+            raise RuntimeError(
+                "Streaming approval requested but no approval service is configured."
+            )
+
+        request = await self._approval_service.create(
+            self._db,
+            str(workflow.account_id),
+            str(event.payload.get("tool_name", "unknown")),
+            str(event.payload.get("description", "")),
+            str(task.id),
+            str(workflow.id),
+            approval_type=str(event.payload.get("approval_type", "tool_execution")),
+        )
+        event.payload["approval_id"] = str(request.id)
+
+        transition = self._sm.transition(task, "awaiting_approval", "approval_needed")
+        self._db.add(transition)
+        await self._db.flush()
 
     async def _execute_step_via_kernel(
-        self, task: Task, step: Step, workflow: Workflow
-    ) -> dict:
-        """Execute a single plan step via RuntimeKernel and return a result dict."""
+        self,
+        *,
+        task: Task,
+        step: Step,
+        workflow: Workflow,
+        node_id: str,
+    ) -> dict[str, object]:
+        """Execute one workflow node through the RuntimeKernel."""
         strategy = self._kernel.choose_strategy(task, workflow)
+        trace_id = self._tracer.get_current_trace_id() or f"trc_{uuid.uuid4().hex[:12]}"
+        idempotency_key = f"{workflow.session_id}:{workflow.id}:{node_id}"
 
-        sys_prompt = self._system_prompt
-        if self._plugin_bus:
-            blocks = []
-            for plugin in self._plugin_bus.plugins_of_type("memory"):
-                if getattr(plugin, "available", False) and hasattr(plugin.instance, "system_prompt_block"):
-                    block = plugin.instance.system_prompt_block()
-                    if block:
-                        blocks.append(block)
-            if blocks:
-                sys_prompt += "\n\n" + "\n\n".join(blocks)
+        task.idempotency_key = idempotency_key
 
-        ctx = ExecutionContext(
+        node_message = self._resolve_step_message(step)
+        messages = [
+            ExecutionMessage(
+                role="user",
+                content=node_message,
+            )
+        ]
+
+        context = ExecutionContext(
             task=task,
             workflow=workflow,
             strategy=strategy,
             model=self._model,
-            toolset=[],  # Phase 2: populated from compiled ButlerToolSpecs
-            system_prompt=sys_prompt,
-            messages=[],  # Phase 4: populated from MemoryService session history
-            trace_id=f"trc_{uuid.uuid4().hex[:12]}",
+            toolset=self._extract_toolset(),
+            system_prompt=self._system_prompt,
+            messages=messages,
+            trace_id=trace_id,
             account_id=str(workflow.account_id),
             session_id=workflow.session_id,
         )
 
-        if self._hook_bus:
-            await self._hook_bus.emit(
-                "butler:agent:start",
-                {
-                    "account_id": str(workflow.account_id),
-                    "session_id": workflow.session_id,
-                    "task_id": str(task.id),
-                    "model": self._model,
-                }
-            )
+        with self._tracer.span(
+            "butler.executor.execute_step",
+            attrs={
+                "tool": step.action,
+                "idempotency_key": idempotency_key,
+                "node_id": node_id,
+            },
+        ):
+            return await self._kernel.execute(context)
 
-        start_time = time.monotonic()
-        kernel_result = await self._kernel.execute(ctx)
-        
-        # Note: agent:end hook for the step is emitted in execute_workflow
-
-        return {
-            "action": step.action,
-            "strategy": strategy.value,
-            "content": kernel_result.get("content", ""),
-            "input_tokens": kernel_result.get("input_tokens", 0),
-            "output_tokens": kernel_result.get("output_tokens", 0),
-            "duration_ms": kernel_result.get("duration_ms", 0),
-        }
-
-    # ── Compensation ──────────────────────────────────────────────────────────
-
-    async def _compensate(self, workflow: Workflow, completed_results: list[dict]):
-        """Undo side-effects of completed steps on workflow failure."""
-        for result in reversed(completed_results):
-            if result and result.get("compensation"):
-                try:
-                    await self._tools.compensate(result["compensation"])
-                except Exception:
-                    logger.error("compensation_failed", workflow_id=str(workflow.id))
-
-    # ── Resume (post-approval) ────────────────────────────────────────────────
-
-    async def resume_task(self, task: Task):
-        """Resume an awaiting_approval task after human decision.
-
-        Full re-execution via kernel. Task state is committed before/after.
-        """
+    async def resume_task(self, task: Task) -> None:
+        """Resume a task suspended on approval."""
         if task.status != "awaiting_approval":
-            logger.warning("resume_task_unexpected_status", status=task.status)
             return
 
-        logger.info("task_resuming_after_approval", task_id=str(task.id))
-        # Full resume logic is Phase 6 (approval workflow engine)
-        # For now: transition back to executing so the service layer can re-dispatch
-        transition = self._sm.transition(task, "executing", "approval_granted")
-        self._db.add(transition)
+        workflow = await self._db.get(Workflow, task.workflow_id)
+        if workflow is None:
+            return
+
+        logger.info(
+            "durable_executor_resuming_task",
+            workflow_id=str(workflow.id),
+            task_id=str(task.id),
+        )
+
+        engine = WorkflowEngine(self._db, self._redis, self._sm)
+        await engine.resolve_signal(
+            str(workflow.id),
+            "approval_decision",
+            {
+                "decision": "approved",
+                "task_id": str(task.id),
+            },
+        )
         await self._db.commit()
         await self._cache_task_state(task)
 
-    # ── Utilities ──────────────────────────────────────────────────────────────
-
-    async def _cache_task_state(self, task: Task):
-        """Cache hot task state in Redis. TTL: 1 hour."""
+    async def _cache_task_state(self, task: Task) -> None:
+        """Cache hot task state in Redis for fast reads."""
         await self._redis.setex(
             f"butler:task:{task.id}:state",
             3600,
-            json.dumps({
-                "status": task.status,
-                "type": task.task_type,
-                "retries": task.retries,
-                "updated_at": datetime.now(UTC).isoformat(),
-            }),
+            json.dumps(
+                {
+                    "status": task.status,
+                    "type": task.task_type,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                }
+            ),
         )
 
-    def _assemble_content(self, results: list[dict]) -> str:
-        """Assemble final response text from step results.
+    def _extract_toolset(self) -> list[object]:
+        compiled_specs = getattr(self._tools, "_specs", {})
+        if isinstance(compiled_specs, dict):
+            return list(compiled_specs.values())
+        return []
 
-        Prior implementation: "Workflow completed. Actions taken: ..." (mock string)
-        Now: actual content from kernel execution.
-        """
-        parts = []
-        for r in results:
-            if r and r.get("content"):
-                parts.append(r["content"])
-        return "\n\n".join(parts) if parts else ""
+    def _resolve_step_message(self, step: Step) -> str:
+        params = step.params
+
+        if isinstance(params, str):
+            return params
+
+        if isinstance(params, dict):
+            query = params.get("query")
+            if isinstance(query, str) and query:
+                return query
+
+            message = params.get("message")
+            if isinstance(message, str) and message:
+                return message
+
+        return str(params)
+
+    def _workflow_result_from_payload(
+        self,
+        *,
+        workflow_id: str,
+        payload: dict[str, object],
+    ) -> WorkflowResult:
+        return WorkflowResult(
+            workflow_id=workflow_id,
+            content=str(payload.get("content", "") or ""),
+            actions=tuple(payload.get("actions", []) or []),
+            input_tokens=int(payload.get("input_tokens", 0) or 0),
+            output_tokens=int(payload.get("output_tokens", 0) or 0),
+            duration_ms=int(payload.get("duration_ms", 0) or 0),
+            metadata=dict(payload.get("metadata", {}) or {}),
+        )

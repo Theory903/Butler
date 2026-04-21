@@ -6,6 +6,7 @@ re-sourced before each command. CWD persists via in-band stdout markers (remote)
 or a temp file (local).
 """
 
+from typing import Callable
 import json
 import logging
 import os
@@ -15,11 +16,12 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
-from typing import IO, Callable, Protocol
+from typing import IO, Protocol
 
-from hermes_constants import get_hermes_home
-from tools.interrupt import is_interrupted
+from integrations.hermes.hermes_constants import get_hermes_home
+from integrations.hermes.tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +72,7 @@ def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
     threading.Thread(target=_write, daemon=True).start()
 
 
-def _popen_bash(
-    cmd: list[str], stdin_data: str | None = None, **kwargs
-) -> subprocess.Popen:
+def _popen_bash(cmd: list[str], stdin_data: str | None = None, **kwargs) -> subprocess.Popen:
     """Spawn a subprocess with standard stdout/stderr/stdin setup.
 
     If *stdin_data* is provided, writes it asynchronously via :func:`_pipe_stdin`.
@@ -316,8 +316,7 @@ class BaseEnvironment(ABC):
             )
         except Exception as exc:
             logger.warning(
-                "init_session failed (session=%s): %s — "
-                "falling back to bash -l per command",
+                "init_session failed (session=%s): %s — falling back to bash -l per command",
                 self._session_id,
                 exc,
             )
@@ -339,9 +338,7 @@ class BaseEnvironment(ABC):
             parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
 
         # cd to working directory — let bash expand ~ natively
-        quoted_cwd = (
-            shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
-        )
+        quoted_cwd = shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
         parts.append(f"cd {quoted_cwd} || exit 126")
 
         # Run the actual command
@@ -358,9 +355,7 @@ class BaseEnvironment(ABC):
         # the marker starts on its own line even if the command doesn't
         # end with a newline (e.g. printf 'exact'). We'll strip this
         # injected newline in _extract_cwd_from_output.
-        parts.append(
-            f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\""
-        )
+        parts.append(f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"")
         parts.append("exit $__hermes_ec")
 
         return "\n".join(parts)
@@ -396,9 +391,7 @@ class BaseEnvironment(ABC):
                     output_chunks.append(line)
             except UnicodeDecodeError:
                 output_chunks.clear()
-                output_chunks.append(
-                    "[binary output detected — raw bytes not displayable]"
-                )
+                output_chunks.append("[binary output detected — raw bytes not displayable]")
             except (ValueError, OSError):
                 pass
 
@@ -422,9 +415,7 @@ class BaseEnvironment(ABC):
                 partial = "".join(output_chunks)
                 timeout_msg = f"\n[Command timed out after {timeout}s]"
                 return {
-                    "output": partial + timeout_msg
-                    if partial
-                    else timeout_msg.lstrip(),
+                    "output": partial + timeout_msg if partial else timeout_msg.lstrip(),
                     "returncode": 124,
                 }
             # Periodic activity touch so the gateway knows we're alive
@@ -510,7 +501,6 @@ class BaseEnvironment(ABC):
         and Local don't need file sync — the host filesystem is directly
         visible inside the container/process.
         """
-        pass
 
     # ------------------------------------------------------------------
     # Unified execute()
@@ -573,7 +563,6 @@ class BaseEnvironment(ABC):
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
         """Transform sudo commands if SUDO_PASSWORD is available."""
-        from tools.terminal_tool import _transform_sudo_command
+        from integrations.hermes.tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-

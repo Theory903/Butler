@@ -4,6 +4,8 @@ import logging
 import time
 from typing import AsyncGenerator, Optional, List
 
+from opentelemetry import trace
+
 from .models import (
     AudioModelProxy, 
     TranscribeResult, 
@@ -19,8 +21,10 @@ from .tts import TTSManager
 from .music import MusicIdentifier
 from .identity import VoiceIdentityManager
 from .errors import InvalidAudioFormatError, NoSpeechDetectedError
+from .stream_buffer import StreamBuffer
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 class AudioService:
     """
@@ -28,8 +32,9 @@ class AudioService:
     Coordinates preprocessing, VAD, STT Strategy, Diarization, Identity, and TTS.
     """
     
-    def __init__(self):
+    def __init__(self, buffer: StreamBuffer | None = None):
         self.proxy = AudioModelProxy()
+        self.stream_buffer = buffer or StreamBuffer()
         
         # Layers
         self.preprocessor = AudioPreprocessor()
@@ -39,6 +44,39 @@ class AudioService:
         self.identity = VoiceIdentityManager(self.proxy)
         self.tts_manager = TTSManager(self.proxy)
         self.music_id = MusicIdentifier()
+
+    async def streaming_transcribe(
+        self, 
+        chunk_b64: str, 
+        language: Optional[str] = None
+    ) -> AsyncGenerator[StreamUpdate, None]:
+        """
+        Handle real-time audio stream:
+        1. Push chunk to buffer
+        2. If buffer ready, consume and transcribe
+        3. Yield updates
+        """
+        with tracer.start_as_current_span("audio.stream.segment_processing") as span:
+            try:
+                chunk = base64.b64decode(chunk_b64)
+                await self.stream_buffer.push(chunk)
+                
+                # Consume segment (e.g. 1.5s of audio)
+                segment = await self.stream_buffer.consume(min_bytes=48000) # ~1.5s at 16k
+                if segment:
+                    span.set_attribute("audio.segment.bytes", len(segment))
+                    # Preprocess & Detect Speech
+                    processed = await self.preprocessor.process(segment)
+                    if await self.vad.detect_speech(processed.data):
+                        res = await self.stt_strategy.transcribe(processed.data, language=language, quality_mode="fast")
+                        yield StreamUpdate(transcript=res.transcript, is_final=False)
+                    else:
+                        span.set_attribute("audio.segment.silent", True)
+                        
+            except Exception as e:
+                logger.error("audio_stream_failed", error=str(e))
+                span.record_exception(e)
+                yield StreamUpdate(transcript="", is_final=True, error=str(e))
 
     async def transcribe(
         self, 

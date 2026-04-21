@@ -38,8 +38,8 @@ from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
-from tools.debug_helpers import DebugSession
-from tools.website_policy import check_website_access
+from integrations.hermes.tools.debug_helpers import DebugSession
+from integrations.hermes.tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def _validate_image_url(url: str) -> bool:
         return False
 
     # Block private/internal addresses to prevent SSRF
-    from tools.url_safety import is_safe_url
+    from integrations.hermes.tools.url_safety import is_safe_url
     if not is_safe_url(url):
         return False
 
@@ -155,7 +155,7 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
         """
         if response.is_redirect and response.next_request:
             redirect_url = str(response.next_request.url)
-            from tools.url_safety import is_safe_url
+            from integrations.hermes.tools.url_safety import is_safe_url
             if not is_safe_url(redirect_url):
                 raise ValueError(
                     f"Blocked redirect to private/internal address: {redirect_url}"
@@ -459,7 +459,7 @@ async def vision_analyze_tool(
     detected_mime_type = None
     
     try:
-        from tools.interrupt import is_interrupted
+        from integrations.hermes.tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
@@ -745,7 +745,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
+from integrations.hermes.tools.registry import registry, tool_error
 
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",

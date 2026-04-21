@@ -28,7 +28,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from core.deps import get_cache, get_db
+from core.deps import get_cache, get_db, get_hermes_transport, get_ws_mux
 from core.envelope import ButlerEnvelope
 from domain.auth.contracts import AccountContext
 from domain.auth.exceptions import GatewayErrors
@@ -42,6 +42,7 @@ from services.gateway.stream_bridge import ButlerStreamBridge, SSE_HEADERS
 from core.resilient_client import ResilientClient, InternalRequest
 from infrastructure.config import settings
 from integrations.hermes.gateway.channel_directory import load_directory, format_directory_for_display
+from services.orchestrator.service import OrchestratorService
 
 # Shared Resilient Client for Orchestrator communication
 # In Butler v3.0, the Gateway routes to the federated Intelligence Engine via this resilient pipe.
@@ -76,7 +77,9 @@ class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=64)
     attachments: list[dict] = Field(default_factory=list)
     location: dict | None = None
-    stream: bool = False   # if True, redirect to SSE; if False, block until done
+    mode: str = "auto"
+    stream: bool = False
+    model: str | None = None  # provider/model selection, e.g. "cloud-deepseek"
 
 
 class ChatResponse(BaseModel):
@@ -126,7 +129,9 @@ def _build_envelope(
         channel=request.headers.get("X-Butler-Channel", "api"),
         message=req.message,
         attachments=req.attachments,
+        mode=req.mode,
         location=req.location,
+        model=req.model,
         assurance_level=str(account.assurance_level),
         idempotency_key=idempotency_key,
         rate_limit_remaining=rate_remaining,
@@ -136,7 +141,7 @@ def _build_envelope(
 async def _get_orchestrator(db, cache):
     """Resolve OrchestratorService using the production-grade manager."""
     from core.deps import get_orchestrator_service
-    return get_orchestrator_service(db, cache)
+    return await get_orchestrator_service(db, cache)
 
 
 # ── POST /chat — synchronous ──────────────────────────────────────────────────
@@ -200,7 +205,7 @@ async def chat(
         except Exception as exc:
             log.exception("orchestrator_error", session_id=req.session_id, error=str(exc))
             chat_response = ChatResponse(
-                response="Butler encountered an error processing your request.",
+                response=f"Butler encountered an error: {str(exc)}",
                 session_id=req.session_id,
                 request_id=request_id,
             )
@@ -368,98 +373,106 @@ async def stream_session(
 async def websocket_chat(
     websocket: WebSocket,
     cache=Depends(get_cache),
+    transport_edge=Depends(get_hermes_transport),
+    mux=Depends(get_ws_mux),
 ):
-    """Real-time token, tool, and approval event streaming via WebSocket.
-
-    Protocol:
-      client → {"message": "...", "session_id": "...", "auth": "Bearer ..."}
-      server → stream_start frame
-      server → stream_token frames  (one per token chunk)
-      server → stream_tool_call frames
-      server → stream_approval_required frames (if tool needs human approval)
-      server → stream_final / stream_error frame
-      server → done frame
+    """Hardened real-time bidirectional channel using Hermes Integration Layer.
+    
+    1. Edge Hardening: Authenticates and rate-limits via HermesTransportEdge.
+    2. Resilience: Background ping/pong prevents zombie connections.
+    3. Multiplexing: Supports multiple data topics via WebSocketMultiplexer.
     """
-    await websocket.accept()
-
-    try:
-        # 1. Auth handshake — first message must contain auth token
-        init_raw = await websocket.receive_text()
+    # WS handshake is already accepted inside HermesTransportEdge.connect
+    # but we need the token from the first message OR query param.
+    # OpenClaw standards suggest 'token' query param or 'auth' in first JSON.
+    
+    token = websocket.query_params.get("token")
+    init_payload = {}
+    
+    if not token:
+        await websocket.accept()
         try:
-            init = json.loads(init_raw)
-        except (json.JSONDecodeError, ValueError):
-            await websocket.send_text(json.dumps({"event": "error", "detail": "Invalid init frame"}))
-            await websocket.close(code=4000)
-            return
-
-        auth_header = init.get("auth") or init.get("Authorization", "")
-        middleware = JWTAuthMiddleware(jwks=get_jwks_manager(), redis=cache)
-        try:
-            account = await middleware.authenticate(auth_header)
+            raw = await websocket.receive_text()
+            init_payload = json.loads(raw)
+            token = init_payload.get("auth") or init_payload.get("token")
         except Exception:
-            await websocket.send_text(json.dumps({"event": "error", "detail": "Unauthorized"}))
-            await websocket.close(code=4001)
+            await websocket.close(code=4000, reason="Missing Auth Token")
             return
 
-        # 2. Session
-        session_id = init.get("session_id") or str(uuid.uuid4())
+    # 1. Transport Hardening (Authentication + Leaky Bucket RL)
+    transport_ctx = await transport_edge.connect(websocket, token)
+    if not transport_ctx:
+        return 
 
-        async with async_session_factory() as db:
-            session_mgr = ButlerSessionManager(redis=cache, db=db)
-            session = await session_mgr.get_or_create(
-                session_id=session_id,
-                account_id=account.account_id,
-                channel="web",
-            )
+    session_id = init_payload.get("session_id") or str(uuid.uuid4())
+    account = transport_ctx.account
+    account.session_id = session_id
 
-            # 3. Message loop
+    # 2. Restore Prod-Level Chat Orchestration
+    async with async_session_factory() as db:
+        session_mgr = ButlerSessionManager(redis=cache, db=db)
+        session = await session_mgr.get_or_create(
+            session_id=session_id,
+            account_id=account.account_id,
+            channel="web",
+        )
+
+        try:
+            # Run mux commands in background for topics/presence
+            mux_task = asyncio.create_task(mux.handle_mux_stream(transport_ctx))
+            ping_task = asyncio.create_task(transport_edge.run_ping_pong_loop(transport_ctx))
+
+            # Main Chat Loop (The Prod Implementation)
             while True:
                 try:
                     raw = await websocket.receive_text()
                     msg = json.loads(raw)
+                    
+                    # Handle Mux commands or Direct Chat
+                    if "action" in msg:
+                        # Pass complex mux actions to the multiplexer
+                        # (Mux loop is also running but we check for chat here)
+                        pass
+                        
+                    user_message = msg.get("message", "")
+                    if not user_message:
+                        continue
+
+                    request_id = str(uuid.uuid4())
+                    envelope = ButlerEnvelope(
+                        request_id=request_id,
+                        account_id=account.account_id,
+                        session_id=session_id,
+                        device_id=None,
+                        channel="web",
+                        message=user_message,
+                        attachments=msg.get("attachments", []),
+                        assurance_level=account.assurance_level,
+                    )
+
+                    bridge = ButlerStreamBridge(
+                        session_id=session_id,
+                        account_id=account.account_id,
+                        redis=cache,
+                        request_id=request_id,
+                    )
+
+                    from core.deps import get_orchestrator_service
+                    orchestrator = await get_orchestrator_service(db, cache)
+                    
+                    async with session_mgr.hermes_context(session):
+                        event_stream = orchestrator.intake_streaming(envelope)
+                        await bridge.forward_to_ws(websocket, event_stream)
+
                 except (WebSocketDisconnect, json.JSONDecodeError):
                     break
 
-                user_message = msg.get("message", "")
-                if not user_message:
-                    continue
-
-                request_id = str(uuid.uuid4())
-                envelope = ButlerEnvelope(
-                    request_id=request_id,
-                    account_id=account.account_id,
-                    session_id=session_id,
-                    device_id=None,
-                    channel="web",
-                    message=user_message,
-                    attachments=msg.get("attachments", []),
-                    assurance_level=account.assurance_level,
-                )
-
-                bridge = ButlerStreamBridge(
-                    session_id=session_id,
-                    account_id=account.account_id,
-                    request_id=request_id,
-                )
-
-                orchestrator = await _get_orchestrator(db, cache)
-                async with session_mgr.hermes_context(session):
-                    event_stream = orchestrator.intake_streaming(envelope)
-                    await bridge.forward_to_ws(websocket, event_stream)
-
-    except WebSocketDisconnect:
-        log.debug("websocket_disconnected")
-    except Exception as exc:
-        log.exception("websocket_unhandled_error", error=str(exc))
-        try:
-            await websocket.send_text(json.dumps({
-                "event": "error",
-                "type": "https://butler.lasmoid.ai/errors/internal-error",
-                "status": 500,
-                "detail": str(exc),
-            }))
-        except Exception:
-            pass
+        except Exception as e:
+            log.error("websocket_hybrid_error", error=str(e), session_id=session_id)
+        finally:
+            ping_task.cancel()
+            mux_task.cancel()
+            await transport_edge.disconnect(session_id)
 
 
 # ── POST /sessions/bootstrap ──────────────────────────────────────────────────
@@ -585,42 +598,4 @@ async def voice_process(
 # and registered in main.py as mcp_router at prefix /api/v1.
 # The /ws/chat, /voice/process, and all streaming routes remain here.
 
-# ── Health probes ─────────────────────────────────────────────────────────────
-
-@router.get("/health/live")
-async def live() -> dict:
-    """Liveness probe — always 200 if process is alive."""
-    return {"status": "ok"}
-
-
-@router.get("/health/ready")
-async def ready(cache=Depends(get_cache)) -> dict:
-    """Readiness probe — checks DB + Redis connectivity."""
-    checks: dict[str, str] = {}
-    all_ok = True
-
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-        checks["database"] = "healthy"
-    except Exception as exc:
-        checks["database"] = f"unhealthy: {exc}"
-        all_ok = False
-
-    try:
-        await cache.ping()
-        checks["redis"] = "healthy"
-    except Exception as exc:
-        checks["redis"] = f"unhealthy: {exc}"
-        all_ok = False
-
-    return {
-        "status": "ready" if all_ok else "not_ready",
-        "checks": checks,
-    }
-
-
-@router.get("/health/startup")
-async def startup() -> dict:
-    """Startup probe — for container orchestration."""
-    return {"status": "ready"}
+# NOTE: health probes have been moved to core/health.py and are registered in main.py

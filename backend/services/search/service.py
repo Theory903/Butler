@@ -11,6 +11,7 @@ from services.search.extraction import ContentExtractor
 from services.search.web_provider import ButlerWebSearchProvider, EvidencePack as WebEvidencePack
 from domain.ml.contracts import IReasoningRuntime
 from domain.search.contracts import ISearchService
+from core.circuit_breaker import CircuitBreakerRegistry, CircuitOpenError
 
 if TYPE_CHECKING:
     from services.search.deep_research import DeepResearchEngine, DeepResearchResult
@@ -52,10 +53,12 @@ class SearchService(ISearchService):
         extractor: ContentExtractor,
         provider: Optional[ButlerWebSearchProvider] = None,
         ml_runtime: Optional[IReasoningRuntime] = None,
+        breakers: Optional[CircuitBreakerRegistry] = None,
     ) -> None:
         self._extractor = extractor
         self._provider = provider or ButlerWebSearchProvider.from_env()
         self._ml = ml_runtime
+        self._breakers = breakers
         # Lazy-init deep engine to avoid circular import at module level
         self._deep_engine: Optional[DeepResearchEngine] = None
 
@@ -75,12 +78,30 @@ class SearchService(ISearchService):
         """Execute deep search: Discovery → Extraction → Package."""
         start_time = time.perf_counter()
 
-        # 1. Web discovery
-        web_pack: WebEvidencePack = await self._provider.search(
-            query=query,
-            mode=mode if mode != "auto" else "general",
-            max_results=max_results,
-        )
+        # 1. Web discovery with circuit breaker
+        try:
+            async def _do_search():
+                return await self._provider.search(
+                    query=query,
+                    mode=mode if mode != "auto" else "general",
+                    max_results=max_results,
+                )
+
+            if self._breakers:
+                breaker = self._breakers.get_breaker("search:web")
+                web_pack = await breaker.call(_do_search)
+            else:
+                web_pack = await _do_search()
+        except (CircuitOpenError, Exception) as exc:
+            logger.error("search_provider_failed", query=query, error=str(exc))
+            return EvidencePack(
+                query=query,
+                mode=mode,
+                results=[],
+                citations=[],
+                result_count=0,
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+            )
 
         # 2. Parallel deep extraction
         extraction_tasks = [self._extractor.extract(r.url) for r in web_pack.results]

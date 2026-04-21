@@ -1,0 +1,99 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Vector — Butler log pipeline
+#
+# Flow:
+#   Docker container stdout (JSON)
+#     → parse ECS fields
+#     → route by environment
+#     → sink to Loki (prod) + console (debug)
+#
+# Replace sink URLs and credentials with your own.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[api]
+enabled = true
+address = "0.0.0.0:8686"
+
+# ── Source: Docker container logs ─────────────────────────────────────────────
+[sources.docker]
+type              = "docker_logs"
+include_images    = ["butler:prod"]
+auto_partial_merge = true
+
+# ── Transform: parse JSON log lines ───────────────────────────────────────────
+[transforms.parse_json]
+type   = "remap"
+inputs = ["docker"]
+source = '''
+  # Parse the raw JSON log line emitted by butler (ECS schema)
+  parsed, err = parse_json(.message)
+  if err == null {
+    .  = merge(., parsed)
+  }
+
+  # Promote ECS fields to top-level Vector fields for routing / filtering
+  .level       = .log.level  ?? "info"
+  .service     = .butler.service ?? "butler"
+  .environment = .butler.environment ?? "production"
+  .node_id     = .butler.node_id ?? "unknown"
+  .stage       = .butler.stage ?? "request"
+  .status      = .butler.status ?? "info"
+
+  # Vector timestamp from ECS @timestamp
+  if exists(."@timestamp") {
+    .timestamp = parse_timestamp!(."@timestamp", "%+")
+  }
+'''
+
+# ── Transform: drop health noise in prod (already clustered by butler) ────────
+[transforms.drop_health_noise]
+type   = "filter"
+inputs = ["parse_json"]
+# Keep everything except raw heartbeat DEBUG lines
+condition = '!( .level == "debug" && .stage == "health" )'
+
+# ── Transform: add Vector metadata ────────────────────────────────────────────
+[transforms.enrich]
+type   = "remap"
+inputs = ["drop_health_noise"]
+source = '''
+  .vector.ingest_ts = now()
+  .vector.hostname  = get_hostname!()
+'''
+
+# ── Sink: Loki (production) ───────────────────────────────────────────────────
+[sinks.loki]
+type              = "loki"
+inputs            = ["enrich"]
+endpoint          = "${LOKI_ENDPOINT:-http://loki:3100}"
+encoding.codec    = "json"
+labels.service    = "{{ service }}"
+labels.environment= "{{ environment }}"
+labels.level      = "{{ level }}"
+labels.stage      = "{{ stage }}"
+labels.node       = "{{ node_id }}"
+
+# Buffer to disk — survive Loki restarts without losing logs
+[sinks.loki.buffer]
+type      = "disk"
+max_size  = 268435456   # 256 MiB
+when_full = "block"
+
+# ── Sink: Elasticsearch / OpenSearch (optional) ───────────────────────────────
+# Uncomment and fill in credentials to also ship to ES.
+#
+# [sinks.elasticsearch]
+# type     = "elasticsearch"
+# inputs   = ["enrich"]
+# endpoints = ["${ES_ENDPOINT:-http://elasticsearch:9200}"]
+# index    = "butler-logs-%Y.%m.%d"
+# auth.strategy = "basic"
+# auth.user     = "${ES_USER}"
+# auth.password = "${ES_PASSWORD}"
+# encoding.codec = "json"
+
+# ── Sink: console (debug / local) ────────────────────────────────────────────
+[sinks.console]
+type           = "console"
+inputs         = ["enrich"]
+encoding.codec = "json"

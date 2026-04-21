@@ -260,7 +260,7 @@ class CircuitBreakerRegistry:
     def register(
         self,
         name: str,
-        threshold: int = 5,
+        threshold: int = 10,
         window_s: float = 60.0,
         recovery_s: float = 30.0,
     ) -> ButlerCircuitBreaker:

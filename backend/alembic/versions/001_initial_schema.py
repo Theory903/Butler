@@ -1,35 +1,35 @@
-"""Initial schema — full Butler data spec.
-
-Creates:
-  Identity/Auth: accounts, identities, sessions, refresh_token_families
-  Runtime:       workflows, tasks, task_nodes, task_transitions (*), approval_requests
-  Tool/Audit:    tool_executions, audit_events (*), outbox_events (*)
-  Config:        user_settings, feature_flags
-
-(*) = declaratively partitioned by month on created_at
-
+"""Initial schema — full Butler v2.0 Oracle-Grade data spec.
+Consolidates all core identity, memory, orchestrator, tool, and cron tables.
 Revision: 001
+Down Revision: None
 """
-
 from __future__ import annotations
-
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision = "001"
 down_revision = None
 branch_labels = None
 depends_on = None
 
-
 def upgrade() -> None:
-    # ── Extensions ────────────────────────────────────────────────────────
-    op.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
-    op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-    try:
-        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    except Exception:
-        pass  # pgvector not installed — Memory service will handle gracefully
+    # ── Extensions (Idempotent & Transaction-Safe) ────────────────────────
+    op.execute("""
+        DO $$ BEGIN
+            CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+        EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'uuid-ossp failed'; END $$
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            CREATE EXTENSION IF NOT EXISTS pg_trgm;
+        EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'pg_trgm failed'; END $$
+    """)
+    op.execute("""
+        DO $$ BEGIN
+            CREATE EXTENSION IF NOT EXISTS vector;
+        EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'vector not available'; END $$
+    """)
 
     # ── ENUM types ────────────────────────────────────────────────────────
     op.execute("""
@@ -38,55 +38,35 @@ def upgrade() -> None:
         EXCEPTION WHEN duplicate_object THEN null;
         END $$
     """)
-    op.execute("""
-        DO $$ BEGIN
-            CREATE TYPE identity_type AS ENUM ('password', 'passkey', 'google', 'apple', 'github');
-        EXCEPTION WHEN duplicate_object THEN null;
-        END $$
-    """)
-    op.execute("""
-        DO $$ BEGIN
-            CREATE TYPE assurance_level AS ENUM ('aal1', 'aal2', 'aal3');
-        EXCEPTION WHEN duplicate_object THEN null;
-        END $$
-    """)
-    op.execute("""
-        DO $$ BEGIN
-            CREATE TYPE task_status AS ENUM (
-                'pending', 'planning', 'executing', 'completed',
-                'awaiting_approval', 'failed', 'compensating',
-                'compensated', 'compensation_failed'
-            );
-        EXCEPTION WHEN duplicate_object THEN null;
-        END $$
-    """)
 
     # =========================================================================
     # IDENTITY & AUTH DOMAIN
     # =========================================================================
 
-    # accounts
     op.create_table(
-        "accounts",
+        "principals",
         sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
         sa.Column("email", sa.String(254), nullable=False),
-        sa.Column("display_name", sa.String(128), nullable=True),
         sa.Column("status", sa.String(32), nullable=False, server_default="active"),
-        sa.Column("settings", sa.JSON(), nullable=False, server_default="{}"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.create_index("ix_accounts_email", "accounts", ["email"], unique=True,
-                    postgresql_where=sa.text("deleted_at IS NULL"))
-    op.create_index("ix_accounts_status", "accounts", ["status"])
-    op.create_index("ix_accounts_created_at", "accounts", ["created_at"])
+    op.create_index("ix_principals_email", "principals", ["email"], unique=True)
 
-    # identities
+    op.create_table(
+        "accounts",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("principal_id", sa.UUID(), sa.ForeignKey("principals.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("name", sa.String(128), nullable=False, server_default="Personal"),
+        sa.Column("settings", sa.JSON(), nullable=False, server_default="{}"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
     op.create_table(
         "identities",
         sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
-        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("principal_id", sa.UUID(), sa.ForeignKey("principals.id", ondelete="CASCADE"), nullable=False),
         sa.Column("identity_type", sa.String(32), nullable=False),
         sa.Column("identifier", sa.String(512), nullable=False),
         sa.Column("password_hash", sa.String(256), nullable=True),
@@ -96,268 +76,332 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
     )
-    op.create_index("ix_identities_account_id", "identities", ["account_id"])
-    op.create_index("uq_identities_type_identifier", "identities",
-                    ["identity_type", "identifier"], unique=True)
+    op.create_index("uq_identities_type_identifier", "identities", ["identity_type", "identifier"], unique=True)
 
-    # passkey_credentials
-    op.create_table(
-        "passkey_credentials",
-        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
-        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("credential_id", sa.Text(), nullable=False),
-        sa.Column("public_key", sa.Text(), nullable=False),
-        sa.Column("sign_count", sa.BigInteger(), nullable=False, server_default="0"),
-        sa.Column("aaguid", sa.String(64), nullable=True),
-        sa.Column("device_type", sa.String(32), nullable=True),
-        sa.Column("backup_eligible", sa.Boolean(), nullable=False, server_default="false"),
-        sa.Column("backup_state", sa.Boolean(), nullable=False, server_default="false"),
-        sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-    )
-    op.create_index("ix_passkey_account_id", "passkey_credentials", ["account_id"])
-    op.create_index("uq_passkey_credential_id", "passkey_credentials", ["credential_id"], unique=True)
-
-    # sessions
     op.create_table(
         "sessions",
         sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
-        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("principal_id", sa.UUID(), sa.ForeignKey("principals.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("active_account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True),
         sa.Column("auth_method", sa.String(32), nullable=False),
         sa.Column("assurance_level", sa.String(8), nullable=False, server_default="aal1"),
         sa.Column("ip_address", sa.String(45), nullable=True),
         sa.Column("user_agent", sa.Text(), nullable=True),
         sa.Column("device_id", sa.String(128), nullable=True),
+        sa.Column("client_id", sa.String(128), nullable=True),
+        sa.Column("client_type", sa.String(32), nullable=True),
         sa.Column("risk_score", sa.Numeric(5, 4), nullable=False, server_default="0.0"),
         sa.Column("workflow_id", sa.UUID(), nullable=True),
+        sa.Column("idle_timeout", sa.Integer(), nullable=True),
+        sa.Column("last_seen_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
     )
-    op.create_index("ix_sessions_account_id", "sessions", ["account_id"])
-    op.create_index("ix_sessions_expires_at", "sessions", ["expires_at"])
-    op.create_index("ix_sessions_active", "sessions", ["account_id"],
-                    postgresql_where=sa.text("revoked_at IS NULL"))
 
-    # refresh_token_families
     op.create_table(
         "refresh_token_families",
         sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
         sa.Column("session_id", sa.UUID(), sa.ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("parent_token_id", sa.String(128), nullable=True),
+        sa.Column("lineage_root", sa.String(128), nullable=True),
+        sa.Column("revoked_branch_root", sa.String(128), nullable=True),
         sa.Column("rotation_counter", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("invalidated_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("invalidation_reason", sa.String(64), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
     )
-    op.create_index("ix_token_families_session_id", "refresh_token_families", ["session_id"])
+
+    # ── Voice Profiles ───────────────────────────────────────────────────
+    op.create_table(
+        "voice_profiles",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("principal_id", sa.UUID(), sa.ForeignKey("principals.id", ondelete="CASCADE"), nullable=False, unique=True),
+        sa.Column("embedding", sa.JSON(), nullable=False),
+        sa.Column("sample_url", sa.String(512), nullable=True),
+        sa.Column("metadata", sa.JSON(), nullable=False, server_default="{}"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
 
     # =========================================================================
-    # RUNTIME DOMAIN
+    # MEMORY & NOTEBOOKS
     # =========================================================================
 
-    # workflows
+    op.create_table(
+        "memory_entries",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("memory_type", sa.String(32), nullable=False),
+        sa.Column("content", postgresql.JSONB(), nullable=False),
+        sa.Column("embedding", postgresql.JSONB(), nullable=True), 
+        sa.Column("importance", sa.Float(), server_default="0.5"),
+        sa.Column("confidence", sa.Float(), server_default="1.0"),
+        sa.Column("source", sa.String(32), server_default="conversation"),
+        sa.Column("session_id", sa.String(64), nullable=True),
+        sa.Column("tags", postgresql.JSONB(), server_default="[]"),
+        sa.Column("status", sa.String(32), server_default="active", nullable=False),
+        sa.Column("metadata", postgresql.JSONB(), nullable=True),
+        sa.Column("valid_from", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column("valid_until", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("superseded_by", sa.UUID(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column("last_accessed_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column("access_count", sa.Integer(), server_default="0"),
+    )
+
+    op.create_table(
+        "conversation_turns",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("session_id", sa.String(64), nullable=False),
+        sa.Column("role", sa.String(16), nullable=False),
+        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("turn_index", sa.Integer(), nullable=False),
+        sa.Column("intent", sa.String(64), nullable=True),
+        sa.Column("tool_calls", postgresql.JSONB(), nullable=True),
+        sa.Column("metadata", postgresql.JSONB(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+    op.create_index("ix_conversation_turns_session", "conversation_turns", ["session_id"])
+
+    # ── Knowledge Graph Layer ──────────────────────────────────────────
+    op.create_table(
+        "knowledge_entities",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("entity_type", sa.String(32), nullable=False),
+        sa.Column("name", sa.String(255), nullable=False),
+        sa.Column("summary", sa.Text(), nullable=True),
+        sa.Column("name_embedding", postgresql.JSONB(), nullable=True),
+        sa.Column("metadata", postgresql.JSONB(), server_default="{}"),
+        sa.Column("status", sa.String(32), server_default="active"),
+        sa.Column("valid_until", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("superseded_by", sa.UUID(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    op.create_table(
+        "knowledge_edges",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("source_id", sa.UUID(), sa.ForeignKey("knowledge_entities.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("target_id", sa.UUID(), sa.ForeignKey("knowledge_entities.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("relation_type", sa.String(64), nullable=False),
+        sa.Column("metadata", postgresql.JSONB(), server_default="{}"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    op.create_table(
+        "memory_entity_links",
+        sa.Column("memory_id", sa.UUID(), sa.ForeignKey("memory_entries.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column("entity_id", sa.UUID(), sa.ForeignKey("knowledge_entities.id", ondelete="CASCADE"), primary_key=True),
+    )
+
+    # ── User Understanding Layer ───────────────────────────────────────
+    op.create_table(
+        "explicit_preferences",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("category", sa.String(64), nullable=False),
+        sa.Column("key", sa.String(255), nullable=False),
+        sa.Column("value", postgresql.JSONB(), nullable=False),
+        sa.Column("confidence", sa.Float(), server_default="1.0"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    op.create_table(
+        "explicit_dislikes",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("key", sa.String(255), nullable=False),
+        sa.Column("reason", postgresql.JSONB(), nullable=True),
+        sa.Column("confidence", sa.Float(), server_default="1.0"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    op.create_table(
+        "user_constraints",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("constraint_type", sa.String(64), nullable=False),
+        sa.Column("value", postgresql.JSONB(), nullable=False),
+        sa.Column("active", sa.Boolean(), server_default="true"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    op.create_table(
+        "memory_episodes",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("session_id", sa.String(64), nullable=True),
+        sa.Column("goal", sa.Text(), nullable=True),
+        sa.Column("outcome", sa.String(32)),
+        sa.Column("events", postgresql.JSONB(), server_default="[]"),
+        sa.Column("lessons", postgresql.JSONB(), server_default="[]"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    op.create_table(
+        "memory_routines",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("name", sa.String(255), nullable=False),
+        sa.Column("occurrences", sa.Integer(), server_default="1"),
+        sa.Column("metadata", postgresql.JSONB(), server_default="{}"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column("last_observed_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    op.create_table(
+        "knowledge_chunks",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("text", sa.Text(), nullable=False),
+        sa.Column("index", sa.Integer(), server_default="0"),
+        sa.Column("source_type", sa.String(32)),
+        sa.Column("source_id", sa.UUID(), nullable=False),
+        sa.Column("embedding", postgresql.JSONB(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    op.create_table(
+        "chunk_entity_links",
+        sa.Column("chunk_id", sa.UUID(), sa.ForeignKey("knowledge_chunks.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column("entity_id", sa.UUID(), sa.ForeignKey("knowledge_entities.id", ondelete="CASCADE"), primary_key=True),
+    )
+
+    op.create_table(
+        "notebooks",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("name", sa.String(255), nullable=False),
+        sa.Column("description", sa.Text(), nullable=True),
+        sa.Column("archived", sa.Boolean(), server_default="false"),
+        sa.Column("metadata", postgresql.JSONB(), server_default="{}"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    op.create_table(
+        "sources",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("title", sa.String(512), nullable=True),
+        sa.Column("source_type", sa.String(32), nullable=False),
+        sa.Column("asset", postgresql.JSONB(), nullable=False, server_default="{}"),
+        sa.Column("full_text", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    op.create_table(
+        "notes",
+        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
+        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("title", sa.String(512), nullable=True),
+        sa.Column("content", sa.Text(), nullable=True),
+        sa.Column("note_type", sa.String(16), server_default="human"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+    )
+
+    #Join tables 
+    op.create_table(
+        "notebook_sources",
+        sa.Column("notebook_id", sa.UUID(), sa.ForeignKey("notebooks.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column("source_id", sa.UUID(), sa.ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True),
+    )
+    op.create_table(
+        "notebook_notes",
+        sa.Column("notebook_id", sa.UUID(), sa.ForeignKey("notebooks.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column("note_id", sa.UUID(), sa.ForeignKey("notes.id", ondelete="CASCADE"), primary_key=True),
+    )
+
+    # =========================================================================
+    # RUNTIME & ORCHESTRATION
+    # =========================================================================
+
     op.create_table(
         "workflows",
         sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
         sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
         sa.Column("session_id", sa.String(64), nullable=False),
-        sa.Column("intent", sa.String(64), nullable=True),
-        sa.Column("mode", sa.String(32), nullable=False),  # macro | routine | durable
+        sa.Column("mode", sa.String(32), nullable=False),
         sa.Column("status", sa.String(32), nullable=False, server_default="active"),
         sa.Column("plan_schema", sa.JSON(), nullable=True),
-        sa.Column("context_snapshot", sa.JSON(), nullable=True),
-        sa.Column("tags", sa.JSON(), nullable=False, server_default="[]"),
+        sa.Column("state_snapshot", sa.JSON(), nullable=True),
+        sa.Column("idempotency_key", sa.String(256), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.create_index("ix_workflows_account_id", "workflows", ["account_id"])
-    op.create_index("ix_workflows_session_id", "workflows", ["session_id"])
-    op.create_index("ix_workflows_status", "workflows", ["status"])
-    op.create_index("ix_workflows_created_at", "workflows", ["created_at"])
 
-    # tasks
     op.create_table(
         "tasks",
         sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
         sa.Column("workflow_id", sa.UUID(), sa.ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("parent_task_id", sa.UUID(), nullable=True),
+        sa.Column("parent_task_id", sa.UUID(), sa.ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True),
         sa.Column("task_type", sa.String(64), nullable=False),
         sa.Column("status", sa.String(32), nullable=False, server_default="pending"),
         sa.Column("input_data", sa.JSON(), nullable=True),
         sa.Column("output_data", sa.JSON(), nullable=True),
-        sa.Column("error_data", sa.JSON(), nullable=True),
         sa.Column("tool_name", sa.String(128), nullable=True),
-        sa.Column("retries", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("max_retries", sa.Integer(), nullable=False, server_default="3"),
-        sa.Column("compensation_task_id", sa.UUID(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-        sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.create_index("ix_tasks_workflow_id", "tasks", ["workflow_id"])
-    op.create_index("ix_tasks_status", "tasks", ["status"])
 
-    # task_transitions (event-sourced trail, partitioned by month)
-    op.execute("""
-        CREATE TABLE task_transitions (
-            id          UUID NOT NULL DEFAULT uuid_generate_v4(),
-            task_id     UUID NOT NULL,
-            from_status VARCHAR(32) NOT NULL,
-            to_status   VARCHAR(32) NOT NULL,
-            trigger     VARCHAR(64) NOT NULL,
-            metadata    JSON,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        ) PARTITION BY RANGE (created_at)
-    """)
-    op.execute("""
-        CREATE TABLE task_transitions_default
-            PARTITION OF task_transitions DEFAULT
-    """)
-    op.execute("CREATE INDEX ix_task_transitions_task_id ON task_transitions (task_id)")
-    op.execute("CREATE INDEX ix_task_transitions_created_at ON task_transitions (created_at)")
+    # =========================================================================
+    # TOOLS & CRON
+    # =========================================================================
 
-    # approval_requests
     op.create_table(
-        "approval_requests",
+        "tool_definitions",
         sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
-        sa.Column("task_id", sa.UUID(), sa.ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("workflow_id", sa.UUID(), sa.ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("approval_type", sa.String(32), nullable=False),  # tool | send | delete | financial
+        sa.Column("name", sa.String(64), nullable=False, unique=True),
         sa.Column("description", sa.Text(), nullable=False),
-        sa.Column("status", sa.String(32), nullable=False, server_default="pending"),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("decided_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("decided_by", sa.String(64), nullable=True),
+        sa.Column("category", sa.String(32), nullable=False),
+        sa.Column("risk_tier", sa.String(32), nullable=False),
+        sa.Column("input_schema", postgresql.JSONB(), nullable=False),
+        sa.Column("output_schema", postgresql.JSONB(), nullable=False),
+        sa.Column("enabled", sa.Boolean(), server_default="true"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
     )
-    op.create_index("ix_approval_requests_task_id", "approval_requests", ["task_id"])
-    op.create_index("ix_approval_requests_account_id", "approval_requests", ["account_id"])
-    op.create_index("ix_approval_requests_status", "approval_requests", ["status"])
 
-    # =========================================================================
-    # TOOL & AUDIT DOMAIN
-    # =========================================================================
-
-    # tool_executions
     op.create_table(
-        "tool_executions",
-        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
-        sa.Column("tool_name", sa.String(128), nullable=False),
-        sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True),
-        sa.Column("task_id", sa.UUID(), nullable=True),
-        sa.Column("workflow_id", sa.UUID(), nullable=True),
-        sa.Column("input_params", sa.JSON(), nullable=True),
-        sa.Column("output_result", sa.JSON(), nullable=True),
-        sa.Column("risk_tier", sa.String(16), nullable=False),
-        sa.Column("status", sa.String(32), nullable=False, server_default="pending"),
-        sa.Column("idempotency_key", sa.String(256), nullable=True),
-        sa.Column("verification_passed", sa.Boolean(), nullable=True),
-        sa.Column("duration_ms", sa.Integer(), nullable=True),
-        sa.Column("error_data", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.create_index("ix_tool_executions_account_id", "tool_executions", ["account_id"])
-    op.create_index("ix_tool_executions_tool_name", "tool_executions", ["tool_name"])
-    op.create_index("uq_tool_executions_idempotency", "tool_executions",
-                    ["idempotency_key"], unique=True,
-                    postgresql_where=sa.text("idempotency_key IS NOT NULL"))
-
-    # audit_events (partitioned by month)
-    op.execute("""
-        CREATE TABLE audit_events (
-            id               UUID NOT NULL DEFAULT uuid_generate_v4(),
-            account_id       UUID,
-            actor_id         VARCHAR(128),
-            actor_type       VARCHAR(32) NOT NULL,
-            action           VARCHAR(128) NOT NULL,
-            resource_type    VARCHAR(64),
-            resource_id      VARCHAR(128),
-            outcome          VARCHAR(32) NOT NULL,
-            sensitivity      VARCHAR(32) NOT NULL DEFAULT 'standard',
-            request_id       VARCHAR(64),
-            ip_address       VARCHAR(45),
-            metadata         JSON,
-            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        ) PARTITION BY RANGE (created_at)
-    """)
-    op.execute("""
-        CREATE TABLE audit_events_default
-            PARTITION OF audit_events DEFAULT
-    """)
-    op.execute("CREATE INDEX ix_audit_events_account_id ON audit_events (account_id)")
-    op.execute("CREATE INDEX ix_audit_events_action ON audit_events (action)")
-    op.execute("CREATE INDEX ix_audit_events_created_at ON audit_events (created_at)")
-
-    # outbox_events (transactional outbox, partitioned by month)
-    op.execute("""
-        CREATE TABLE outbox_events (
-            id               UUID NOT NULL DEFAULT uuid_generate_v4(),
-            aggregate_type   VARCHAR(64) NOT NULL,
-            aggregate_id     UUID NOT NULL,
-            event_type       VARCHAR(128) NOT NULL,
-            payload          JSON NOT NULL,
-            published        BOOLEAN NOT NULL DEFAULT FALSE,
-            published_at     TIMESTAMPTZ,
-            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        ) PARTITION BY RANGE (created_at)
-    """)
-    op.execute("""
-        CREATE TABLE outbox_events_default
-            PARTITION OF outbox_events DEFAULT
-    """)
-    op.execute("CREATE INDEX ix_outbox_events_published ON outbox_events (published)")
-    op.execute("CREATE INDEX ix_outbox_events_aggregate ON outbox_events (aggregate_type, aggregate_id)")
-
-    # =========================================================================
-    # CONFIG DOMAIN
-    # =========================================================================
-
-    # user_settings
-    op.create_table(
-        "user_settings",
+        "butler_cron_jobs",
         sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
         sa.Column("account_id", sa.UUID(), sa.ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("key", sa.String(128), nullable=False),
-        sa.Column("value", sa.JSON(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-    )
-    op.create_index("uq_user_settings_account_key", "user_settings", ["account_id", "key"], unique=True)
-
-    # feature_flags
-    op.create_table(
-        "feature_flags",
-        sa.Column("id", sa.UUID(), server_default=sa.text("uuid_generate_v4()"), primary_key=True),
         sa.Column("name", sa.String(128), nullable=False),
-        sa.Column("enabled", sa.Boolean(), nullable=False, server_default="false"),
-        sa.Column("rollout_percentage", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("conditions", sa.JSON(), nullable=False, server_default="{}"),
+        sa.Column("cron_expression", sa.String(64), nullable=False),
+        sa.Column("task_type", sa.String(64), nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default="true"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
     )
-    op.create_index("uq_feature_flags_name", "feature_flags", ["name"], unique=True)
 
+    # ── Vector Application ──────────────────────────────────────────────
+    op.execute("""
+        DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'vector') THEN
+                ALTER TABLE memory_entries ALTER COLUMN embedding TYPE vector(1536) USING embedding::vector;
+            END IF;
+        END $$
+    """)
 
 def downgrade() -> None:
-    # Drop in reverse dependency order
-    op.drop_table("feature_flags")
-    op.drop_table("user_settings")
-    op.execute("DROP TABLE IF EXISTS outbox_events CASCADE")
-    op.execute("DROP TABLE IF EXISTS audit_events CASCADE")
-    op.drop_table("tool_executions")
-    op.drop_table("approval_requests")
-    op.execute("DROP TABLE IF EXISTS task_transitions CASCADE")
-    op.drop_table("tasks")
-    op.drop_table("workflows")
-    op.drop_table("refresh_token_families")
-    op.drop_table("sessions")
-    op.drop_table("passkey_credentials")
-    op.drop_table("identities")
-    op.drop_table("accounts")
-
-    # ENUMs
-    op.execute("DROP TYPE IF EXISTS task_status")
-    op.execute("DROP TYPE IF EXISTS assurance_level")
-    op.execute("DROP TYPE IF EXISTS identity_type")
-    op.execute("DROP TYPE IF EXISTS account_status")
+    op.execute("DROP TABLE IF EXISTS butler_cron_jobs CASCADE")
+    op.execute("DROP TABLE IF EXISTS tool_definitions CASCADE")
+    op.execute("DROP TABLE IF EXISTS tasks CASCADE")
+    op.execute("DROP TABLE IF EXISTS workflows CASCADE")
+    op.execute("DROP TABLE IF EXISTS notebook_notes CASCADE")
+    op.execute("DROP TABLE IF EXISTS notebook_sources CASCADE")
+    op.execute("DROP TABLE IF EXISTS notes CASCADE")
+    op.execute("DROP TABLE IF EXISTS sources CASCADE")
+    op.execute("DROP TABLE IF EXISTS notebooks CASCADE")
+    op.execute("DROP TABLE IF EXISTS memory_entries CASCADE")
+    op.execute("DROP TABLE IF EXISTS voice_profiles CASCADE")
+    op.execute("DROP TABLE IF EXISTS refresh_token_families CASCADE")
+    op.execute("DROP TABLE IF EXISTS sessions CASCADE")
+    op.execute("DROP TABLE IF EXISTS identities CASCADE")
+    op.execute("DROP TABLE IF EXISTS accounts CASCADE")
+    op.execute("DROP TABLE IF EXISTS principals CASCADE")
+    op.execute("DROP TYPE IF EXISTS account_status CASCADE")

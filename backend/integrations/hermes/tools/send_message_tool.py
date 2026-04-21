@@ -135,7 +135,7 @@ def _handle_send(args):
                 f"Try using a numeric channel ID instead."
             })
 
-    from tools.interrupt import is_interrupted
+    from integrations.hermes.tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
 
@@ -1159,7 +1159,7 @@ async def _send_qqbot(pconfig, chat_id, message):
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from integrations.hermes.tools.registry import registry, tool_error
 
 registry.register(
     name="send_message",

@@ -20,7 +20,11 @@ from fastapi import APIRouter, Depends, Query, WebSocket
 from fastapi.responses import StreamingResponse
 from starlette.websockets import WebSocketDisconnect
 
-from core.deps import get_redis
+from core.deps import (
+    get_redis,
+    get_connection_manager,
+    get_realtime_listener,
+)
 from services.realtime.events import RealtimeEvent, Events
 from services.realtime.manager import ConnectionManager
 from services.realtime.presence import PresenceService
@@ -31,10 +35,6 @@ from services.realtime.stream_dispatcher import ButlerStreamDispatcher
 
 def get_presence(redis=Depends(get_redis)):
     return PresenceService(redis)
-
-
-def get_connection_manager(redis=Depends(get_redis), presence=Depends(get_presence)):
-    return ConnectionManager(redis, presence)
 
 
 def get_stream_dispatcher(
