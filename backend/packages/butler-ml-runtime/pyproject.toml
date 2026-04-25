@@ -1,0 +1,39 @@
+[project]
+name = "butler-ml-runtime"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "butler-core>=0.1.0",
+  "numpy>=1.26",
+  "pydantic>=2.7",
+  "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+cpu = [
+  "sentence-transformers>=3.0",
+  "torch",
+]
+onnx = [
+  "sentence-transformers[onnx]>=3.0",
+  "onnxruntime>=1.18",
+]
+openvino = [
+  "sentence-transformers[openvino]>=3.0",
+]
+remote = [
+  "httpx>=0.27",
+]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.6",
+  "mypy>=1.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["butler_ml_runtime"]

@@ -105,11 +105,11 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
         tier=ReasoningTier.T3,
         kind=ProviderKind.LLM,
         module="services.ml.providers.llm",
-        class_name="GoogleGeminiNativeProvider",
-        default_model="gemma-4-26b-a4b-it",
+        class_name="GoogleGeminiProvider",
+        default_model="gemini-3.1-pro",
         max_context=1000000,
         cost_per_1k_tokens=0.0035,
-        api_key_env="GEMINI_API_KEY",
+        api_key_env="GOOGLE_API_KEY",
     ),
     "ollama": ProviderSpec(
         name="ollama",
@@ -224,9 +224,7 @@ class ModelSelector:
             if resolved is not None:
                 return resolved
 
-        # Use settings.DEFAULT_MODEL instead of os.environ for consistency
-        from infrastructure.config import settings
-        env_default = (settings.DEFAULT_MODEL or "").strip()
+        env_default = os.environ.get("DEFAULT_MODEL", "").strip()
         if env_default:
             resolved = cls._resolve_explicit_request(env_default)
             if resolved is not None:

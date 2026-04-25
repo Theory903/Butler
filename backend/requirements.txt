@@ -19,12 +19,10 @@ psycopg2-binary>=2.9.9
 redis>=5.0.0
 apscheduler>=3.10.4
 structlog>=24.1.0
-opentelemetry-api>=1.41.0
-opentelemetry-sdk>=1.41.0
+opentelemetry-api>=1.24.0
+opentelemetry-sdk>=1.24.0
 opentelemetry-exporter-otlp-proto-grpc>=1.24.0
-opentelemetry-instrumentation>=0.62b0
-opentelemetry-instrumentation-fastapi>=0.62b0
-opentelemetry-instrumentation-httpx>=0.62b0
+opentelemetry-instrumentation>=0.45b0
 trafilatura>=1.9.0
 beautifulsoup4>=4.12.0
 jsonschema>=4.21.0
@@ -49,7 +47,6 @@ pyacoustid>=1.3.0
 youtube-transcript-api>=0.6.0
 sentence-transformers>=2.2.2
 faiss-cpu>=1.7.4
-google-genai>=0.3.0
 
 # LangChain/LangGraph for orchestration
 langchain>=0.3.0

@@ -133,11 +133,11 @@ class Settings(BaseSettings):
     # Hermes Integration
     HERMES_HOME: str = "/tmp/hermes"
 
-    # LLM Model Config (all configurable from .env)
-    DEFAULT_MODEL: str = "google/gemma-4-26b-a4b-it"  # Profile A — standard chat
-    LONG_CONTEXT_MODEL: str = "google/gemma-4-26b-a4b-it"  # Profile B — long-context planner
+    # LLM Model Config
+    DEFAULT_MODEL: str = "claude-sonnet-4-5"  # Profile A — standard chat
+    LONG_CONTEXT_MODEL: str = "claude-opus-4-5"  # Profile B — long-context planner
     LONG_CONTEXT_TOKEN_THRESHOLD: int = 8192  # Switch to Profile B above this
-    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
     RERANKER_MODEL: str = "bge-reranker-v2-m3"
 
     # ── Audio Service ──────────────────────────────────────────────────────
@@ -193,12 +193,6 @@ class Settings(BaseSettings):
     PLUGINS_ISOLATION_ENABLED: bool = True
     PLUGINS_ISOLATION_BACKEND: str = "subprocess"  # subprocess | docker
     PLUGINS_DOCKER_IMAGE: str = "butler-sandbox:latest"
-
-    # ── Search Provider ───────────────────────────────────────────────────────
-    BUTLER_SEARCH_PROVIDER: str = "stub"  # stub | tavily | firecrawl
-    TAVILY_API_KEY: str | None = None
-    FIRECRAWL_API_KEY: str | None = None
-    FIRECRAWL_API_URL: str = "https://api.firecrawl.dev"
 
     # Observability
     OTEL_ENDPOINT: str | None = None  # e.g. "http://otel-collector:4317"

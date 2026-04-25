@@ -75,15 +75,6 @@ agentic = [
     # Moved to main dependencies for LangGraph agent runtime
 ]
 
-# Advanced LangChain middleware (compact-middleware, collapse, routing, etc.)
-advanced_middleware = [
-    "compact-middleware>=0.1.1",
-    "langchain-collapse>=0.1.1",
-    "langchain-task-steering>=0.1.6",
-    "advisor-middleware>=0.1.1",
-    "langchain-router>=0.1.4",
-]
-
 ml = [
     "numpy>=2.4.4",
     "sentence-transformers>=5.4.1",

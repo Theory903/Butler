@@ -327,12 +327,6 @@ class MLRuntimeManager(IReasoningRuntime):
         """Resolve ordered execution candidates from request hints and registry with health gating."""
         preferred_model = request.preferred_model or self._metadata_model_hint(request)
 
-        # If no preferred model in request, use settings.DEFAULT_MODEL
-        if not preferred_model:
-            from infrastructure.config import settings
-            if settings.DEFAULT_MODEL:
-                preferred_model = settings.DEFAULT_MODEL
-
         if preferred_model:
             entry = self._registry.get_active_model(preferred_model)
             if entry is None:

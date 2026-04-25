@@ -1,0 +1,123 @@
+# -----------------------------------------------------------------------------
+# Butler .dockerignore
+# Root-level, because Docker build context is "."
+# -----------------------------------------------------------------------------
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Python caches / artifacts
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/.pyright/
+**/.coverage
+**/.hypothesis/
+**/.tox/
+**/.nox/
+**/htmlcov/
+**/dist/
+**/build/
+**/*.egg-info/
+**/.venv/
+**/venv/
+**/.envrc
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+**/*.pfx
+**/secrets/
+**/.secrets/
+
+# Logs / runtime junk
+**/*.log
+**/logs/
+**/tmp/
+**/temp/
+**/scratch/
+**/.cache/
+
+# Editor / OS junk
+**/.DS_Store
+**/Thumbs.db
+**/.idea/
+**/.vscode/
+**/*.swp
+**/*.swo
+
+# Node / frontend heavy dirs
+**/node_modules/
+**/.next/
+**/.expo/
+**/.expo-shared/
+**/coverage/
+
+# Test artifacts / local data dumps
+**/.playwright/
+**/playwright-report/
+**/test-results/
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+**/*.parquet
+**/*.feather
+**/*.arrow
+**/*.csv
+**/*.tsv
+
+# ML / model artifacts / vector indexes / large local assets
+**/models/
+**/checkpoints/
+**/*.onnx
+**/*.pt
+**/*.pth
+**/*.bin
+**/*.safetensors
+**/*.gguf
+**/*.h5
+**/*.ckpt
+**/faiss_index*
+**/qdrant_storage/
+**/neo4j_data/
+**/redis_data/
+**/postgres_data/
+
+# Docker / compose local overrides
+docker-compose.override.yml
+
+# Docs and misc local files not needed in runtime image
+.github/
+.idea/
+.vscode/
+docs/
+*.md
+
+# Keep only the backend README if you actually want it in the image
+!backend/README.md
+
+# Keep Docker assets needed for the build
+!backend/Dockerfile
+!.dockerignore
+
+# Keep dependency manifests
+!backend/requirements.txt
+!backend/pyproject.toml
+!backend/uv.lock
+
+# Keep app source
+!backend/
+!app/
+!scripts/
+!deploy/
+!searxng/

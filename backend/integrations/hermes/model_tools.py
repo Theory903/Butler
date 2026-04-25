@@ -26,7 +26,7 @@ import logging
 import threading
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import discover_builtin_tools, registry
+from integrations.hermes.tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -350,7 +350,7 @@ def get_tool_definitions(
     # string-valued schema nodes from malformed MCP servers, etc. This
     # is a no-op for schemas that are already well-formed.
     try:
-        from tools.schema_sanitizer import sanitize_tool_schemas
+        from integrations.hermes.tools.schema_sanitizer import sanitize_tool_schemas
         filtered_tools = sanitize_tool_schemas(filtered_tools)
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("Schema sanitization skipped: %s", e)

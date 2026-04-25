@@ -19,7 +19,6 @@ from typing import Any, Protocol
 import httpx
 import structlog
 
-from infrastructure.config import settings
 from services.security.safe_request import SafeRequestClient
 
 logger = structlog.get_logger(__name__)
@@ -468,7 +467,7 @@ class ButlerWebSearchProvider:
         credential_resolver: CredentialResolver | None = None,
     ) -> ButlerWebSearchProvider:
         resolver = credential_resolver or EnvCredentialResolver()
-        provider = (settings.BUTLER_SEARCH_PROVIDER or resolver.get("BUTLER_SEARCH_PROVIDER", "stub")).strip().lower()
+        provider = resolver.get("BUTLER_SEARCH_PROVIDER", "stub").strip().lower()
 
         def _safe_int(key: str, default: int) -> int:
             raw = resolver.get(key, str(default)).strip()
@@ -489,7 +488,7 @@ class ButlerWebSearchProvider:
         provider_builders: dict[str, tuple[str, Any]] = {
             "tavily": (
                 "tavily",
-                lambda: _TavilyProvider(settings.TAVILY_API_KEY or resolver.get("BUTLER_TOOL_CRED_TAVILY")),
+                lambda: _TavilyProvider(resolver.get("BUTLER_TOOL_CRED_TAVILY")),
             ),
             "serpapi": (
                 "serpapi",
@@ -497,12 +496,12 @@ class ButlerWebSearchProvider:
             ),
             "searxng": (
                 "searxng",
-                lambda: _SearXNGProvider(settings.SEARXNG_URL or resolver.get("SEARXNG_URL")),
+                lambda: _SearXNGProvider(resolver.get("SEARXNG_URL")),
             ),
             "firecrawl": (
                 "firecrawl",
                 lambda: _FirecrawlProvider(
-                    settings.FIRECRAWL_API_KEY or resolver.get("FIRECRAWL_API_KEY"),
+                    resolver.get("FIRECRAWL_API_KEY"),
                     include_markdown=resolver.get("FIRECRAWL_INCLUDE_MARKDOWN", "false")
                     .strip()
                     .lower()

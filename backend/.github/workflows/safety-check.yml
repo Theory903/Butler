@@ -1,0 +1,169 @@
+name: Safety Check
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+jobs:
+  safety-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for raw Redis calls
+        run: |
+          ! grep -r "redis\." --include="*.py" backend/ || exit 1
+          echo "No raw Redis calls found"
+
+      - name: Check for subprocess calls
+        run: |
+          ! grep -r "subprocess\." --include="*.py" backend/ || exit 1
+          echo "No subprocess calls found"
+
+      - name: Check for provider SDK imports
+        run: |
+          ! grep -r "import openai\|import anthropic\|from openai\|from anthropic" --include="*.py" backend/ || exit 1
+          echo "No direct provider SDK imports found"
+
+      - name: Check for raw os.getenv
+        run: |
+          ! grep -r "os\.getenv\|os\.environ\[" --include="*.py" backend/ || exit 1
+          echo "No raw os.getenv/os.environ found"
+
+      - name: Check for unscoped memory calls
+        run: |
+          ! grep -r "memory\." --include="*.py" backend/ | grep -v "domain/memory" | grep -v "infrastructure/memory" || exit 1
+          echo "No unscoped memory calls found"
+
+      - name: Check for tenant_id/account_id coverage
+        run: |
+          grep -r "tenant_id" --include="*.py" backend/api/routes backend/services/ | wc -l
+          grep -r "account_id" --include="*.py" backend/api/routes backend/services/ | wc -l
+
+      - name: Check for response validation usage
+        run: |
+          # Check that API routes use safe response composition
+          ! grep -r "return.*response" --include="*.py" backend/api/routes/gateway.py | grep -v "safe_response\|ToolResultEnvelope\|ResponseValidator" || exit 1
+          echo "API routes use safe response composition"
+          # Check that orchestrator uses ResponseValidator
+          grep -r "ResponseValidator" --include="*.py" backend/api/routes/orchestrator.py || exit 1
+          echo "Orchestrator uses ResponseValidator"
+
+      - name: Check for tool bypasses
+        run: |
+          # Check for direct ButlerToolDispatch calls (should go through ToolExecutor)
+          ! grep -r "ButlerToolDispatch" --include="*.py" backend/ | grep -v "services/tools/executor.py" | grep -v "domain/tools/hermeses_compiler.py" || exit 1
+          echo "No direct ButlerToolDispatch bypasses found"
+          # Check for direct Hermes handle_function_call calls
+          ! grep -r "handle_function_call" --include="*.py" backend/ | grep -v "butler_runtime/hermes" | grep -v "integrations/hermes" || exit 1
+          echo "No direct Hermes handle_function_call bypasses found"
+          # Check that tool execution goes through ToolExecutor.execute_canonical
+          grep -r "execute_canonical" --include="*.py" backend/api/routes/tools.py || exit 1
+          echo "API routes use execute_canonical"
+
+      - name: Python linting check
+        run: |
+          cd backend
+          python -m ruff check . --select E,F,W,I --ignore E501 || exit 1
+          echo "Python linting passed"
+
+      - name: Python type check
+        run: |
+          cd backend
+          python -m mypy domain/ services/ --ignore-missing-imports || exit 1
+          echo "Python type checking passed"
+
+      - name: Comprehensive Redis key check
+        run: |
+          # Check for raw Redis key construction without namespace
+          ! grep -r "redis\.get\|redis\.set\|redis\.delete" --include="*.py" backend/ | grep -v "infrastructure/redis" | grep -v "core/redis" || exit 1
+          echo "No raw Redis key construction found"
+          # Check for string concatenation in Redis keys
+          ! grep -r "redis.*\+.*\"" --include="*.py" backend/ | grep -v "infrastructure/redis" || exit 1
+          echo "No string concatenation in Redis keys"
+
+      - name: Comprehensive subprocess check
+        run: |
+          # Check for subprocess.run without allowlist
+          ! grep -r "subprocess\.run\|subprocess\.Popen" --include="*.py" backend/ | grep -v "services/workspace/" | grep -v "integrations/" || exit 1
+          echo "No direct subprocess usage found outside workspace"
+          # Check for os.system
+          ! grep -r "os\.system" --include="*.py" backend/ || exit 1
+          echo "No os.system usage found"
+
+      - name: Comprehensive provider SDK check
+        run: |
+          # Check for direct OpenAI client usage
+          ! grep -r "from openai import\|import openai" --include="*.py" backend/ | grep -v "services/ml/" | grep -v "integrations/" || exit 1
+          echo "No direct OpenAI SDK imports found outside ML service"
+          # Check for direct Anthropic client usage
+          ! grep -r "from anthropic import\|import anthropic" --include="*.py" backend/ | grep -v "services/ml/" | grep -v "integrations/" || exit 1
+          echo "No direct Anthropic SDK imports found outside ML service"
+
+      - name: Unscoped Qdrant/Neo4j check
+        run: |
+          # Check for Qdrant search without tenant_id filter
+          ! grep -r "qdrant\.search\|qdrant_client\.search" --include="*.py" backend/ | grep -v "infrastructure/qdrant" || exit 1
+          echo "No unscoped Qdrant searches found"
+          # Check for Neo4j queries without tenant_id
+          ! grep -r "driver\.execute_query\|session\.run" --include="*.py" backend/ | grep -v "infrastructure/neo4j" || exit 1
+          echo "No unscoped Neo4j queries found"
+
+      - name: Raw logger check
+        run: |
+          # Check for direct logging module usage
+          ! grep -r "import logging" --include="*.py" backend/ | grep -v "core/tenant_aware_logger.py" | grep -v "tests/" || exit 1
+          echo "No raw logging imports found"
+          # Check for logger = logging.getLogger
+          ! grep -r "logging\.getLogger" --include="*.py" backend/ | grep -v "core/tenant_aware_logger.py" | grep -v "tests/" || exit 1
+          echo "No raw logger instantiation found"
+
+      - name: Response leak check
+        run: |
+          # Check for raw response returns without validation
+          ! grep -r "return response" --include="*.py" backend/api/ | grep -v "ResponseValidator" || exit 1
+          echo "No raw response returns found in API"
+          # Check for direct model returns
+          ! grep -r "return.*model\(" --include="*.py" backend/api/ | grep -v "ResponseValidator" || exit 1
+          echo "No direct model returns found in API"
+
+      - name: CI check for unscoped memory
+        run: |
+          # Check for memory operations without tenant_id
+          ! grep -r "memory\." --include="*.py" backend/services/ | grep -v "tenant_id" | grep -v "account_id" || exit 1
+          echo "All memory operations scoped to tenant/account"
+
+      - name: CI check for direct provider imports
+        run: |
+          # Check for direct OpenAI imports outside ML service
+          ! grep -r "from openai import\|import openai" --include="*.py" backend/ | grep -v "services/ml/" | grep -v "integrations/" | grep -v "tests/" || exit 1
+          echo "No direct OpenAI imports outside ML service/integrations"
+          # Check for direct Anthropic imports outside ML service
+          ! grep -r "from anthropic import\|import anthropic" --include="*.py" backend/ | grep -v "services/ml/" | grep -v "integrations/" | grep -v "tests/" || exit 1
+          echo "No direct Anthropic imports outside ML service/integrations"
+
+      - name: CI check for router bypass
+        run: |
+          # Check for direct tool execution without router
+          ! grep -r "execute\(" --include="*.py" backend/services/ | grep -v "router" | grep -v "executor" | grep -v "tests/" || exit 1
+          echo "All tool executions go through router"
+
+      - name: CI check blocks subprocess
+        run: |
+          # Check for subprocess usage outside workspace service
+          ! grep -r "subprocess\." --include="*.py" backend/ | grep -v "services/workspace/" | grep -v "integrations/" | grep -v "tests/" || exit 1
+          echo "No subprocess usage outside workspace service/integrations"
+
+      - name: CI check for direct database access
+        run: |
+          # Check for direct SQLAlchemy session usage outside infrastructure
+          ! grep -r "Session\|sessionmaker\|create_engine" --include="*.py" backend/ | grep -v "infrastructure/" | grep -v "tests/" || exit 1
+          echo "No direct database access outside infrastructure layer"
+
+      - name: CI check for hardcoded secrets
+        run: |
+          # Check for common secret patterns in code
+          ! grep -rE "(sk-[a-zA-Z0-9]{32,}|sk_test_[a-zA-Z0-9]{32,}|AIza[a-zA-Z0-9_-]{35}|AKIA[0-9A-Z]{16})" --include="*.py" backend/ | grep -v "tests/" || exit 1
+          echo "No hardcoded secrets detected"

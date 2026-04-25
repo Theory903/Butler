@@ -99,68 +99,8 @@ class ButlerToolSpec:
         return self.name
 
 
-# ── Enhanced descriptions for Hermes and Butler-native tools ─────────────────
-# Based on Hermes Agent documentation (Nous Research) and Butler-native implementations
-# These provide context about tool capabilities for better LLM selection
-
-_HERMES_TOOL_DESCRIPTIONS: dict[str, str] = {
-    # ── Hermes tools ───────────────────────────────────────────────────────────
-    "web_search": "Search the web for current information using search engines. Returns relevant web pages, snippets, and sources. Ideal for answering questions about recent events, factual queries, or research topics.",
-    "memory_recall": "Retrieve relevant memories from the agent's long-term memory store. Uses semantic search to find past conversations, facts, and context that match the current query. Helps maintain continuity across sessions.",
-    "session_search": "Search through past conversation sessions using full-text search. Finds previous discussions, decisions, and context from session history. Useful for recalling what was discussed in prior interactions.",
-    "list_files": "List files and directories in a given path. Supports recursive listing, filtering by extension, and sorting. Essential for navigating filesystems and understanding project structure.",
-    "read_file": "Read the contents of a file. Supports text files, code files, and documents. Returns the full file content for analysis, editing, or information extraction.",
-    "clarify": "Ask the user for clarification or additional information when a request is ambiguous or missing required details. Helps ensure the agent understands the user's intent before proceeding.",
-    "get_time": "Get the current date and time in the user's timezone. Useful for time-sensitive operations, scheduling, and context-aware responses.",
-    "fuzzy_match": "Perform fuzzy string matching to find similar items in a list. Useful for approximate matching, typo correction, and finding close matches in datasets.",
-    "url_safety_check": "Check if a URL is safe before accessing it. Analyzes for phishing, malware, and other security threats. Important for protecting users from malicious links.",
-    "osv_check": "Check for known security vulnerabilities in software packages using the Open Source Vulnerabilities (OSV) database. Helps identify and mitigate security risks in dependencies.",
-    "system_stats": "Get system resource statistics including CPU, memory, disk, and network usage. Useful for monitoring system health and performance.",
-    "transcribe_audio": "Transcribe audio files or audio streams to text using speech recognition. Supports multiple audio formats and languages. Essential for processing voice inputs.",
-    "synthesize_speech": "Convert text to speech using text-to-speech synthesis. Supports multiple voices, languages, and audio formats. Useful for voice responses and accessibility.",
-    "vision_analyze": "Analyze images using computer vision. Extracts objects, text, scenes, and other visual information. Supports OCR, object detection, and image understanding.",
-    "image_generate": "Generate images from text descriptions using AI image generation models. Creates visual content based on prompts. Useful for creative tasks and visual communication.",
-    "todo_list": "Manage todo lists and task tracking. Create, read, update, and delete todo items. Helps users stay organized and track progress on tasks.",
-    "get_credential": "Retrieve stored API keys, tokens, or other credentials from the secure credential store. Provides access to external services without exposing secrets.",
-    "list_skills": "List all available skills in the agent's skill library. Shows skill names, descriptions, and metadata. Helps users discover what capabilities are available.",
-    "get_skill_plan": "Get a plan for executing a specific skill. Returns the steps, tools, and resources needed to complete the skill. Useful for understanding how a skill will be executed.",
-    "write_file": "Write content to a file. Creates new files or overwrites existing ones. Supports text, code, and structured data. Essential for content creation and file modification.",
-    "patch_file": "Apply targeted edits to a file using diff-style patches. Makes precise changes to specific lines or sections. Useful for code refactoring and targeted edits.",
-    "send_message": "Send messages to external communication platforms (email, Slack, Discord, etc.). Supports multiple channels and message formats. Enables the agent to proactively communicate with users.",
-    "create_cron_job": "Create scheduled tasks using cron syntax. Automates recurring operations like reports, backups, and maintenance tasks. Supports flexible scheduling.",
-    "delete_cron_job": "Delete scheduled cron jobs. Removes automated tasks that are no longer needed. Helps manage scheduled operations.",
-    "delegate": "Delegate a subtask to a spawned sub-agent. Creates an isolated agent instance to handle a specific task. Enables parallel processing and task specialization.",
-    "mixture_of_agents": "Use multiple AI agents in parallel to solve complex problems. Combines outputs from different models or approaches. Improves answer quality through consensus.",
-    "skill_install": "Install a new skill from the skills registry. Downloads and configures additional capabilities for the agent. Extends the agent's functionality.",
-    "mcp_connect": "Connect to an external MCP (Model Context Protocol) server. Discovers and registers tools from the MCP server. Integrates external tool providers.",
-    "run_terminal": "Execute shell commands in a terminal. Runs arbitrary commands with full system access. Powerful but requires careful safety controls.",
-    "code_execution": "Execute code in a sandboxed environment. Supports Python and other languages. Useful for computation, data processing, and testing.",
-    "browser_automation": "Automate web browser interactions. Navigate websites, fill forms, scrape data, and perform web-based tasks. Enables web automation workflows.",
-    "firecrawl": "Crawl and scrape websites at scale. Extracts structured data from web pages. Handles pagination, JavaScript rendering, and rate limiting.",
-    "homeassistant_control": "Control Home Assistant smart home devices. Turn lights on/off, adjust thermostats, trigger automations. Integrates with IoT systems.",
-    "rl_training": "Train reinforcement learning models using the agent's trajectory data. Improves the agent's decision-making over time. Advanced ML capability.",
-    "env_docker": "Execute tools in a Docker container environment. Provides isolated, reproducible execution. Useful for testing and sandboxing.",
-    "env_modal": "Execute tools in a Modal serverless environment. Provides scalable, ephemeral compute resources. Suitable for burst workloads.",
-    "env_ssh": "Execute tools on a remote SSH server. Enables remote command execution and distributed processing. Requires SSH credentials.",
-    "env_daytona": "Execute tools in a Daytona development environment. Provides cloud-based development workspaces. Supports persistent dev environments.",
-    "env_singularity": "Execute tools in a Singularity container. Provides HPC-compatible containerization. Useful for scientific computing clusters.",
-
-    # ── Butler-native tools ─────────────────────────────────────────────────────
-    "read_file_tool": "Butler-native file reader with pagination support. Reads text files, code files, and documents with character limit protection. Supports offset/limit for targeted reads and blocks device paths. Replaces Hermes file tools for Butler-specific implementations.",
-    "write_file_tool": "Butler-native file writer. Creates new files or overwrites existing ones with permission handling. Blocks device paths and tracks bytes written. Replaces Hermes file tools for Butler-specific implementations.",
-    "list_files_tool": "Butler-native directory listing tool. Lists files and directories with pattern matching, size information, and modification times. Supports limit-based pagination. Replaces Hermes file tools for Butler-specific implementations.",
-    "delete_file_tool": "Butler-native file deletion tool. Safely deletes files with device path blocking. Replaces Hermes file tools for Butler-specific implementations.",
-    "move_file_tool": "Butler-native file move/rename tool. Moves or renames files and directories with device path protection. Replaces Hermes file tools for Butler-specific implementations.",
-    "search_files_tool": "Butler-native content search tool. Searches for text patterns across files with glob-based file filtering. Returns line numbers and context for matches. Replaces Hermes file tools for Butler-specific implementations.",
-    "web_search_tool": "Butler-native web search using Tavily or Firecrawl APIs. Searches the web for current information with configurable depth. Returns relevant results with snippets and sources. Replaces Hermes web tools for Butler-specific implementations.",
-    "web_extract_tool": "Butler-native web content extractor. Extracts structured content from web pages using Firecrawl API. Supports markdown and HTML output formats. Replaces Hermes web tools for Butler-specific implementations.",
-    "get_time": "Butler-native time retrieval tool. Gets current time in UTC or specified timezone. Returns ISO format, timestamp, and formatted string. Replaces Hermes time tools for Butler-specific implementations.",
-    "get_date": "Butler-native date retrieval tool. Gets current date in UTC or specified timezone. Returns ISO format, year, month, and day components. Replaces Hermes time tools for Butler-specific implementations.",
-    "is_safe_url": "Butler-native URL safety checker. Blocks requests to private/internal network addresses to prevent SSRF attacks. Protects cloud metadata endpoints. Replaces Hermes URL safety tools for Butler-specific implementations.",
-}
-
 # ── Tier assignment table ────────────────────────────────────────────────────
-# Maps Hermes tool name → (risk_tier, butler_service_owner, sandbox, side_effects, input_schema)
+# Maps Hermes tool name → (risk_tier, butler_service_owner, sandbox, side_effects)
 
 _HERMES_TOOL_TIER_MAP: dict[str, dict] = {
     # ── L0: safe_auto — no approval ─────────────────────────────────────────
@@ -169,265 +109,80 @@ _HERMES_TOOL_TIER_MAP: dict[str, dict] = {
         "owner": "search",
         "sandbox": "none",
         "side_effects": ["network"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search query"},
-                "limit": {"type": "integer", "description": "Maximum number of results", "default": 5},
-                "search_depth": {"type": "string", "description": "Search depth (basic or advanced)", "default": "basic"},
-            },
-            "required": ["query"],
-        },
     },
     "memory_recall": {
         "tier": RiskTier.L0,
         "owner": "memory",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Query to search for in memory"},
-                "limit": {"type": "integer", "description": "Maximum number of results", "default": 5},
-            },
-            "required": ["query"],
-        },
     },
     "session_search": {
         "tier": RiskTier.L0,
         "owner": "memory",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Query to search for in sessions"},
-                "limit": {"type": "integer", "description": "Maximum number of results", "default": 5},
-            },
-            "required": ["query"],
-        },
     },
-    "list_files": {
-        "tier": RiskTier.L0,
-        "owner": "tools",
-        "sandbox": "none",
-        "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Directory path to list", "default": "."},
-                "pattern": {"type": "string", "description": "File pattern to match", "default": "*"},
-                "limit": {"type": "integer", "description": "Maximum number of files", "default": 100},
-            },
-            "required": [],
-        },
-    },
-    "read_file": {
-        "tier": RiskTier.L0,
-        "owner": "tools",
-        "sandbox": "docker",
-        "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "filepath": {"type": "string", "description": "Path to the file to read"},
-                "offset": {"type": "integer", "description": "Line number to start from (1-indexed)", "default": 1},
-                "limit": {"type": "integer", "description": "Maximum lines to return", "default": 500},
-            },
-            "required": ["filepath"],
-        },
-    },
+    "list_files": {"tier": RiskTier.L0, "owner": "tools", "sandbox": "none", "side_effects": []},
+    "read_file": {"tier": RiskTier.L0, "owner": "tools", "sandbox": "docker", "side_effects": []},
     "clarify": {
         "tier": RiskTier.L0,
         "owner": "orchestrator",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "question": {"type": "string", "description": "Question to ask the user for clarification"},
-            },
-            "required": ["question"],
-        },
     },
-    "get_time": {
-        "tier": RiskTier.L0,
-        "owner": "tools",
-        "sandbox": "none",
-        "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "tz": {"type": "string", "description": "Timezone string (e.g., UTC, America/New_York)", "default": "UTC"},
-            },
-            "required": [],
-        },
-    },
-    "fuzzy_match": {
-        "tier": RiskTier.L0,
-        "owner": "tools",
-        "sandbox": "none",
-        "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Query string to match"},
-                "items": {"type": "array", "description": "List of items to search through", "items": {"type": "string"}},
-                "threshold": {"type": "number", "description": "Similarity threshold (0-1)", "default": 0.6},
-            },
-            "required": ["query", "items"],
-        },
-    },
+    "get_time": {"tier": RiskTier.L0, "owner": "tools", "sandbox": "none", "side_effects": []},
+    "fuzzy_match": {"tier": RiskTier.L0, "owner": "tools", "sandbox": "none", "side_effects": []},
     "url_safety_check": {
         "tier": RiskTier.L0,
         "owner": "security",
         "sandbox": "none",
         "side_effects": ["network"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "URL to check for safety"},
-            },
-            "required": ["url"],
-        },
     },
     "osv_check": {
         "tier": RiskTier.L0,
         "owner": "security",
         "sandbox": "none",
         "side_effects": ["network"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "package": {"type": "string", "description": "Package name to check"},
-                "version": {"type": "string", "description": "Package version"},
-            },
-            "required": ["package"],
-        },
     },
-    "system_stats": {
-        "tier": RiskTier.L0,
-        "owner": "tools",
-        "sandbox": "none",
-        "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
+    "system_stats": {"tier": RiskTier.L0, "owner": "tools", "sandbox": "none", "side_effects": []},
     # ── L1: logged — no approval, audit trail ─────────────────────────────
     "transcribe_audio": {
         "tier": RiskTier.L1,
         "owner": "audio",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "audio_path": {"type": "string", "description": "Path to audio file"},
-                "language": {"type": "string", "description": "Language code (e.g., en, es)", "default": "en"},
-            },
-            "required": ["audio_path"],
-        },
     },
     "synthesize_speech": {
         "tier": RiskTier.L1,
         "owner": "audio",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string", "description": "Text to convert to speech"},
-                "voice": {"type": "string", "description": "Voice identifier", "default": "default"},
-                "language": {"type": "string", "description": "Language code", "default": "en"},
-            },
-            "required": ["text"],
-        },
     },
     "vision_analyze": {
         "tier": RiskTier.L1,
         "owner": "vision",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "image_path": {"type": "string", "description": "Path to image file or URL"},
-                "task": {"type": "string", "description": "Analysis task (describe, ocr, detect)", "default": "describe"},
-            },
-            "required": ["image_path"],
-        },
     },
     "image_generate": {
         "tier": RiskTier.L1,
         "owner": "ml",
         "sandbox": "none",
         "side_effects": ["external_api"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Text prompt for image generation"},
-                "size": {"type": "string", "description": "Image size (e.g., 1024x1024)", "default": "1024x1024"},
-                "style": {"type": "string", "description": "Image style", "default": "realistic"},
-            },
-            "required": ["prompt"],
-        },
     },
-    "todo_list": {
-        "tier": RiskTier.L1,
-        "owner": "tools",
-        "sandbox": "none",
-        "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "description": "Action (add, list, complete, delete)"},
-                "item": {"type": "string", "description": "Todo item text"},
-                "list_name": {"type": "string", "description": "Todo list name", "default": "default"},
-            },
-            "required": ["action"],
-        },
-    },
+    "todo_list": {"tier": RiskTier.L1, "owner": "tools", "sandbox": "none", "side_effects": []},
     "get_credential": {
         "tier": RiskTier.L1,
         "owner": "auth",
         "sandbox": "none",
         "side_effects": ["credential_access"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "credential_name": {"type": "string", "description": "Name of the credential to retrieve"},
-            },
-            "required": ["credential_name"],
-        },
     },
-    "list_skills": {
-        "tier": RiskTier.L1,
-        "owner": "tools",
-        "sandbox": "none",
-        "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "category": {"type": "string", "description": "Filter by category"},
-            },
-            "required": [],
-        },
-    },
+    "list_skills": {"tier": RiskTier.L1, "owner": "tools", "sandbox": "none", "side_effects": []},
     "get_skill_plan": {
         "tier": RiskTier.L1,
         "owner": "tools",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "skill_name": {"type": "string", "description": "Name of the skill"},
-            },
-            "required": ["skill_name"],
-        },
     },
     # ── L2: confirm — one-click approval ──────────────────────────────────
     "write_file": {
@@ -435,127 +190,49 @@ _HERMES_TOOL_TIER_MAP: dict[str, dict] = {
         "owner": "tools",
         "sandbox": "docker",
         "side_effects": ["file_write"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "filepath": {"type": "string", "description": "Path to the file to write"},
-                "content": {"type": "string", "description": "Content to write to the file"},
-            },
-            "required": ["filepath", "content"],
-        },
     },
     "patch_file": {
         "tier": RiskTier.L2,
         "owner": "tools",
         "sandbox": "docker",
         "side_effects": ["file_write"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "filepath": {"type": "string", "description": "Path to the file to patch"},
-                "old_text": {"type": "string", "description": "Text to replace"},
-                "new_text": {"type": "string", "description": "Replacement text"},
-            },
-            "required": ["filepath", "old_text", "new_text"],
-        },
     },
     "send_message": {
         "tier": RiskTier.L2,
         "owner": "communication",
         "sandbox": "none",
         "side_effects": ["message"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "channel": {"type": "string", "description": "Channel to send to (email, slack, etc.)"},
-                "recipient": {"type": "string", "description": "Recipient address or ID"},
-                "message": {"type": "string", "description": "Message content"},
-            },
-            "required": ["channel", "recipient", "message"],
-        },
     },
     "create_cron_job": {
         "tier": RiskTier.L2,
         "owner": "automation",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "schedule": {"type": "string", "description": "Cron schedule expression"},
-                "command": {"type": "string", "description": "Command to execute"},
-            },
-            "required": ["schedule", "command"],
-        },
     },
     "delete_cron_job": {
         "tier": RiskTier.L2,
         "owner": "automation",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "job_id": {"type": "string", "description": "Job ID to delete"},
-            },
-            "required": ["job_id"],
-        },
     },
     "delegate": {
         "tier": RiskTier.L2,
         "owner": "orchestrator",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "task": {"type": "string", "description": "Task description to delegate"},
-                "context": {"type": "string", "description": "Additional context for the sub-agent"},
-            },
-            "required": ["task"],
-        },
     },
     "mixture_of_agents": {
         "tier": RiskTier.L2,
         "owner": "orchestrator",
         "sandbox": "none",
         "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Query to process with multiple agents"},
-                "agent_count": {"type": "integer", "description": "Number of agents to use", "default": 3},
-            },
-            "required": ["query"],
-        },
     },
-    "skill_install": {
-        "tier": RiskTier.L2,
-        "owner": "tools",
-        "sandbox": "none",
-        "side_effects": [],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "skill_name": {"type": "string", "description": "Name of skill to install"},
-                "version": {"type": "string", "description": "Specific version to install"},
-            },
-            "required": ["skill_name"],
-        },
-    },
+    "skill_install": {"tier": RiskTier.L2, "owner": "tools", "sandbox": "none", "side_effects": []},
     "mcp_connect": {
         "tier": RiskTier.L2,
         "owner": "tools",
         "sandbox": "none",
         "side_effects": ["external_api"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "server_url": {"type": "string", "description": "MCP server URL"},
-                "transport": {"type": "string", "description": "Transport type (stdio or http)", "default": "stdio"},
-            },
-            "required": ["server_url"],
-        },
     },
     # ── L3: restricted — elevated assurance + explicit approval ───────────
     "run_terminal": {
@@ -563,155 +240,66 @@ _HERMES_TOOL_TIER_MAP: dict[str, dict] = {
         "owner": "tools",
         "sandbox": "docker",
         "side_effects": ["process_spawn", "file_write", "network"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "Shell command to execute"},
-                "working_dir": {"type": "string", "description": "Working directory", "default": "/"},
-            },
-            "required": ["command"],
-        },
     },
     "code_execution": {
         "tier": RiskTier.L3,
         "owner": "tools",
         "sandbox": "docker",
         "side_effects": ["code_execute", "file_write"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "code": {"type": "string", "description": "Code to execute"},
-                "language": {"type": "string", "description": "Programming language", "default": "python"},
-            },
-            "required": ["code"],
-        },
     },
     "browser_automation": {
         "tier": RiskTier.L3,
         "owner": "search",
         "sandbox": "docker",
         "side_effects": ["network"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "URL to navigate to"},
-                "actions": {"type": "array", "description": "List of browser actions", "items": {"type": "object"}},
-            },
-            "required": ["url"],
-        },
     },
     "firecrawl": {
         "tier": RiskTier.L3,
         "owner": "search",
         "sandbox": "none",
         "side_effects": ["network", "external_api"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "urls": {"type": "array", "description": "List of URLs to crawl", "items": {"type": "string"}},
-                "format": {"type": "string", "description": "Output format (markdown, html)", "default": "markdown"},
-            },
-            "required": ["urls"],
-        },
     },
     "homeassistant_control": {
         "tier": RiskTier.L3,
         "owner": "device",
         "sandbox": "none",
         "side_effects": ["device", "external_api"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "entity_id": {"type": "string", "description": "Home Assistant entity ID"},
-                "action": {"type": "string", "description": "Action to perform (turn_on, turn_off, toggle)"},
-                "value": {"type": "string", "description": "Value to set (for brightness, etc.)"},
-            },
-            "required": ["entity_id", "action"],
-        },
     },
     "rl_training": {
         "tier": RiskTier.L3,
         "owner": "ml",
         "sandbox": "docker",
         "side_effects": ["code_execute", "file_write"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "trajectory_data": {"type": "string", "description": "Path to trajectory data"},
-                "model_name": {"type": "string", "description": "Model name to train"},
-            },
-            "required": ["trajectory_data", "model_name"],
-        },
     },
     "env_docker": {
         "tier": RiskTier.L3,
         "owner": "tools",
         "sandbox": "docker",
         "side_effects": ["code_execute"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "Command to run in Docker"},
-                "image": {"type": "string", "description": "Docker image to use"},
-            },
-            "required": ["command"],
-        },
     },
     "env_modal": {
         "tier": RiskTier.L3,
         "owner": "tools",
         "sandbox": "modal",
         "side_effects": ["code_execute", "external_api"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "function": {"type": "string", "description": "Modal function to call"},
-                "args": {"type": "object", "description": "Arguments for the Modal function"},
-            },
-            "required": ["function"],
-        },
     },
     "env_ssh": {
         "tier": RiskTier.L3,
         "owner": "tools",
         "sandbox": "ssh",
         "side_effects": ["network", "process_spawn"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "host": {"type": "string", "description": "SSH host to connect to"},
-                "command": {"type": "string", "description": "Command to run on remote host"},
-            },
-            "required": ["host", "command"],
-        },
     },
     "env_daytona": {
         "tier": RiskTier.L3,
         "owner": "tools",
         "sandbox": "daytona",
         "side_effects": ["code_execute", "external_api"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "workspace_id": {"type": "string", "description": "Daytona workspace ID"},
-                "command": {"type": "string", "description": "Command to run in Daytona"},
-            },
-            "required": ["workspace_id", "command"],
-        },
     },
     "env_singularity": {
         "tier": RiskTier.L3,
         "owner": "tools",
         "sandbox": "singularity",
         "side_effects": ["code_execute"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "image": {"type": "string", "description": "Singularity image path"},
-                "command": {"type": "string", "description": "Command to run in Singularity"},
-            },
-            "required": ["image", "command"],
-        },
     },
 }
 
@@ -792,7 +380,6 @@ class HermesToolCompiler:
                 "owner": "tools",
                 "sandbox": "none",
                 "side_effects": [],
-                "input_schema": {},
             },
         )
 
@@ -800,7 +387,6 @@ class HermesToolCompiler:
         owner = tier_config["owner"]
         sandbox = tier_config["sandbox"]
         side_effects = tier_config["side_effects"]
-        input_schema = tier_config.get("input_schema", {})
 
         if hermes_name not in _HERMES_TOOL_TIER_MAP:
             logger.warning(
@@ -818,18 +404,11 @@ class HermesToolCompiler:
         if "device" in side_effects:
             verification_mode = "both"
 
-        # Use enhanced description if available, otherwise fall back to Hermes metadata
-        enhanced_description = _HERMES_TOOL_DESCRIPTIONS.get(hermes_name)
-        description = enhanced_description or hermes_meta.get("description", "")
-
-        # Use input_schema from tier config if available, otherwise fall back to Hermes metadata
-        final_input_schema = input_schema or hermes_meta.get("input_schema", {})
-
         spec = ButlerToolSpec(
             name=hermes_name,
             hermes_name=hermes_name,
             version=hermes_meta.get("version", "1.0"),
-            description=description,
+            description=hermes_meta.get("description", ""),
             category=hermes_meta.get("category", "general"),
             butler_service_owner=owner,
             risk_tier=tier,
@@ -845,7 +424,7 @@ class HermesToolCompiler:
             visible_tiers=_TIER_VISIBILITY[tier],
             visible_channels=hermes_meta.get("visible_channels", ["mobile", "web", "voice", "api"]),
             visible_industries=hermes_meta.get("visible_industries", ["*"]),
-            input_schema=final_input_schema,
+            input_schema=hermes_meta.get("input_schema", {}),
             output_schema=hermes_meta.get("output_schema", {}),
         )
 
