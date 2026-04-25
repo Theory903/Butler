@@ -50,38 +50,33 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
-import pytest
 
-from services.tools.skills_hub import (
-    ButlerSkillsHub,
-    SkillDefinition,
-    SkillTrigger,
-    ToolStep,
-    SkillExecutionPlan,
+from domain.policy.product_tiers import (
+    TIER_CONFIGS,
+    CapabilityFlag,
+    ProductTier,
+    capabilities_for_tier,
+    check_capability,
+    get_tier_config,
 )
 from services.tools.mcp_bridge import (
     MCPBridgeAdapter,
     MCPServerConfig,
     MCPTool,
-    get_mcp_bridge,
 )
-from domain.policy.product_tiers import (
-    ProductTier,
-    CapabilityFlag,
-    TierConfig,
-    TIER_CONFIGS,
-    check_capability,
-    get_tier_config,
-    capabilities_for_tier,
+from services.tools.skills_hub import (
+    ButlerSkillsHub,
+    SkillDefinition,
+    SkillTrigger,
+    ToolStep,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 25: ButlerSkillsHub
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerSkillsHub:
 
+class TestButlerSkillsHub:
     def _hub(self) -> ButlerSkillsHub:
         return ButlerSkillsHub()
 
@@ -203,7 +198,10 @@ class TestButlerSkillsHub:
 # Test 26: MCPBridgeAdapter
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_server(server_id="srv1", transport="http", url="http://localhost:9000") -> MCPServerConfig:
+
+def _make_server(
+    server_id="srv1", transport="http", url="http://localhost:9000"
+) -> MCPServerConfig:
     tool = MCPTool(
         name="my_tool",
         description="A test tool",
@@ -220,7 +218,6 @@ def _make_server(server_id="srv1", transport="http", url="http://localhost:9000"
 
 
 class TestMCPBridgeAdapter:
-
     def _bridge(self) -> MCPBridgeAdapter:
         return MCPBridgeAdapter()
 
@@ -290,7 +287,11 @@ class TestMCPBridgeAdapter:
     def test_build_tools_list_response_format(self):
         bridge = self._bridge()
         butler_tools = [
-            {"name": "web_search", "description": "Search the web", "input_schema": {"type": "object"}}
+            {
+                "name": "web_search",
+                "description": "Search the web",
+                "input_schema": {"type": "object"},
+            }
         ]
         resp = bridge.build_tools_list_response(butler_tools)
         assert "result" in resp
@@ -350,8 +351,8 @@ class TestMCPBridgeAdapter:
 # Test 27: ProductTiers
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestProductTiers:
 
+class TestProductTiers:
     def test_personal_has_web_search(self):
         r = check_capability(ProductTier.PERSONAL, CapabilityFlag.WEB_SEARCH)
         assert r.allowed is True

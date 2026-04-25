@@ -1,9 +1,9 @@
-from services.chat.canvas import CanvasRender, CanvasPreview, CanvasSurface, ToolContent
-from services.chat.autoreply import AutoReplySystem, CommandRegistry, CommandExecutor, SubAgentPool
+from services.chat.autoreply import AutoReplySystem, CommandExecutor, CommandRegistry, SubAgentPool
+from services.chat.canvas import CanvasPreview, CanvasRender, CanvasSurface, ToolContent
 
 __all__ = [
     "CanvasRender",
-    "CanvasPreview", 
+    "CanvasPreview",
     "CanvasSurface",
     "ToolContent",
     "AutoReplySystem",

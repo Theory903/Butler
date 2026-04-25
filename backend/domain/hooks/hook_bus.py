@@ -36,8 +36,9 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import structlog
 
@@ -48,19 +49,20 @@ _HERMES_HOOKS_DIR = Path.home() / ".hermes" / "hooks"
 
 # Hermes event → Butler canonical
 _EVENT_REMAP: dict[str, str] = {
-    "gateway:startup":  "butler:startup",
-    "session:start":    "butler:session:start",
-    "session:end":      "butler:session:end",
-    "session:reset":    "butler:session:reset",
-    "agent:start":      "butler:agent:start",
-    "agent:step":       "butler:agent:step",
-    "agent:end":        "butler:agent:end",
+    "gateway:startup": "butler:startup",
+    "session:start": "butler:session:start",
+    "session:end": "butler:session:end",
+    "session:reset": "butler:session:reset",
+    "agent:start": "butler:agent:start",
+    "agent:step": "butler:agent:step",
+    "agent:end": "butler:agent:end",
 }
 
 Handler = Callable[[str, dict], Any]
 
 
 # ── IHookLoader protocol (small, focused — I) ─────────────────────────────────
+
 
 class IHookLoader:
     """Single responsibility: provide (event_type, handler) pairs from one source."""
@@ -70,6 +72,7 @@ class IHookLoader:
 
 
 # ── Builtin hooks (S — each handler does one thing) ──────────────────────────
+
 
 async def _on_startup(event_type: str, ctx: dict) -> None:
     logger.info("butler_startup_hook_fired", ts=ctx.get("ts"))
@@ -92,9 +95,8 @@ async def _on_agent_end(event_type: str, ctx: dict) -> None:
     )
     try:
         from core.observability import get_metrics
-        get_metrics().record_tool_call(
-            "__agent_run__", "L0", bool(ctx.get("success", True))
-        )
+
+        get_metrics().record_tool_call("__agent_run__", "L0", bool(ctx.get("success", True)))
     except Exception:
         pass
 
@@ -104,13 +106,14 @@ class BuiltinHookLoader(IHookLoader):
 
     def load(self) -> list[tuple[str, Handler]]:
         return [
-            ("butler:startup",       _on_startup),
+            ("butler:startup", _on_startup),
             ("butler:session:start", _on_session_start),
-            ("butler:agent:end",     _on_agent_end),
+            ("butler:agent:end", _on_agent_end),
         ]
 
 
 # ── FileSystem loader (O — adds source without changing bus) ──────────────────
+
 
 class FileSystemHookLoader(IHookLoader):
     """Loads hooks from a directory of HOOK.yaml + handler.py pairs.
@@ -132,12 +135,13 @@ class FileSystemHookLoader(IHookLoader):
             if not hook_dir.is_dir():
                 continue
             manifest_path = hook_dir / "HOOK.yaml"
-            handler_path  = hook_dir / "handler.py"
+            handler_path = hook_dir / "handler.py"
             if not manifest_path.exists() or not handler_path.exists():
                 continue
 
             try:
                 import yaml
+
                 manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
                 if not isinstance(manifest, dict):
                     continue
@@ -171,6 +175,7 @@ class FileSystemHookLoader(IHookLoader):
 
 # ── ButlerHookBus (IHookBus, DI-friendly) ─────────────────────────────────────
 
+
 class ButlerHookBus:
     """Butler lifecycle event bus.
 
@@ -180,11 +185,11 @@ class ButlerHookBus:
     """
 
     def __init__(self, loaders: list[IHookLoader]) -> None:
-        self._loaders  = loaders
+        self._loaders = loaders
         self._handlers: dict[str, list[Handler]] = {}
-        self._loaded   = False
+        self._loaded = False
 
-    def load(self) -> "ButlerHookBus":              # IHookBus — idempotent
+    def load(self) -> ButlerHookBus:  # IHookBus — idempotent
         if self._loaded:
             return self
         self._loaded = True
@@ -204,7 +209,7 @@ class ButlerHookBus:
         logger.info("butler_hooks_loaded", events=len(self._handlers))
         return self
 
-    async def emit(                                 # IHookBus
+    async def emit(  # IHookBus
         self,
         event_type: str,
         context: dict[str, Any] | None = None,
@@ -236,16 +241,19 @@ class ButlerHookBus:
         """Programmatic registration — avoids disk for service-layer hooks."""
         self._handlers.setdefault(event_type, []).append(handler)
 
-    def event_names(self) -> list[str]:             # IHookBus
+    def event_names(self) -> list[str]:  # IHookBus
         return sorted(self._handlers.keys())
 
 
 # ── Default factory ───────────────────────────────────────────────────────────
 
+
 def make_default_hook_bus() -> ButlerHookBus:
     """Production: builtins + ~/.butler/hooks/ + legacy ~/.hermes/hooks/."""
-    return ButlerHookBus(loaders=[
-        BuiltinHookLoader(),
-        FileSystemHookLoader(_BUTLER_HOOKS_DIR, remap=False),
-        FileSystemHookLoader(_HERMES_HOOKS_DIR,  remap=True),
-    ])
+    return ButlerHookBus(
+        loaders=[
+            BuiltinHookLoader(),
+            FileSystemHookLoader(_BUTLER_HOOKS_DIR, remap=False),
+            FileSystemHookLoader(_HERMES_HOOKS_DIR, remap=True),
+        ]
+    )

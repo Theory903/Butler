@@ -17,14 +17,14 @@ capability unlocks (e.g. HIPAA mode for healthcare, FedRAMP for gov).
 """
 
 from dataclasses import dataclass
-from enum import Enum
-from typing import Optional, Union, Any
-from domain.policy.capability_flags import CapabilityArea, TrustLevel
+from enum import StrEnum
+
+from domain.policy.capability_flags import CapabilityArea
 
 
-class ProductTier(str, Enum):
-    PERSONAL   = "personal"
-    PRO        = "pro"
+class ProductTier(StrEnum):
+    PERSONAL = "personal"
+    PRO = "pro"
     ENTERPRISE = "enterprise"
 
 
@@ -35,45 +35,52 @@ CapabilityFlag = CapabilityArea
 @dataclass(frozen=True)
 class TierConfig:
     """Per-tier capability set and rate limits."""
+
     tier: ProductTier
     display_name: str
-    rpm_limit: int                           # requests per minute
-    max_devices: int                         # -1 = unlimited
-    max_users: int                           # -1 = unlimited
+    rpm_limit: int  # requests per minute
+    max_devices: int  # -1 = unlimited
+    max_users: int  # -1 = unlimited
     storage_gb: float
     capabilities: frozenset[CapabilityFlag]
-    daily_llm_calls: int                     # -1 = unlimited
+    daily_llm_calls: int  # -1 = unlimited
     description: str = ""
 
 
 # ── Capability matrix ──────────────────────────────────────────────────────────
 
-_PERSONAL_CAPS = frozenset({
-    CapabilityArea.WEB_SEARCH,
-    CapabilityArea.SEARCH_ENGINE,
-    CapabilityArea.MESSAGING,
-    CapabilityArea.MEMORY_OPS,
-    CapabilityArea.GEN_AI_FACTORY,
-})
+_PERSONAL_CAPS = frozenset(
+    {
+        CapabilityArea.WEB_SEARCH,
+        CapabilityArea.SEARCH_ENGINE,
+        CapabilityArea.MESSAGING,
+        CapabilityArea.MEMORY_OPS,
+        CapabilityArea.GEN_AI_FACTORY,
+    }
+)
 
-_PRO_CAPS = _PERSONAL_CAPS | frozenset({
-    CapabilityArea.SOCIAL_PRESENCE,
-    CapabilityArea.CALENDAR_OPS,
-    CapabilityArea.DATA_ANALYSIS,
-    CapabilityArea.VISION_REASONING,
-    CapabilityArea.AUDIO_FLOW,
-    CapabilityArea.DELEGATION,
-    CapabilityArea.PLATFORM_PLUGINS,
-    CapabilityArea.SYSTEM_OPS,
-    CapabilityArea.STREAMS_MGMT,
-})
+_PRO_CAPS = _PERSONAL_CAPS | frozenset(
+    {
+        CapabilityArea.SOCIAL_PRESENCE,
+        CapabilityArea.CALENDAR_OPS,
+        CapabilityArea.DATA_ANALYSIS,
+        CapabilityArea.VISION_REASONING,
+        CapabilityArea.AUDIO_FLOW,
+        CapabilityArea.DELEGATION,
+        CapabilityArea.PLATFORM_PLUGINS,
+        CapabilityArea.SYSTEM_OPS,
+        CapabilityArea.STREAMS_MGMT,
+    }
+)
 
-_ENTERPRISE_CAPS = _PRO_CAPS | frozenset({
-    CapabilityArea.MEETING_ASSISTANT,
-    CapabilityArea.IOT_CONTROL,
-    CapabilityArea.FINANCE_GATEWAY,
-    CapabilityArea.HEALTH_INTEGRATION,
-})
+_ENTERPRISE_CAPS = _PRO_CAPS | frozenset(
+    {
+        CapabilityArea.MEETING_ASSISTANT,
+        CapabilityArea.IOT_CONTROL,
+        CapabilityArea.FINANCE_GATEWAY,
+        CapabilityArea.HEALTH_INTEGRATION,
+    }
+)
 
 TIER_CONFIGS: dict[ProductTier, TierConfig] = {
     ProductTier.PERSONAL: TierConfig(
@@ -114,6 +121,7 @@ TIER_CONFIGS: dict[ProductTier, TierConfig] = {
 
 # ── Capability gate ────────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class TierCheckResult:
     allowed: bool
@@ -143,14 +151,18 @@ def check_capability(
         )
 
     allowed = capability in config.capabilities
-    reason = "" if allowed else (
-        f"Capability '{capability.value}' requires Butler Pro or Enterprise. "
-        f"Current tier: {tier.value}."
+    reason = (
+        ""
+        if allowed
+        else (
+            f"Capability '{capability.value}' requires Butler Pro or Enterprise. "
+            f"Current tier: {tier.value}."
+        )
     )
     return TierCheckResult(allowed=allowed, tier=tier, capability=capability, reason=reason)
 
 
-def get_tier_config(tier: ProductTier) -> Optional[TierConfig]:
+def get_tier_config(tier: ProductTier) -> TierConfig | None:
     return TIER_CONFIGS.get(tier)
 
 

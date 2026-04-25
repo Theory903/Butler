@@ -7,37 +7,37 @@ through EventNormalizer first.
 Governed by: docs/00-governance/transplant-constitution.md §7
 """
 
+from domain.events.normalizer import EventNormalizer
 from domain.events.schemas import (
+    ApprovalDeniedEvent,
+    ApprovalExpiredEvent,
+    ApprovalGrantedEvent,
+    ApprovalRequestedEvent,
     ButlerEvent,
     EventDeliveryClass,
+    MemoryRetrievedEvent,
+    MemoryStoredEvent,
+    SessionEndedEvent,
+    SessionStartedEvent,
+    StreamApprovalRequiredEvent,
+    StreamErrorEvent,
+    StreamFinalEvent,
     # Stream events
     StreamStartEvent,
+    StreamStatusEvent,
     StreamTokenEvent,
     StreamToolCallEvent,
     StreamToolResultEvent,
-    StreamApprovalRequiredEvent,
-    StreamStatusEvent,
-    StreamFinalEvent,
-    StreamErrorEvent,
-    # Domain events
-    TaskStartedEvent,
-    TaskStepStartedEvent,
-    TaskStepCompletedEvent,
     TaskCompletedEvent,
     TaskFailedEvent,
-    ToolExecutingEvent,
+    # Domain events
+    TaskStartedEvent,
+    TaskStepCompletedEvent,
+    TaskStepStartedEvent,
     ToolExecutedEvent,
+    ToolExecutingEvent,
     ToolFailedEvent,
-    MemoryStoredEvent,
-    MemoryRetrievedEvent,
-    ApprovalRequestedEvent,
-    ApprovalGrantedEvent,
-    ApprovalDeniedEvent,
-    ApprovalExpiredEvent,
-    SessionStartedEvent,
-    SessionEndedEvent,
 )
-from domain.events.normalizer import EventNormalizer
 
 __all__ = [
     "ButlerEvent",

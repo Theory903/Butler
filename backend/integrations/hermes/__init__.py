@@ -1,1 +1,1 @@
-"""Hermes integration root package."""
+"""Hermes integration stub for Butler."""

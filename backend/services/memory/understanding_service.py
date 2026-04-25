@@ -1,15 +1,16 @@
-import logging
 import json
+import logging
 from uuid import UUID
-from typing import List, Optional
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
-from domain.memory.models import ExplicitPreference, ExplicitDislike, UserConstraint
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from domain.memory.models import ExplicitDislike, ExplicitPreference, UserConstraint
 from domain.ml.contracts import IReasoningRuntime
 from services.memory.knowledge_repo_contract import KnowledgeRepoContract
 
 logger = logging.getLogger(__name__)
+
 
 class UnderstandingService:
     """Butler's User Understanding Layer — extracts preferences, dislikes, and constraints."""
@@ -18,19 +19,27 @@ class UnderstandingService:
         self,
         db: AsyncSession,
         ml_runtime: IReasoningRuntime,
-        knowledge_repo: Optional[KnowledgeRepoContract] = None,
+        knowledge_repo: KnowledgeRepoContract | None = None,
     ):
         self._db = db
         self._ml_runtime = ml_runtime
         self._knowledge_repo = knowledge_repo
 
-    async def analyze_turn(self, account_id: str, role: str, content: str) -> None:
-        """Analyze a single conversation turn for potential identity/preference updates."""
+    async def analyze_turn(self, account_id: str, role: str, content: str, tenant_id: str | None = None) -> None:
+        """Analyze a single conversation turn for potential identity/preference updates.
+        
+        Args:
+            account_id: Account ID
+            role: Message role
+            content: Message content
+            tenant_id: Tenant ID for multi-tenant isolation (Phase 3)
+        """
         if role != "user":
             return
 
         acc_id = UUID(account_id)
-        
+        tenant_uuid = UUID(tenant_id or account_id)
+
         # We use a fast T2 or T3 model to extract latent preferences
         prompt = f"""
 Analyze the USER MESSAGE for Explicit Preferences, Dislikes, or Constraints.
@@ -58,50 +67,53 @@ Only return items if they are EXPLICIT or strongly implied.
                 payload={
                     "system": "You are Butler's User Understanding Engine.",
                     "prompt": prompt,
-                    "response_format": "json"
-                }
+                    "response_format": "json",
+                },
             )
-            
+
             signals = json.loads(inference_res.get("generated_text", "{}"))
-            
+
             # 1. Update Preferences
             for pref in signals.get("preferences", []):
-                await self._upsert_preference(acc_id, pref)
-                
+                await self._upsert_preference(acc_id, tenant_uuid, pref)
+
             # 2. Update Dislikes
             for dislike in signals.get("dislikes", []):
-                await self._upsert_dislike(acc_id, dislike)
-                
+                await self._upsert_dislike(acc_id, tenant_uuid, dislike)
+
             # 3. Update Constraints
             for constraint in signals.get("constraints", []):
-                await self._upsert_constraint(acc_id, constraint)
-                
+                await self._upsert_constraint(acc_id, tenant_uuid, constraint)
+
             await self._db.commit()
-            
+
         except Exception as e:
             logger.error(f"User understanding analysis failed: {e}")
 
-    async def _upsert_preference(self, account_id: UUID, data: dict):
+    async def _upsert_preference(self, account_id: UUID, tenant_id: UUID, data: dict):
+        """Upsert explicit preference with tenant_id filtering (Phase 3)."""
         stmt = select(ExplicitPreference).where(
             ExplicitPreference.account_id == account_id,
+            ExplicitPreference.tenant_id == tenant_id,
             ExplicitPreference.key == data["key"]
         )
         res = await self._db.execute(stmt)
         pref = res.scalar_one_or_none()
-        
+
         if pref:
             pref.value = data["value"]
             pref.confidence = data["confidence"]
         else:
             pref = ExplicitPreference(
+                tenant_id=tenant_id,
                 account_id=account_id,
                 category=data["category"],
                 key=data["key"],
                 value=data["value"],
-                confidence=data["confidence"]
+                confidence=data["confidence"],
             )
             self._db.add(pref)
-        
+
         # Sync to Neo4j Graph
         if self._knowledge_repo:
             await self._knowledge_repo.upsert_entity(
@@ -109,45 +121,51 @@ Only return items if they are EXPLICIT or strongly implied.
                 entity_type="PREFERENCE",
                 name=f"Pref: {data['key']}",
                 summary=f"User preference for {data['key']} is {data['value']}",
-                metadata={"category": data["category"], "confidence": data["confidence"]}
+                metadata={"category": data["category"], "confidence": data["confidence"]},
             )
 
-    async def _upsert_dislike(self, account_id: UUID, data: dict):
+    async def _upsert_dislike(self, account_id: UUID, tenant_id: UUID, data: dict):
+        """Upsert explicit dislike with tenant_id filtering (Phase 3)."""
         stmt = select(ExplicitDislike).where(
             ExplicitDislike.account_id == account_id,
+            ExplicitDislike.tenant_id == tenant_id,
             ExplicitDislike.key == data["key"]
         )
         res = await self._db.execute(stmt)
         dis = res.scalar_one_or_none()
-        
+
         if dis:
             dis.reason = data.get("reason")
             dis.confidence = data["confidence"]
         else:
             dis = ExplicitDislike(
+                tenant_id=tenant_id,
                 account_id=account_id,
                 key=data["key"],
                 reason=data.get("reason"),
-                confidence=data["confidence"]
+                confidence=data["confidence"],
             )
             self._db.add(dis)
 
-    async def _upsert_constraint(self, account_id: UUID, data: dict):
+    async def _upsert_constraint(self, account_id: UUID, tenant_id: UUID, data: dict):
+        """Upsert user constraint with tenant_id filtering (Phase 3)."""
         stmt = select(UserConstraint).where(
             UserConstraint.account_id == account_id,
+            UserConstraint.tenant_id == tenant_id,
             UserConstraint.constraint_type == data["type"]
         )
         res = await self._db.execute(stmt)
         con = res.scalar_one_or_none()
-        
+
         if con:
             con.value = data["value"]
             con.active = data.get("active", True)
         else:
             con = UserConstraint(
+                tenant_id=tenant_id,
                 account_id=account_id,
                 constraint_type=data["type"],
                 value=data["value"],
-                active=data.get("active", True)
+                active=data.get("active", True),
             )
             self._db.add(con)

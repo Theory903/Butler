@@ -1,14 +1,15 @@
-import logging
 import json
+import logging
 from uuid import UUID
-from typing import List, Optional
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.memory.models import KnowledgeEntity
-from services.memory.knowledge_repo_contract import KnowledgeRepoContract
 from domain.ml.contracts import IReasoningRuntime
+from services.memory.knowledge_repo_contract import KnowledgeRepoContract
 
 logger = logging.getLogger(__name__)
+
 
 class EntityResolutionEngine:
     """Butler's Entity Resolution Engine — resolves mentions to canonical identities."""
@@ -23,10 +24,12 @@ class EntityResolutionEngine:
         self._knowledge_repo = knowledge_repo
         self._ml_runtime = ml_runtime
 
-    async def resolve(self, account_id: str, mention: str, context: Optional[str] = None) -> Optional[KnowledgeEntity]:
+    async def resolve(
+        self, account_id: str, mention: str, context: str | None = None
+    ) -> KnowledgeEntity | None:
         """Resolve a name or mention (e.g. 'Steve') to a canonical entity."""
         acc_id = UUID(account_id)
-        
+
         # 1. Broad Search Strategy
         # Check by exact name match or alias
         existing = await self._knowledge_repo.resolve_identity(acc_id, mention)
@@ -42,37 +45,38 @@ class EntityResolutionEngine:
         # 3. LLM-Assisted Disambiguation
         # If multiple candidates or ambiguity exists, use LLM
         prompt = self._build_resolution_prompt(mention, candidates, context)
-        
+
         try:
             inference_res = await self._ml_runtime.execute_inference(
                 profile_name="cloud_fast_general",
                 payload={
                     "system": "You are Butler's Entity Resolution Engine. Resolve ambiguous mentions.",
                     "prompt": prompt,
-                    "response_format": "json"
-                }
+                    "response_format": "json",
+                },
             )
-            
+
             resolution_data = json.loads(inference_res.get("generated_text", "{}"))
             target_id = resolution_data.get("resolved_id")
-            
+
             if target_id:
                 # Return the matching candidate
                 for c in candidates:
                     if str(c.id) == target_id:
                         return c
-                        
+
         except Exception as e:
             logger.error(f"Entity resolution inference failed: {e}")
-            
+
         return None
 
-    def _build_resolution_prompt(self, mention: str, candidates: List[KnowledgeEntity], context: Optional[str]) -> str:
-        candidates_str = "\n".join([
-            f"- [{c.id}] {c.name} ({c.entity_type}): {c.summary}"
-            for c in candidates
-        ])
-        
+    def _build_resolution_prompt(
+        self, mention: str, candidates: list[KnowledgeEntity], context: str | None
+    ) -> str:
+        candidates_str = "\n".join(
+            [f"- [{c.id}] {c.name} ({c.entity_type}): {c.summary}" for c in candidates]
+        )
+
         return f"""
 Resolve the MENTION to one of the CANONICAL ENTITIES.
 

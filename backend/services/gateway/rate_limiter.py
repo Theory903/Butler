@@ -18,13 +18,19 @@ taking down the entire API.
 """
 
 from __future__ import annotations
-from typing import Optional
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
+
+    from core.health_agent import ButlerHealthAgent
 
 import time
 from dataclasses import dataclass
 
-from redis.asyncio import Redis
 import structlog
+from redis.asyncio import Redis
 
 from domain.auth.exceptions import GatewayErrors
 
@@ -73,8 +79,8 @@ class RateLimitResult:
     allowed: bool
     remaining: int
     limit: int
-    reset: int        # Unix timestamp when the bucket is fully replenished
-    window_s: int     # Refill window in seconds (for Policy header)
+    reset: int  # Unix timestamp when the bucket is fully replenished
+    window_s: int  # Refill window in seconds (for Policy header)
 
     # ── IETF draft composite header values ───────────────────────────────────
 
@@ -114,7 +120,7 @@ class RateLimiter:
         refill_rate: float = 1.0,
         window_s: int = 60,
         key_prefix: str = "ratelimit:tb:",
-        health_agent: "Optional[ButlerHealthAgent]" = None,
+        health_agent: ButlerHealthAgent | None = None,
     ) -> None:
         self._redis = redis
         self._capacity = capacity
@@ -139,13 +145,15 @@ class RateLimiter:
             if status == "UNHEALTHY":
                 # Immediately block non-critical traffic if unhealthy
                 raise GatewayErrors.unhealthy_node()
-            elif status == "DEGRADED":
+            if status == "DEGRADED":
                 # Implementation of Load Shedding: multiply cost by 3x
                 actual_cost = cost * 3
-                logger.info("adaptive_rate_limit_throttle", 
-                            account_id=account_id, 
-                            multiplier=3, 
-                            new_cost=actual_cost)
+                logger.info(
+                    "adaptive_rate_limit_throttle",
+                    account_id=account_id,
+                    multiplier=3,
+                    new_cost=actual_cost,
+                )
 
         try:
             allowed_flag, current_tokens, cap, refill = await self._script(
@@ -173,6 +181,7 @@ class RateLimiter:
             # Emit Prometheus counter for real-time observability
             try:
                 from core.observability import get_metrics
+
                 get_metrics().inc_rate_limit_hit(endpoint=self._key_prefix.rstrip(":"))
             except Exception:
                 pass
@@ -190,8 +199,9 @@ class RateLimiter:
         )
 
 
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from fastapi import Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+
 from domain.auth.contracts import AccountContext
 
 
@@ -200,27 +210,28 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     Global Middleware for API Rate Limiting.
     Requires AccountContext in request.state (placed after AuthMiddleware).
     """
+
     def __init__(self, app, limiter: RateLimiter):
         super().__init__(app)
         self._limiter = limiter
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        context: Optional[AccountContext] = getattr(request.state, "account", None)
-        
+        context: AccountContext | None = getattr(request.state, "account", None)
+
         # If no context, skip global limit (might be public health check or similar)
         if not context:
             return await call_next(request)
-            
+
         try:
             result = await self._limiter.check(account_id=context.sub)
             response = await call_next(request)
-            
+
             # Append headers to the response (IETF compliant)
             response.headers["RateLimit"] = result.ratelimit_header()
             response.headers["RateLimit-Policy"] = result.ratelimit_policy_header()
-            
+
             return response
-            
+
         except Exception as e:
             # Re-raise Problem details if caught, or return generic 429 via problem handler
             raise e

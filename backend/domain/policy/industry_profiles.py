@@ -23,26 +23,31 @@ Sovereignty rules:
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional, Union, Any
+from enum import StrEnum
 
-from domain.policy.capability_flags import CapabilityArea, TrustLevel
-from domain.policy.product_tiers import TIER_CONFIGS, ProductTier, CapabilityFlag  # CapabilityFlag is an alias
+from domain.policy.capability_flags import CapabilityArea
+from domain.policy.product_tiers import (
+    TIER_CONFIGS,
+    CapabilityFlag,
+    ProductTier,
+)  # CapabilityFlag is an alias
 
 
-class IndustryProfile(str, Enum):
-    DEFAULT    = "default"
+class IndustryProfile(StrEnum):
+    DEFAULT = "default"
     HEALTHCARE = "healthcare"
     GOVERNMENT = "government"
-    FINANCE    = "finance"
-    LEGAL      = "legal"
-    EDUCATION  = "education"
+    FINANCE = "finance"
+    LEGAL = "legal"
+    EDUCATION = "education"
 
 
 @dataclass(frozen=True)
 class ProfileConfig:
     """Industry-specific capability overlay."""
+
     profile: IndustryProfile
     display_name: str
     description: str
@@ -59,75 +64,87 @@ class ProfileConfig:
 # ── Profile definitions ────────────────────────────────────────────────────────
 
 PROFILE_CONFIGS: dict[IndustryProfile, ProfileConfig] = {
-
     IndustryProfile.DEFAULT: ProfileConfig(
         profile=IndustryProfile.DEFAULT,
         display_name="General",
         description="No vertical restrictions beyond product tier.",
         min_tier=ProductTier.PERSONAL,
     ),
-
     IndustryProfile.HEALTHCARE: ProfileConfig(
         profile=IndustryProfile.HEALTHCARE,
         display_name="Healthcare (HIPAA)",
         description="HIPAA-compliant mode: PHI handling, encrypted memory, no unencrypted storage.",
-        additional_capabilities=frozenset({
-            CapabilityArea.HEALTH_INTEGRATION,
-        }),
-        restricted_capabilities=frozenset({
-            CapabilityArea.WEB_SEARCH,  # Restrict public web for PHI safety
-        }),
+        additional_capabilities=frozenset(
+            {
+                CapabilityArea.HEALTH_INTEGRATION,
+            }
+        ),
+        restricted_capabilities=frozenset(
+            {
+                CapabilityArea.WEB_SEARCH,  # Restrict public web for PHI safety
+            }
+        ),
         required_compliance=frozenset({CapabilityArea.HEALTH_INTEGRATION}),
         min_tier=ProductTier.ENTERPRISE,
     ),
-
     IndustryProfile.GOVERNMENT: ProfileConfig(
         profile=IndustryProfile.GOVERNMENT,
         display_name="Government (FedRAMP)",
         description="FedRAMP High: data sovereignty, approved providers, mandatory audit.",
-        additional_capabilities=frozenset({
-            CapabilityArea.SYSTEM_OPS,
-        }),
-        restricted_capabilities=frozenset({
-            CapabilityArea.SOCIAL_PRESENCE,
-        }),
+        additional_capabilities=frozenset(
+            {
+                CapabilityArea.SYSTEM_OPS,
+            }
+        ),
+        restricted_capabilities=frozenset(
+            {
+                CapabilityArea.SOCIAL_PRESENCE,
+            }
+        ),
         min_tier=ProductTier.ENTERPRISE,
     ),
-
     IndustryProfile.FINANCE: ProfileConfig(
         profile=IndustryProfile.FINANCE,
         display_name="Financial Services (SOC2)",
         description="SOC2 Type II compliance with full audit log and external API approval gates.",
-        additional_capabilities=frozenset({
-            CapabilityArea.FINANCE_GATEWAY,
-        }),
-        restricted_capabilities=frozenset({
-            CapabilityArea.GEN_AI_FACTORY, # Restrict unapproved model usage
-        }),
+        additional_capabilities=frozenset(
+            {
+                CapabilityArea.FINANCE_GATEWAY,
+            }
+        ),
+        restricted_capabilities=frozenset(
+            {
+                CapabilityArea.GEN_AI_FACTORY,  # Restrict unapproved model usage
+            }
+        ),
         min_tier=ProductTier.ENTERPRISE,
     ),
-
     IndustryProfile.LEGAL: ProfileConfig(
         profile=IndustryProfile.LEGAL,
         display_name="Legal",
         description="Document-focused: no code execution, no external APIs, full audit.",
-        additional_capabilities=frozenset({
-            CapabilityArea.MEMORY_OPS,
-        }),
-        restricted_capabilities=frozenset({
-            CapabilityArea.DATA_ANALYSIS,
-        }),
+        additional_capabilities=frozenset(
+            {
+                CapabilityArea.MEMORY_OPS,
+            }
+        ),
+        restricted_capabilities=frozenset(
+            {
+                CapabilityArea.DATA_ANALYSIS,
+            }
+        ),
         min_tier=ProductTier.PRO,
     ),
-
     IndustryProfile.EDUCATION: ProfileConfig(
         profile=IndustryProfile.EDUCATION,
         display_name="Education",
         description="COPPA-safe mode: no email, no device control, no external APIs.",
-        restricted_capabilities=frozenset({
-            CapabilityArea.SOCIAL_PRESENCE,
-            CapabilityArea.IOT_CONTROL,
-        }),
+        restricted_capabilities=frozenset(
+            {
+                CapabilityArea.SOCIAL_PRESENCE,
+                CapabilityArea.IOT_CONTROL,
+            }
+        ),
         min_tier=ProductTier.PERSONAL,
     ),
 }
@@ -135,19 +152,22 @@ PROFILE_CONFIGS: dict[IndustryProfile, ProfileConfig] = {
 
 # ── Effective capability resolution ───────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class EffectiveCapabilities:
     """Resolved capability set after applying tier + profile."""
+
     tier: ProductTier
     profile: IndustryProfile
     capabilities: frozenset[CapabilityFlag]
-    added: frozenset[CapabilityFlag]     # From profile
-    removed: frozenset[CapabilityFlag]   # From profile
+    added: frozenset[CapabilityFlag]  # From profile
+    removed: frozenset[CapabilityFlag]  # From profile
 
 
 @dataclass(frozen=True)
 class ProfileCheckResult:
     """Result of a profile capability gate check."""
+
     allowed: bool
     tier: ProductTier
     profile: IndustryProfile

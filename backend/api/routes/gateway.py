@@ -1,104 +1,104 @@
-"""Gateway chat + health routes — thin HTTP layer only.
-
-Phase 3: Real SSE + WebSocket paths wired to OrchestratorService.intake_streaming().
-No business logic here. No tool calls. No memory writes. No Hermes imports.
-
-Endpoints:
-  POST /chat                    — synchronous chat (non-streaming)
-  POST /chat/stream             — streaming chat via SSE
-  GET  /stream/{session_id}     — SSE event subscription for existing workflow
-  WS   /ws/chat                 — WebSocket real-time channel
-  POST /sessions/bootstrap      — new session creation
-  GET  /channels                — Hermes channel directory
-  POST /voice/process           — voice stub (Phase 5)
-  POST/GET /mcp                 — MCP edge terminator stub
-  GET  /health/live             — liveness probe
-  GET  /health/ready            — readiness probe (DB + Redis)
-  GET  /health/startup          — startup probe
-"""
+# ruff: noqa: B008
 
 from __future__ import annotations
 
 import asyncio
 import json
 import uuid
-import structlog
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from sqlalchemy import text
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, suppress
+from typing import Any
 
-from core.deps import get_cache, get_db, get_hermes_transport, get_ws_mux
-from core.envelope import ButlerEnvelope
+import structlog
+from fastapi import APIRouter, Depends, Request, Response, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+from core.deps import get_cache, get_hermes_transport, get_ws_mux
+from core.envelope import ButlerEnvelope, OrchestratorResult
+from domain.runtime import (
+    FinalResponseComposer,
+    ResponseValidator,
+    ToolResultEnvelope,
+)
+from core.resilient_client import (
+    InternalRequest,
+    ResilientClient,
+    ResilientClientConfig,
+)
 from domain.auth.contracts import AccountContext
-from domain.auth.exceptions import GatewayErrors
-from infrastructure.database import engine, async_session_factory
+from infrastructure.config import settings
+from infrastructure.database import async_session_factory
+
+# Removed direct Hermes import - Butler should own channel directory
+# from integrations.hermes.gateway.channel_directory import (
+#     format_directory_for_display,
+#     load_directory,
+# )
 from services.auth.jwt import get_jwks_manager
 from services.gateway.auth_middleware import JWTAuthMiddleware
 from services.gateway.idempotency import IdempotencyService
 from services.gateway.rate_limiter import RateLimiter
 from services.gateway.session_manager import ButlerSessionManager
-from services.gateway.stream_bridge import ButlerStreamBridge, SSE_HEADERS
-from core.resilient_client import ResilientClient, InternalRequest
-from infrastructure.config import settings
-from integrations.hermes.gateway.channel_directory import load_directory, format_directory_for_display
-from services.orchestrator.service import OrchestratorService
-
-# Shared Resilient Client for Orchestrator communication
-# In Butler v3.0, the Gateway routes to the federated Intelligence Engine via this resilient pipe.
-_orch_client = ResilientClient(
-    source_service="gateway",
-    base_url=settings.ORCHESTRATOR_URL,
-    timeout=30.0
-)
+from services.gateway.stream_bridge import SSE_HEADERS, ButlerStreamBridge
 
 log = structlog.get_logger(__name__)
 router = APIRouter(tags=["gateway"])
 
 
-# ── Dependency: authenticated account ────────────────────────────────────────
+# =============================================================================
+# Shared internal client
+# =============================================================================
 
-async def get_current_account(
-    request: Request,
-    cache=Depends(get_cache),
-) -> AccountContext:
-    """Verify Bearer token and return AccountContext."""
-    middleware = JWTAuthMiddleware(jwks=get_jwks_manager(), redis=cache)
-    authorization = request.headers.get("Authorization")
-    ctx = await middleware.authenticate(authorization)
-    object.__setattr__(ctx, "device_id", request.headers.get("X-Device-ID"))
-    return ctx
+_orchestrator_client = ResilientClient(
+    source_service="gateway",
+    base_url=settings.ORCHESTRATOR_URL.rstrip("/"),
+    config=ResilientClientConfig(
+        timeout=30.0,
+    ),
+)
 
 
-# ── Request / Response schemas ────────────────────────────────────────────────
+# =============================================================================
+# Schemas
+# =============================================================================
+
 
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     message: str = Field(min_length=1, max_length=4096)
-    session_id: str = Field(min_length=1, max_length=64)
-    attachments: list[dict] = Field(default_factory=list)
-    location: dict | None = None
-    mode: str = "auto"
+    session_id: str = Field(min_length=1, max_length=128)
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    location: dict[str, Any] | None = None
+    mode: str = Field(default="auto", max_length=64)
     stream: bool = False
-    model: str | None = None  # provider/model selection, e.g. "cloud-deepseek"
+    model: str | None = Field(default=None, max_length=128)
 
 
 class ChatResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     response: str
     session_id: str
     request_id: str
     workflow_id: str | None = None
-    actions_taken: list[dict] = Field(default_factory=list)
+    actions_taken: list[dict[str, Any]] = Field(default_factory=list)
     requires_approval: bool = False
     approval_id: str | None = None
 
 
 class VoiceProcessRequest(BaseModel):
-    audio_data: str = Field(..., description="base64 audio bytes")
-    format: str = "wav"
+    model_config = ConfigDict(extra="forbid")
+
+    audio_data: str = Field(..., description="base64-encoded audio")
+    format: str = Field(default="wav", max_length=32)
     session_id: str | None = None
 
 
 class VoiceProcessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     session_id: str
     transcript: str
     response: str
@@ -106,14 +106,72 @@ class VoiceProcessResponse(BaseModel):
 
 
 class SessionBootstrapResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     session_id: str
     request_id: str
     resume_token: str | None = None
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# =============================================================================
+# Dependencies
+# =============================================================================
+
+
+async def get_current_account(
+    request: Request,
+    cache=Depends(get_cache),
+) -> AccountContext:
+    """Authenticate the inbound request and return the resolved account context."""
+    middleware = JWTAuthMiddleware(
+        jwks=get_jwks_manager(),
+        redis=cache,
+    )
+    authorization = request.headers.get("Authorization")
+    ctx = await middleware.authenticate(authorization)
+    object.__setattr__(ctx, "device_id", request.headers.get("X-Device-ID"))
+    return ctx
+
+
+@asynccontextmanager
+async def _session_scope():
+    async with async_session_factory() as db:
+        yield db
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+
+def _request_id(request: Request) -> str:
+    return getattr(request.state, "request_id", str(uuid.uuid4()))
+
+
+def _idempotency_key(request: Request) -> str | None:
+    return request.headers.get("Idempotency-Key") or request.headers.get("X-Idempotency-Key")
+
+
+def _channel(request: Request, fallback: str = "api") -> str:
+    raw = request.headers.get("X-Butler-Channel", fallback)
+    return raw.strip().lower() if raw else fallback
+
+
+def _apply_ratelimit_headers(response: Response, rate_result: Any) -> None:
+    response.headers["RateLimit"] = rate_result.ratelimit_header()
+    response.headers["RateLimit-Policy"] = rate_result.ratelimit_policy_header()
+
+
+def _streaming_headers(rate_result: Any | None = None) -> dict[str, str]:
+    headers = dict(SSE_HEADERS)
+    if rate_result is not None:
+        headers["RateLimit"] = rate_result.ratelimit_header()
+        headers["RateLimit-Policy"] = rate_result.ratelimit_policy_header()
+    return headers
+
 
 def _build_envelope(
+    *,
     request: Request,
     req: ChatRequest,
     account: AccountContext,
@@ -125,28 +183,119 @@ def _build_envelope(
         request_id=request_id,
         account_id=str(account.account_id),
         session_id=req.session_id,
-        device_id=account.device_id,
-        channel=request.headers.get("X-Butler-Channel", "api"),
+        device_id=getattr(account, "device_id", None),
+        channel=_channel(request, "api"),
         message=req.message,
         attachments=req.attachments,
         mode=req.mode,
-        location=req.location,
         model=req.model,
-        assurance_level=str(account.assurance_level),
-        idempotency_key=idempotency_key,
-        rate_limit_remaining=rate_remaining,
+        client={
+            "user_agent": request.headers.get("User-Agent"),
+            "location": req.location,
+        },
+        gateway={
+            "assurance_level": str(account.assurance_level),
+            "idempotency_key": idempotency_key,
+            "rate_limit_remaining": rate_remaining,
+            "authenticated_user_id": str(account.sub),
+            "tenant_id": str(account.aid),
+            "ip_address": request.client.host if request.client else None,
+        },
     )
 
 
-async def _get_orchestrator(db, cache):
-    """Resolve OrchestratorService using the production-grade manager."""
-    from core.deps import get_orchestrator_service
-    return await get_orchestrator_service(db, cache)
+async def _ensure_session(
+    *,
+    cache: Any,
+    db: Any,
+    account: AccountContext,
+    session_id: str,
+    channel: str,
+) -> Any:
+    session_mgr = ButlerSessionManager(redis=cache, db=db)
+    return await session_mgr.get_or_create(
+        session_id=session_id,
+        account_id=account.account_id,
+        channel=channel,
+        assurance_level=account.assurance_level,
+        device_id=getattr(account, "device_id", None),
+    )
 
 
-# ── POST /chat — synchronous ──────────────────────────────────────────────────
+def _compose_safe_response(
+    result: OrchestratorResult,
+    locale: str = "en",
+    timezone: str = "UTC",
+) -> str:
+    """Process orchestrator result through Runtime Spine to prevent response leaks.
 
-from fastapi import Response
+    1. Extract tool results from orchestrator result
+    2. Wrap in ToolResultEnvelope
+    3. Compose user-facing response with FinalResponseComposer
+    4. Validate with ResponseValidator
+    """
+    # Check if content contains raw tool output patterns
+    content = result.content or ""
+
+    # If content looks like a Python dict, treat it as tool output
+    if "{" in content and "'" in content and "}" in content:
+        # Wrap in ToolResultEnvelope
+        envelope = ToolResultEnvelope.success(
+            tool_name="internal_tool",
+            summary=content,
+            data={"raw_output": content},
+            user_visible=True,
+            safe_to_quote=False,
+        )
+        # Compose user-facing response
+        composed = FinalResponseComposer.compose_from_tool_result(
+            envelope,
+            locale=locale,
+            timezone=timezone,
+        )
+    else:
+        # Already text, use as-is but validate
+        composed = content
+
+    # Validate before returning
+    try:
+        ResponseValidator.validate_user_facing_response(composed)
+    except Exception as exc:
+        log.warning(
+            "response_validation_failed",
+            error=str(exc),
+            content_preview=composed[:200] if composed else None,
+        )
+        # Sanitize if validation fails
+        composed = ResponseValidator.sanitize_user_facing_response(composed)
+
+    return composed
+
+
+def _error_response(
+    *,
+    detail: str,
+    request_id: str,
+    session_id: str | None = None,
+    status_code: int = status.HTTP_502_BAD_GATEWAY,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "type": "https://butler.lasmoid.ai/problems/gateway-upstream-failure",
+            "title": "Gateway Upstream Failure",
+            "status": status_code,
+            "detail": detail,
+            "request_id": request_id,
+            "session_id": session_id,
+        },
+    )
+
+
+# =============================================================================
+# POST /chat
+# =============================================================================
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
@@ -155,110 +304,135 @@ async def chat(
     response: Response,
     account: AccountContext = Depends(get_current_account),
     cache=Depends(get_cache),
-) -> ChatResponse:
-    """Primary chat endpoint — synchronous. Gateway never calls Memory/Tools directly."""
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    idempotency_key = request.headers.get("Idempotency-Key")
+) -> ChatResponse | JSONResponse:
+    """Primary synchronous chat endpoint.
 
-    # 1. Rate limit (Lua Token Bucket)
-    rate_result = await RateLimiter(redis=cache, capacity=100, refill_rate=1.0).check(
-        account.account_id
-    )
-    
-    # IETF draft-ietf-httpapi-ratelimit-headers composite headers
-    response.headers["RateLimit"] = rate_result.ratelimit_header()
-    response.headers["RateLimit-Policy"] = rate_result.ratelimit_policy_header()
+    Gateway responsibilities:
+    - auth
+    - rate limiting
+    - idempotency
+    - envelope normalization
+    - session continuity
+    - resilient forwarding to orchestrator
+    """
+    request_id = _request_id(request)
+    idempotency_key = _idempotency_key(request)
 
-    # 2. Idempotency check (With Hashes!)
+    rate_limiter = RateLimiter(redis=cache, capacity=100, refill_rate=1.0)
+    rate_result = await rate_limiter.check(account.account_id)
+    _apply_ratelimit_headers(response, rate_result)
+
     idempotency = IdempotencyService(redis=cache)
     cached = await idempotency.check(idempotency_key, req.model_dump())
     if cached:
         return ChatResponse(**cached.body)
 
-    envelope = _build_envelope(request, req, account, request_id, idempotency_key, rate_result.remaining)
+    envelope = _build_envelope(
+        request=request,
+        req=req,
+        account=account,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        rate_remaining=rate_result.remaining,
+    )
 
-    async with async_session_factory() as db:
-        session_mgr = ButlerSessionManager(redis=cache, db=db)
-        session = await session_mgr.get_or_create(
+    try:
+        async with _session_scope() as db:
+            await _ensure_session(
+                cache=cache,
+                db=db,
+                account=account,
+                session_id=req.session_id,
+                channel=envelope.channel,
+            )
+
+        internal_request = InternalRequest(
+            service="orchestrator",
+            method="POST",
+            path="/api/v1/orchestrator/intake",
+            data=envelope.model_dump(mode="json"),
+            idempotency_key=idempotency_key,
+        )
+        upstream_response = await _orchestrator_client.call(internal_request)
+        result_payload = upstream_response.json()
+        result_payload.setdefault("session_id", envelope.session_id)
+        result_payload.setdefault("request_id", envelope.request_id)
+        result = OrchestratorResult(**result_payload)
+    except Exception as exc:
+        log.exception(
+            "gateway_chat_upstream_failed",
+            request_id=request_id,
             session_id=req.session_id,
-            account_id=account.account_id,
-            channel=envelope.channel,
-            assurance_level=account.assurance_level,
-            device_id=account.device_id,
+            account_id=str(account.account_id),
+            error=str(exc),
+        )
+        return _error_response(
+            detail="Failed to complete chat request.",
+            request_id=request_id,
+            session_id=req.session_id,
         )
 
-        try:
-            # 3. Resilient call to Orchestrator
-            call_request = InternalRequest(
-                service="orchestrator",
-                method="POST",
-                path="/api/v1/orchestrator/intake",
-                data=envelope.model_dump(),
-                idempotency_key=idempotency_key
-            )
-            resp = await _orch_client.call(call_request)
-            if resp.status_code >= 400:
-                raise Exception(f"Orchestrator returned {resp.status_code}: {resp.text}")
-            result_data = resp.json()
-            from domain.orchestrator.contracts import OrchestratorResult
-            result = OrchestratorResult(**result_data)
-        except Exception as exc:
-            log.exception("orchestrator_error", session_id=req.session_id, error=str(exc))
-            chat_response = ChatResponse(
-                response=f"Butler encountered an error: {str(exc)}",
-                session_id=req.session_id,
-                request_id=request_id,
-            )
-            await idempotency.store(idempotency_key, req.model_dump(), chat_response.model_dump())
-            return chat_response
+    # Process through Runtime Spine to prevent response leaks
+    safe_response = _compose_safe_response(
+        result,
+        locale=request.headers.get("X-Locale", "en"),
+        timezone=request.headers.get("X-Timezone", "UTC"),
+    )
 
     chat_response = ChatResponse(
-        response=result.content,
+        response=safe_response,
         session_id=req.session_id,
         request_id=request_id,
         workflow_id=result.workflow_id,
-        actions_taken=result.actions,
+        actions_taken=[a.model_dump(mode="json") for a in result.actions],
         requires_approval=result.requires_approval,
         approval_id=result.approval_id,
     )
-    await idempotency.store(idempotency_key, req.model_dump(), chat_response.model_dump())
+
+    await idempotency.store(
+        idempotency_key,
+        req.model_dump(),
+        chat_response.model_dump(mode="json"),
+    )
     return chat_response
 
 
-# ── POST /chat/stream — SSE-wrapped intake ────────────────────────────────────
+# =============================================================================
+# POST /chat/stream
+# =============================================================================
+
 
 @router.post("/chat/stream")
 async def chat_stream(
     req: ChatRequest,
     request: Request,
-    response: Response,
     account: AccountContext = Depends(get_current_account),
     cache=Depends(get_cache),
 ) -> StreamingResponse:
-    """Streaming chat via SSE. Client receives ButlerEvent frames as they arrive.
+    """Streaming chat via SSE.
 
-    Typical frame sequence:
-      stream_start → stream_token* → stream_tool_call? → stream_tool_result?
-      → [stream_approval_required | stream_final | stream_error] → done
+    The gateway normalizes/authenticates/rate-limits, then forwards the
+    canonical envelope to the orchestrator streaming boundary.
     """
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    idempotency_key = request.headers.get("Idempotency-Key")
+    request_id = _request_id(request)
+    idempotency_key = _idempotency_key(request)
 
-    rate_result = await RateLimiter(redis=cache, capacity=60, refill_rate=1.0).check(
-        account.account_id
+    rate_limiter = RateLimiter(redis=cache, capacity=60, refill_rate=1.0)
+    rate_result = await rate_limiter.check(account.account_id)
+
+    envelope = _build_envelope(
+        request=request,
+        req=req,
+        account=account,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        rate_remaining=rate_result.remaining,
     )
-    
-    # IETF RateLimit composite headers
-    response.headers["RateLimit"] = rate_result.ratelimit_header()
-    response.headers["RateLimit-Policy"] = rate_result.ratelimit_policy_header()
 
-    envelope = _build_envelope(request, req, account, request_id, idempotency_key, rate_result.remaining)
-
-    # Extract Last-Event-ID for stream resume support
-    last_event_id = None
-    hdr = request.headers.get("Last-Event-ID")
-    if hdr and hdr.isdigit():
-        last_event_id = int(hdr)
+    last_event_id: int | None = None
+    raw_last_event_id = request.headers.get("Last-Event-ID")
+    if raw_last_event_id and raw_last_event_id.isdigit():
+        last_event_id = int(raw_last_event_id)
 
     bridge = ButlerStreamBridge(
         session_id=req.session_id,
@@ -268,40 +442,54 @@ async def chat_stream(
         last_event_id=last_event_id,
     )
 
-    async def _stream_generator():
-        async with async_session_factory() as db:
-            session_mgr = ButlerSessionManager(redis=cache, db=db)
-            session = await session_mgr.get_or_create(
+    async def _stream_generator() -> AsyncGenerator[str]:
+        try:
+            async with _session_scope() as db:
+                await _ensure_session(
+                    cache=cache,
+                    db=db,
+                    account=account,
+                    session_id=req.session_id,
+                    channel=envelope.channel,
+                )
+
+                from core.deps import get_orchestrator_service
+
+                orchestrator = await get_orchestrator_service(db, cache)
+                event_gen = orchestrator.intake_streaming(envelope)
+
+                async for frame in bridge.as_sse(event_gen):
+                    yield frame
+        except Exception as exc:
+            log.exception(
+                "gateway_chat_stream_failed",
+                request_id=request_id,
                 session_id=req.session_id,
-                account_id=account.account_id,
-                channel=envelope.channel,
-                assurance_level=account.assurance_level,
+                account_id=str(account.account_id),
+                error=str(exc),
             )
-            try:
-                orchestrator = await _get_orchestrator(db, cache)
-                async with session_mgr.hermes_context(session):
-                    event_gen = orchestrator.intake_streaming(envelope)
-                    async for frame in bridge.as_sse(event_gen):
-                        yield frame
-            except Exception as exc:
-                log.exception("stream_generator_error", session_id=req.session_id)
-                yield bridge._sse_frame({
+            yield bridge._sse_frame(
+                {
                     "event": "error",
-                    "type": "https://butler.lasmoid.ai/errors/internal-error",
-                    "status": 500,
-                    "detail": str(exc),
+                    "type": "https://butler.lasmoid.ai/problems/gateway-upstream-failure",
+                    "status": 502,
+                    "detail": "Streaming request failed.",
                     "retryable": False,
-                })
-                yield bridge._sse_frame({"event": "done", "session_id": req.session_id})
+                }
+            )
+            yield bridge._sse_frame({"event": "done", "session_id": req.session_id})
 
     return StreamingResponse(
         _stream_generator(),
         media_type="text/event-stream",
-        headers=SSE_HEADERS,
+        headers=_streaming_headers(rate_result),
     )
 
 
-# ── GET /stream/{session_id} — subscribe to existing session events ───────────
+# =============================================================================
+# GET /stream/{session_id}
+# =============================================================================
+
 
 @router.get("/stream/{session_id}")
 async def stream_session(
@@ -310,33 +498,23 @@ async def stream_session(
     account: AccountContext = Depends(get_current_account),
     cache=Depends(get_cache),
 ) -> StreamingResponse:
-    """SSE subscription endpoint for an existing session_id.
-
-    Supports Last-Event-ID resume: on reconnect the client sends the id of
-    the last event it received; we replay from the next sequence number.
-    Yields keepalive comments every 15 s when no events arrive.
-    """
-    # Parse Last-Event-ID for resume semantics
-    last_event_id_raw = request.headers.get("Last-Event-ID")
+    """Subscribe to an existing session event stream via SSE."""
+    raw_last_event_id = request.headers.get("Last-Event-ID")
     last_event_id: int | None = None
-    if last_event_id_raw and last_event_id_raw.isdigit():
-        last_event_id = int(last_event_id_raw)
+    if raw_last_event_id and raw_last_event_id.isdigit():
+        last_event_id = int(raw_last_event_id)
 
-    bridge = ButlerStreamBridge(
-        session_id=session_id,
-        account_id=account.account_id,
-        last_event_id=last_event_id,
-    )
-    event_counter = (last_event_id or 0) + 1
-
-    async def _event_tap():
-        nonlocal event_counter
+    async def _event_tap() -> AsyncGenerator[str]:
         pubsub = cache.pubsub()
         channel_key = f"butler:events:{session_id}"
         await pubsub.subscribe(channel_key)
 
+        next_event_id = (last_event_id or 0) + 1
         try:
             while True:
+                if await request.is_disconnected():
+                    break
+
                 message = await pubsub.get_message(
                     ignore_subscribe_messages=True,
                     timeout=14.0,
@@ -344,18 +522,16 @@ async def stream_session(
                 if message and message.get("type") == "message":
                     raw = message["data"]
                     if isinstance(raw, bytes):
-                        raw = raw.decode()
+                        raw = raw.decode("utf-8")
                     data = json.loads(raw)
-                    # Emit id: field on every frame for Last-Event-ID tracking
-                    yield f"id: {event_counter}\ndata: {json.dumps(data)}\n\n"
-                    event_counter += 1
-                    if data.get("event") in ("done", "stream_final", "stream_error"):
+
+                    yield f"id: {next_event_id}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    next_event_id += 1
+
+                    if data.get("event") in {"done", "stream_final", "stream_error"}:
                         break
                 else:
                     yield ": keepalive\n\n"
-
-                if await request.is_disconnected():
-                    break
         finally:
             await pubsub.unsubscribe(channel_key)
             await pubsub.close()
@@ -363,11 +539,14 @@ async def stream_session(
     return StreamingResponse(
         _event_tap(),
         media_type="text/event-stream",
-        headers=SSE_HEADERS,
+        headers=dict(SSE_HEADERS),
     )
 
 
-# ── WebSocket /ws/chat — real-time bidirectional channel ─────────────────────
+# =============================================================================
+# WS /ws/chat
+# =============================================================================
+
 
 @router.websocket("/ws/chat")
 async def websocket_chat(
@@ -375,20 +554,15 @@ async def websocket_chat(
     cache=Depends(get_cache),
     transport_edge=Depends(get_hermes_transport),
     mux=Depends(get_ws_mux),
-):
-    """Hardened real-time bidirectional channel using Hermes Integration Layer.
-    
-    1. Edge Hardening: Authenticates and rate-limits via HermesTransportEdge.
-    2. Resilience: Background ping/pong prevents zombie connections.
-    3. Multiplexing: Supports multiple data topics via WebSocketMultiplexer.
+) -> None:
+    """Bidirectional real-time chat channel.
+
+    Transport edge owns handshake hardening.
+    Gateway owns message normalization and routing.
     """
-    # WS handshake is already accepted inside HermesTransportEdge.connect
-    # but we need the token from the first message OR query param.
-    # OpenClaw standards suggest 'token' query param or 'auth' in first JSON.
-    
     token = websocket.query_params.get("token")
-    init_payload = {}
-    
+    init_payload: dict[str, Any] = {}
+
     if not token:
         await websocket.accept()
         try:
@@ -396,86 +570,118 @@ async def websocket_chat(
             init_payload = json.loads(raw)
             token = init_payload.get("auth") or init_payload.get("token")
         except Exception:
-            await websocket.close(code=4000, reason="Missing Auth Token")
+            await websocket.close(code=4000, reason="Missing auth token")
             return
 
-    # 1. Transport Hardening (Authentication + Leaky Bucket RL)
     transport_ctx = await transport_edge.connect(websocket, token)
     if not transport_ctx:
-        return 
+        return
 
-    session_id = init_payload.get("session_id") or str(uuid.uuid4())
+    session_id = str(init_payload.get("session_id") or uuid.uuid4())
     account = transport_ctx.account
-    account.session_id = session_id
+    object.__setattr__(account, "session_id", session_id)
 
-    # 2. Restore Prod-Level Chat Orchestration
-    async with async_session_factory() as db:
-        session_mgr = ButlerSessionManager(redis=cache, db=db)
-        session = await session_mgr.get_or_create(
-            session_id=session_id,
-            account_id=account.account_id,
-            channel="web",
-        )
+    mux_task: asyncio.Task | None = None
+    ping_task: asyncio.Task | None = None
 
-        try:
-            # Run mux commands in background for topics/presence
+    try:
+        async with _session_scope() as db:
+            await _ensure_session(
+                cache=cache,
+                db=db,
+                account=account,
+                session_id=session_id,
+                channel="websocket",
+            )
+
+            from core.deps import get_orchestrator_service
+
+            orchestrator = await get_orchestrator_service(db, cache)
+
             mux_task = asyncio.create_task(mux.handle_mux_stream(transport_ctx))
             ping_task = asyncio.create_task(transport_edge.run_ping_pong_loop(transport_ctx))
 
-            # Main Chat Loop (The Prod Implementation)
             while True:
                 try:
                     raw = await websocket.receive_text()
-                    msg = json.loads(raw)
-                    
-                    # Handle Mux commands or Direct Chat
-                    if "action" in msg:
-                        # Pass complex mux actions to the multiplexer
-                        # (Mux loop is also running but we check for chat here)
-                        pass
-                        
-                    user_message = msg.get("message", "")
-                    if not user_message:
-                        continue
-
-                    request_id = str(uuid.uuid4())
-                    envelope = ButlerEnvelope(
-                        request_id=request_id,
-                        account_id=account.account_id,
-                        session_id=session_id,
-                        device_id=None,
-                        channel="web",
-                        message=user_message,
-                        attachments=msg.get("attachments", []),
-                        assurance_level=account.assurance_level,
-                    )
-
-                    bridge = ButlerStreamBridge(
-                        session_id=session_id,
-                        account_id=account.account_id,
-                        redis=cache,
-                        request_id=request_id,
-                    )
-
-                    from core.deps import get_orchestrator_service
-                    orchestrator = await get_orchestrator_service(db, cache)
-                    
-                    async with session_mgr.hermes_context(session):
-                        event_stream = orchestrator.intake_streaming(envelope)
-                        await bridge.forward_to_ws(websocket, event_stream)
-
-                except (WebSocketDisconnect, json.JSONDecodeError):
+                except WebSocketDisconnect:
                     break
 
-        except Exception as e:
-            log.error("websocket_hybrid_error", error=str(e), session_id=session_id)
-        finally:
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    await websocket.send_json(
+                        {
+                            "event": "error",
+                            "type": "https://butler.lasmoid.ai/problems/invalid-request",
+                            "status": 400,
+                            "detail": "Invalid JSON payload.",
+                        }
+                    )
+                    continue
+
+                if "action" in payload:
+                    # Multiplexer task is the owner of subscription/control messages.
+                    # Ignore here to keep the chat path single-purpose.
+                    continue
+
+                message = str(payload.get("message", "") or "").strip()
+                if not message:
+                    continue
+
+                request_id = str(uuid.uuid4())
+                envelope = ButlerEnvelope(
+                    request_id=request_id,
+                    account_id=str(account.account_id),
+                    session_id=session_id,
+                    device_id=getattr(account, "device_id", None),
+                    channel="websocket",
+                    message=message,
+                    attachments=payload.get("attachments", []),
+                    model=payload.get("model"),
+                    mode=str(payload.get("mode", "auto")),
+                    gateway={
+                        "assurance_level": str(account.assurance_level),
+                    },
+                )
+
+                bridge = ButlerStreamBridge(
+                    session_id=session_id,
+                    account_id=account.account_id,
+                    redis=cache,
+                    request_id=request_id,
+                )
+                event_stream = orchestrator.intake_streaming(envelope)
+                await bridge.forward_to_ws(websocket, event_stream)
+
+    except Exception as exc:
+        log.exception(
+            "gateway_websocket_chat_failed",
+            session_id=session_id,
+            account_id=str(getattr(account, "account_id", "unknown")),
+            error=str(exc),
+        )
+        with suppress(Exception):
+            await websocket.send_json(
+                {
+                    "event": "error",
+                    "type": "https://butler.lasmoid.ai/problems/gateway-upstream-failure",
+                    "status": 502,
+                    "detail": "WebSocket chat failed.",
+                }
+            )
+    finally:
+        if ping_task is not None:
             ping_task.cancel()
+        if mux_task is not None:
             mux_task.cancel()
-            await transport_edge.disconnect(session_id)
+        await transport_edge.disconnect(session_id)
 
 
-# ── POST /sessions/bootstrap ──────────────────────────────────────────────────
+# =============================================================================
+# POST /sessions/bootstrap
+# =============================================================================
+
 
 @router.post("/sessions/bootstrap", response_model=SessionBootstrapResponse)
 async def session_bootstrap(
@@ -483,11 +689,11 @@ async def session_bootstrap(
     account: AccountContext = Depends(get_current_account),
     cache=Depends(get_cache),
 ) -> SessionBootstrapResponse:
-    """Create a new Butler session. Returns session_id and resume_token."""
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    channel = request.headers.get("X-Butler-Channel", "api")
+    """Create and persist a new Butler session."""
+    request_id = _request_id(request)
+    channel = _channel(request, "api")
 
-    async with async_session_factory() as db:
+    async with _session_scope() as db:
         session_mgr = ButlerSessionManager(redis=cache, db=db)
         session = await session_mgr.bootstrap(
             account_id=account.account_id,
@@ -502,34 +708,48 @@ async def session_bootstrap(
     )
 
 
-# ── GET /channels — Hermes channel directory (read-only) ─────────────────────
+# =============================================================================
+# GET /directory
+# =============================================================================
 
-@router.get("/channels")
-async def get_channels(account: AccountContext = Depends(get_current_account)):
-    """Expose Hermes Channel Directory to the frontend. Read-only reference."""
+
+@router.get("/directory")
+async def get_channel_directory(
+    account: AccountContext = Depends(get_current_account),
+) -> dict[str, Any]:
+    """Expose the Butler channel directory to authenticated clients.
+
+    Butler-owned channel directory (P0 hardening: removed Hermes direct import).
+    For now, return empty directory until Butler-owned implementation is added.
+    """
+    # TODO: Implement Butler-owned channel directory
+    # This endpoint previously loaded Hermes directory directly
+    # P0 hardening requires Butler ownership of this data
     return {
-        "directory": load_directory(),
-        "display": format_directory_for_display(),
+        "directory": {},
+        "display": {},
+        "note": "Butler-owned channel directory implementation pending",
     }
 
 
-# ── POST /voice/process — Phase 5 ─────────────────────────────────────
+# =============================================================================
+# POST /voice/process
+# =============================================================================
+
 
 @router.post("/voice/process", response_model=VoiceProcessResponse)
 async def voice_process(
     req: VoiceProcessRequest,
     request: Request,
+    response: Response,
     account: AccountContext = Depends(get_current_account),
     cache=Depends(get_cache),
-):
-    """Voice processing over HTTP — STT → Orchestrator → TTS.
+) -> VoiceProcessResponse | JSONResponse:
+    """Voice over HTTP: STT -> Orchestrator -> TTS."""
+    import base64
 
-    Rate limited separately from /chat at a tighter budget because this
-    endpoint chains 3 expensive operations (transcription, LLM, synthesis).
-    """
     from services.audio.service import AudioService
 
-    # Rate limit: 20 req/min for voice (tighter than /chat's 100 req/min)
     voice_limiter = RateLimiter(
         redis=cache,
         capacity=20,
@@ -538,21 +758,21 @@ async def voice_process(
         key_prefix="ratelimit:voice:",
     )
     rate_result = await voice_limiter.check(account.account_id)
-    request.state.response_headers = {
-        "RateLimit": rate_result.ratelimit_header(),
-        "RateLimit-Policy": rate_result.ratelimit_policy_header(),
-    }
+    _apply_ratelimit_headers(response, rate_result)
 
-    audio_svc = AudioService()
+    audio_service = AudioService()
     session_id = req.session_id or str(uuid.uuid4())
-
+    request_id = _request_id(request)
 
     try:
-        # 1. Transcribe the raw audio
-        transcript_res = await audio_svc.transcribe(req.audio_data)
-        text = transcript_res.transcript if hasattr(transcript_res, "transcript") else transcript_res.get("text", "").strip()
-        
-        if not text:
+        transcript_result = await audio_service.transcribe(req.audio_data)
+        transcript = (
+            transcript_result.transcript
+            if hasattr(transcript_result, "transcript")
+            else str(transcript_result.get("text", "")).strip()
+        )
+
+        if not transcript:
             return VoiceProcessResponse(
                 session_id=session_id,
                 transcript="",
@@ -560,42 +780,57 @@ async def voice_process(
                 audio_data=None,
             )
 
-        # 2. Re-route into Butler's Orchestrator
-        async with async_session_factory() as db:
-            orchestrator = await _get_orchestrator(db, cache)
-            envelope = ButlerEnvelope(
-                request_id=str(uuid.uuid4()),
-                account_id=str(account.account_id),
+        envelope = ButlerEnvelope(
+            request_id=request_id,
+            account_id=str(account.account_id),
+            session_id=session_id,
+            device_id=getattr(account, "device_id", None),
+            channel="voice",
+            message=transcript,
+            gateway={
+                "assurance_level": str(account.assurance_level),
+            },
+        )
+
+        async with _session_scope() as db:
+            await _ensure_session(
+                cache=cache,
+                db=db,
+                account=account,
                 session_id=session_id,
-                device_id=None,
                 channel="voice",
-                message=text,
-                assurance_level=account.assurance_level,
             )
+
+            from core.deps import get_orchestrator_service
+
+            orchestrator = await get_orchestrator_service(db, cache)
             result = await orchestrator.intake(envelope)
-            
+
         answer = result.content
-        
-        # 3. Generate TTS 
-        tts_res = await audio_svc.synthesize(answer)
-        audio_output = tts_res.audio_data if hasattr(tts_res, "audio_data") else tts_res.get("audio_data")
-        
-        import base64
+        tts_result = await audio_service.synthesize(answer)
+        audio_output = (
+            tts_result.audio_data
+            if hasattr(tts_result, "audio_data")
+            else tts_result.get("audio_data")
+        )
         audio_b64 = base64.b64encode(audio_output).decode("utf-8") if audio_output else None
 
         return VoiceProcessResponse(
             session_id=session_id,
-            transcript=text,
+            transcript=transcript,
             response=answer,
             audio_data=audio_b64,
         )
     except Exception as exc:
-        log.exception("voice_process_error", error=str(exc))
-        raise GatewayErrors.INTERNAL_ERROR from exc
-
-
-# NOTE: /mcp POST and GET endpoints have been moved to api/routes/mcp.py
-# and registered in main.py as mcp_router at prefix /api/v1.
-# The /ws/chat, /voice/process, and all streaming routes remain here.
-
-# NOTE: health probes have been moved to core/health.py and are registered in main.py
+        log.exception(
+            "gateway_voice_process_failed",
+            request_id=request_id,
+            session_id=session_id,
+            account_id=str(account.account_id),
+            error=str(exc),
+        )
+        return _error_response(
+            detail="Voice processing failed.",
+            request_id=request_id,
+            session_id=session_id,
+        )

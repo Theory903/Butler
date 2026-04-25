@@ -1,9 +1,9 @@
 """Code — Codex, GitHub Copilot, KiloCode."""
 
 from __future__ import annotations
-import os
+
 import json
-from typing import Optional, AsyncGenerator
+import os
 from abc import ABC, abstractmethod
 
 import httpx
@@ -58,7 +58,7 @@ class BaseCodeProvider(ABC):
 class CodexProvider(BaseCodeProvider):
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         base_url: str = "https://api.openai.com/v1",
     ):
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -88,7 +88,7 @@ class CodexProvider(BaseCodeProvider):
 class GitHubCopilotProvider(BaseCodeProvider):
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         base_url: str = "https://api.github.com",
     ):
         self._api_key = api_key or os.environ.get("GITHUB_TOKEN")
@@ -128,7 +128,7 @@ class GitHubCopilotProvider(BaseCodeProvider):
 class KiloCodeProvider(BaseCodeProvider):
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         base_url: str = "https://api.kilocode.ai/v1",
     ):
         self._api_key = api_key or os.environ.get("KILOCODE_API_KEY")

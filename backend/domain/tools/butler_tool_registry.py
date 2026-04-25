@@ -35,33 +35,34 @@ logger = structlog.get_logger(__name__)
 # ── Toolset → Butler CapabilityFlag (S — single authority) ───────────────────
 
 _TOOLSET_CAPABILITY_MAP: dict[str, str | None] = {
-    "web":                "WEB_SEARCH",
-    "files":              "FILE_OPS",
-    "terminal":           "TERMINAL",
-    "browser":            "BROWSER_AUTOMATION",
-    "code_execution":     "CODE_EXECUTION",
-    "delegate":           "DELEGATE",
-    "mcp":                "MCP_ACCESS",
-    "vision":             "VISION",
-    "voice":              "VOICE",
-    "tts":                "VOICE",
-    "transcription":      "VOICE",
-    "image_gen":          "IMAGE_GENERATION",
-    "memory":             "MEMORY_WRITE",
-    "todo":               "FILE_OPS",
-    "session_search":     "MEMORY_READ",
-    "skills":             "SKILLS",
-    "homeassistant":      "IOT_CONTROL",
-    "cronjob":            "CRON_SCHEDULE",
-    "clarify":            None,            # no gate — always allowed
-    "rl_training":        "ML_TRAINING",
-    "mixture_of_agents":  "DELEGATE",
-    "tirith_security":    "SECURITY_SCAN",
-    "osv_check":          "SECURITY_SCAN",
+    "web": "WEB_SEARCH",
+    "files": "FILE_OPS",
+    "terminal": "TERMINAL",
+    "browser": "BROWSER_AUTOMATION",
+    "code_execution": "CODE_EXECUTION",
+    "delegate": "DELEGATE",
+    "mcp": "MCP_ACCESS",
+    "vision": "VISION",
+    "voice": "VOICE",
+    "tts": "VOICE",
+    "transcription": "VOICE",
+    "image_gen": "IMAGE_GENERATION",
+    "memory": "MEMORY_WRITE",
+    "todo": "FILE_OPS",
+    "session_search": "MEMORY_READ",
+    "skills": "SKILLS",
+    "homeassistant": "IOT_CONTROL",
+    "cronjob": "CRON_SCHEDULE",
+    "clarify": None,  # no gate — always allowed
+    "rl_training": "ML_TRAINING",
+    "mixture_of_agents": "DELEGATE",
+    "tirith_security": "SECURITY_SCAN",
+    "osv_check": "SECURITY_SCAN",
 }
 
 
 # ── Adapter Protocol (D — bus depends on this, not on Hermes directly) ────────
+
 
 class IHermesRegistryAdapter(Protocol):
     """Minimum surface exposed to ButlerToolRegistry from the Hermes side."""
@@ -78,11 +79,13 @@ class IHermesRegistryAdapter(Protocol):
 
 # ── Concrete adapter (O — swap this without touching ButlerToolRegistry) ──────
 
+
 class HermesRegistryAdapter:
-    """Wraps the raw Hermes ToolRegistry singleton.
+    """Wraps the langchain Hermes registry for production integration.
 
     Single responsibility: import + delegate (S).
     Isolated behind IHermesRegistryAdapter — the bus never imports Hermes directly.
+    Uses the langchain Butler-owned Hermes registry instead of raw Hermes paths.
     """
 
     def __init__(self) -> None:
@@ -90,8 +93,9 @@ class HermesRegistryAdapter:
 
     def _import(self) -> Any | None:
         try:
-            from integrations.hermes.tools.registry import registry
-            return registry
+            from backend.langchain.hermes_registry import get_butler_hermes_registry
+
+            return get_butler_hermes_registry()
         except ImportError as exc:
             logger.warning("hermes_registry_unavailable", error=str(exc))
             return None
@@ -103,8 +107,11 @@ class HermesRegistryAdapter:
         if not self._ok():
             return []
         try:
-            from integrations.hermes.tools.registry import discover_builtin_tools
-            result = discover_builtin_tools()
+            # Load safe Hermes tools into the registry
+            from backend.langchain.hermes_loader import load_safe_hermes_tools
+
+            specs = load_safe_hermes_tools(registry=self._reg)
+            result = [spec.name for spec in specs]
             logger.info("hermes_tools_discovered", count=len(result))
             return result
         except Exception as exc:
@@ -112,28 +119,63 @@ class HermesRegistryAdapter:
             return []
 
     def get_all_tool_names(self) -> list[str]:
-        return self._reg.get_all_tool_names() if self._ok() else []
+        if not self._ok():
+            return []
+        return self._reg.list_names() if hasattr(self._reg, 'list_names') else []
 
     def get_definitions(self, names: set[str], quiet: bool) -> list[dict]:
-        return self._reg.get_definitions(names, quiet=quiet) if self._ok() else []
+        if not self._ok():
+            return []
+        try:
+            if not hasattr(self._reg, 'get'):
+                return []
+            specs = [self._reg.get(name) for name in names if self._reg.get(name)]
+            return [
+                {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "risk_tier": spec.risk_tier,
+                    "tags": spec.tags,
+                }
+                for spec in specs
+            ]
+        except Exception as exc:
+            logger.warning("hermes_get_definitions_failed", error=str(exc))
+            return []
 
     def get_toolset_for_tool(self, name: str) -> str | None:
-        return self._reg.get_toolset_for_tool(name) if self._ok() else None
+        # Map tool names to toolsets based on the capability map
+        if not self._ok() or not hasattr(self._reg, 'get'):
+            return None
+        spec = self._reg.get(name)
+        if spec and spec.tags:
+            for tag in spec.tags:
+                if tag in _TOOLSET_CAPABILITY_MAP:
+                    return tag
+        return None
 
     def get_entry(self, name: str) -> Any | None:
-        return self._reg.get_entry(name) if self._ok() else None
+        if not self._ok() or not hasattr(self._reg, 'get'):
+            return None
+        return self._reg.get(name)
 
     def get_available_toolsets(self) -> dict[str, dict]:
-        return self._reg.get_available_toolsets() if self._ok() else {}
+        return {k: {"capability": v} if v else {} for k, v in _TOOLSET_CAPABILITY_MAP.items()}
 
     def get_toolset_requirements(self) -> dict[str, dict]:
-        return self._reg.get_toolset_requirements() if self._ok() else {}
+        # Return toolset requirements based on capability flags
+        return {
+            toolset: {"capability": cap}
+            for toolset, cap in _TOOLSET_CAPABILITY_MAP.items()
+            if cap
+        }
 
     def get_emoji(self, name: str, default: str = "⚡") -> str:
-        return self._reg.get_emoji(name, default=default) if self._ok() else default
+        return default  # Langchain integration doesn't use emojis
 
 
 # ── ButlerToolRegistry (IToolRegistry, DI-friendly) ───────────────────────────
+
 
 class ButlerToolRegistry:
     """Butler-owned tool registry.
@@ -144,10 +186,10 @@ class ButlerToolRegistry:
     """
 
     def __init__(self, adapter: IHermesRegistryAdapter) -> None:
-        self._adapter   = adapter
+        self._adapter = adapter
         self._discovered = False
 
-    def discover(self) -> list[str]:                 # IToolRegistry
+    def discover(self) -> list[str]:  # IToolRegistry
         names = self._adapter.discover()
         self._discovered = True
         return names
@@ -156,7 +198,7 @@ class ButlerToolRegistry:
         if not self._discovered:
             self.discover()
 
-    def get_schemas(                                 # IToolRegistry
+    def get_schemas(  # IToolRegistry
         self,
         toolset_filter: list[str] | None = None,
     ) -> list[dict]:
@@ -164,8 +206,7 @@ class ButlerToolRegistry:
         all_names: set[str] = set(self._adapter.get_all_tool_names())
         if toolset_filter:
             all_names = {
-                n for n in all_names
-                if self._adapter.get_toolset_for_tool(n) in toolset_filter
+                n for n in all_names if self._adapter.get_toolset_for_tool(n) in toolset_filter
             }
         try:
             return self._adapter.get_definitions(all_names, quiet=True)
@@ -179,12 +220,13 @@ class ButlerToolRegistry:
             return None
         return _TOOLSET_CAPABILITY_MAP.get(toolset)
 
-    async def execute(                               # IToolRegistry
+    async def execute(  # IToolRegistry
         self,
         tool_name: str,
         args: dict[str, Any],
     ) -> str:
         import json
+
         entry = self._adapter.get_entry(tool_name)
         if entry is None:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
@@ -199,11 +241,11 @@ class ButlerToolRegistry:
             logger.warning("butler_tool_execute_failed", tool=tool_name, error=str(exc))
             return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
-    def tool_names(self) -> list[str]:               # IToolRegistry
+    def tool_names(self) -> list[str]:  # IToolRegistry
         self._ensure_discovered()
         return self._adapter.get_all_tool_names()
 
-    def is_available(self) -> bool:                  # IToolRegistry
+    def is_available(self) -> bool:  # IToolRegistry
         return self._adapter.get_entry is not None
 
     # Extra helpers (not in IToolRegistry — extension methods)
@@ -229,6 +271,7 @@ class ButlerToolRegistry:
 
 
 # ── Default factory ───────────────────────────────────────────────────────────
+
 
 def make_default_tool_registry() -> ButlerToolRegistry:
     """Production: wraps Hermes registry via the concrete adapter."""

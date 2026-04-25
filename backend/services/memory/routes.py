@@ -1,10 +1,10 @@
 """Memory service - session storage, context retrieval."""
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Optional, List
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
+from fastapi import APIRouter
+from pydantic import BaseModel
 
 from infrastructure.cache import redis_client
 
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 class MessageInput(BaseModel):
     role: str
     content: str
-    timestamp: Optional[datetime] = None
+    timestamp: datetime | None = None
 
 
 class SessionCreate(BaseModel):
@@ -36,7 +36,7 @@ async def add_message(session_id: str, message: MessageInput):
     msg_data = {
         "role": message.role,
         "content": message.content,
-        "timestamp": (message.timestamp or datetime.now(timezone.utc)).isoformat(),
+        "timestamp": (message.timestamp or datetime.now(UTC)).isoformat(),
     }
     await redis.rpush(key, json.dumps(msg_data))
     return {"added": True}

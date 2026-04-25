@@ -1,11 +1,19 @@
-"""AI Gateways — OpenRouter, Cloudflare, Vercel."""
+"""AI Gateways — OpenRouter, Cloudflare, Vercel.
+
+Design goals:
+- shared OpenAI-compatible gateway adapter
+- minimal provider-specific behavior
+- config-driven gateway construction
+- no duplicated chat completion logic
+"""
 
 from __future__ import annotations
 
+import json
 import os
 import time
-import json
-from typing import Optional, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import httpx
 import structlog
@@ -15,250 +23,317 @@ from domain.ml.contracts import ReasoningContract, ReasoningRequest, ReasoningRe
 logger = structlog.get_logger(__name__)
 
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)
+_STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=5.0)
 
 
-# ── OpenRouter Provider ───────────────────────────────────────────────────
+class ProviderConfigurationError(RuntimeError):
+    """Raised when a gateway provider is missing required configuration."""
 
-class OpenRouterProvider(ReasoningContract):
-    """OpenRouter AI Gateway (aggregates multiple providers)."""
+
+class BaseGatewayProvider(ReasoningContract):
+    """Shared OpenAI-compatible gateway provider base."""
+
+    provider_name: str = "gateway"
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        base_url: str = "https://openrouter.ai/api/v1",
-        model: str = "anthropic/claude-3.5-sonnet",
+        *,
+        timeout: httpx.Timeout = _DEFAULT_TIMEOUT,
+        stream_timeout: httpx.Timeout = _STREAM_TIMEOUT,
     ) -> None:
+        self._client = httpx.AsyncClient(timeout=timeout)
+        self._stream_client = httpx.AsyncClient(timeout=stream_timeout)
+
+    def _require_value(self, value: str | None, label: str) -> str:
+        if not value or not value.strip():
+            raise ProviderConfigurationError(f"{self.provider_name} {label} is not configured")
+        return value.strip()
+
+    def _extract_model(self, request: ReasoningRequest, fallback_model: str) -> str:
+        if request.preferred_model:
+            return request.preferred_model
+        raw_model = request.metadata.get("model")
+        if isinstance(raw_model, str) and raw_model.strip():
+            return raw_model.strip()
+        return fallback_model
+
+    def _normalize_usage(self, usage: Any) -> dict[str, Any]:
+        if isinstance(usage, dict):
+            return dict(usage)
+        return {}
+
+    def _make_response(
+        self,
+        *,
+        content: str,
+        raw_response: dict[str, Any] | None,
+        usage: dict[str, Any],
+        model_version: str,
+        finish_reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ReasoningResponse:
+        return ReasoningResponse(
+            content=content,
+            raw_response=raw_response,
+            usage=usage,
+            model_version=model_version,
+            provider_name=self.provider_name,
+            finish_reason=finish_reason,
+            metadata=metadata or {},
+        )
+
+    async def _iter_sse_data_lines(
+        self,
+        response: httpx.Response,
+    ) -> AsyncGenerator[str]:
+        async for line in response.aiter_lines():
+            if not line.startswith("data: "):
+                continue
+            yield line[6:].strip()
+
+    def _headers(self) -> dict[str, str]:
+        raise NotImplementedError
+
+    def _build_url(self) -> str:
+        raise NotImplementedError
+
+    def _default_model(self) -> str:
+        raise NotImplementedError
+
+    def _payload(self, request: ReasoningRequest, *, stream: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self._extract_model(request, self._default_model()),
+            "messages": [],
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+        }
+        if request.stop_sequences:
+            payload["stop"] = request.stop_sequences
+        if stream:
+            payload["stream"] = True
+
+        if request.system_prompt:
+            payload["messages"].append({"role": "system", "content": request.system_prompt})
+        payload["messages"].append({"role": "user", "content": request.prompt})
+        return payload
+
+    async def generate(self, request: ReasoningRequest) -> ReasoningResponse:
+        url = self._build_url()
+        payload = self._payload(request)
+        started_at = time.monotonic()
+
+        response = await self._client.post(url, json=payload, headers=self._headers())
+        response.raise_for_status()
+        data = response.json()
+
+        latency_ms = round((time.monotonic() - started_at) * 1000, 1)
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
+        usage = self._normalize_usage(data.get("usage", {}))
+        usage.setdefault("duration_ms", latency_ms)
+
+        logger.debug(
+            "gateway_generate_ok",
+            provider=self.provider_name,
+            latency_ms=latency_ms,
+            model=data.get("model", payload["model"]),
+        )
+
+        return self._make_response(
+            content=content,
+            raw_response=data,
+            usage=usage,
+            model_version=data.get("model", payload["model"]),
+            finish_reason=choice.get("finish_reason"),
+        )
+
+    async def generate_stream(self, request: ReasoningRequest) -> AsyncGenerator[str]:
+        url = self._build_url()
+        payload = self._payload(request, stream=True)
+
+        try:
+            async with self._stream_client.stream(
+                "POST",
+                url,
+                json=payload,
+                headers=self._headers(),
+            ) as response:
+                response.raise_for_status()
+
+                async for data_line in self._iter_sse_data_lines(response):
+                    if data_line == "[DONE]":
+                        return
+
+                    try:
+                        chunk = json.loads(data_line)
+                    except json.JSONDecodeError:
+                        logger.debug(
+                            "gateway_stream_invalid_json_ignored",
+                            provider=self.provider_name,
+                        )
+                        continue
+
+                    try:
+                        delta = chunk["choices"][0]["delta"].get("content", "")
+                    except (KeyError, IndexError, AttributeError):
+                        continue
+
+                    if delta:
+                        yield delta
+
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+            logger.warning(
+                "gateway_stream_fallback_to_buffered",
+                provider=self.provider_name,
+                error=str(exc),
+            )
+            result = await self.generate(request)
+            if result.content:
+                yield result.content
+
+
+class OpenRouterProvider(BaseGatewayProvider):
+    """OpenRouter gateway provider."""
+
+    provider_name = "openrouter"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str = "https://openrouter.ai/api/v1",
+        model: str = "anthropic/claude-sonnet-4.6",
+        referer: str | None = None,
+        title: str | None = None,
+    ) -> None:
+        super().__init__()
         self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
-
-    async def generate(self, request: ReasoningRequest) -> ReasoningResponse:
-        url = f"{self._base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://butler.ai",
-            "X-Title": "Butler AI",
-        }
-        payload = {
-            "model": request.metadata.get("model", self._model),
-            "messages": [],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-        }
-        if request.system_prompt:
-            payload["messages"].append({"role": "system", "content": request.system_prompt})
-        payload["messages"].append({"role": "user", "content": request.prompt})
-
-        t0 = time.monotonic()
-        response = await self._client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        latency = (time.monotonic() - t0) * 1000
-
-        content = data["choices"][0]["message"]["content"]
-        return ReasoningResponse(
-            content=content,
-            raw_response=data,
-            usage=data.get("usage", {}),
-            model_version=data.get("model", self._model),
+        self._referer = (
+            referer or os.environ.get("OPENROUTER_HTTP_REFERER") or "https://butler.lasmoid.ai"
         )
+        self._title = title or os.environ.get("OPENROUTER_APP_TITLE") or "Butler"
 
-    async def generate_stream(self, request: ReasoningRequest) -> AsyncGenerator[str, None]:
-        url = f"{self._base_url}/chat/completions"
+    def _headers(self) -> dict[str, str]:
+        api_key = self._require_value(self._api_key, "api key")
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://butler.ai",
-            "X-Title": "Butler AI",
         }
-        payload = {
-            "model": request.metadata.get("model", self._model),
-            "messages": [],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-            "stream": True,
-        }
-        if request.system_prompt:
-            payload["messages"].append({"role": "system", "content": request.system_prompt})
-        payload["messages"].append({"role": "user", "content": request.prompt})
+        if self._referer:
+            headers["HTTP-Referer"] = self._referer
+        if self._title:
+            headers["X-OpenRouter-Title"] = self._title
+        return headers
 
-        async with self._client.stream("POST", url, json=payload, headers=headers) as response:
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                chunk_data = line[6:]
-                if chunk_data == "[DONE]":
-                    break
-                try:
-                    chunk_json = json.loads(chunk_data)
-                    delta = chunk_json["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        yield delta
-                except Exception:
-                    continue
+    def _build_url(self) -> str:
+        return f"{self._base_url}/chat/completions"
+
+    def _default_model(self) -> str:
+        return self._model
 
 
-# ── Cloudflare AI Gateway Provider ────────────────────────────────────────
+class CloudflareAIGatewayProvider(BaseGatewayProvider):
+    """Cloudflare AI Gateway provider using the OpenAI-compatible route.
 
-class CloudflareAIGatewayProvider(ReasoningContract):
-    """Cloudflare AI Gateway Provider."""
+    By default this uses the Workers AI OpenAI-compatible endpoint:
+    /v1/{account_id}/{gateway_id}/workers-ai/v1/chat/completions
+
+    You can switch to the compat path by setting use_compat_endpoint=True,
+    which uses:
+    /v1/{account_id}/{gateway_id}/compat/chat/completions
+    and expects model names like workers-ai/{model}.
+    """
+
+    provider_name = "cloudflare"
 
     def __init__(
         self,
-        account_id: Optional[str] = None,
-        api_token: Optional[str] = None,
-        base_url: str = "",
+        account_id: str | None = None,
+        gateway_id: str | None = None,
+        api_token: str | None = None,
         model: str = "@cf/meta/llama-3.1-8b-instruct",
+        use_compat_endpoint: bool = False,
     ) -> None:
+        super().__init__()
         self._account_id = account_id or os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+        self._gateway_id = gateway_id or os.environ.get("CLOUDFLARE_GATEWAY_ID")
         self._api_token = api_token or os.environ.get("CLOUDFLARE_API_TOKEN")
-        self._base_url = base_url or f"https://gateway.ai.cloudflare.com/v1/{self._account_id}"
         self._model = model
-        self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
+        self._use_compat_endpoint = use_compat_endpoint
 
-    async def generate(self, request: ReasoningRequest) -> ReasoningResponse:
-        url = f"{self._base_url}/workers-ai/{self._model}"
-        headers = {
-            "Authorization": f"Bearer {self._api_token}",
+    def _headers(self) -> dict[str, str]:
+        token = self._require_value(self._api_token, "api token")
+        return {
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "messages": [],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-        }
-        if request.system_prompt:
-            payload["messages"].append({"role": "system", "content": request.system_prompt})
-        payload["messages"].append({"role": "user", "content": request.prompt})
 
-        t0 = time.monotonic()
-        response = await self._client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        latency = (time.monotonic() - t0) * 1000
+    def _build_url(self) -> str:
+        account_id = self._require_value(self._account_id, "account_id")
+        gateway_id = self._require_value(self._gateway_id, "gateway_id")
+        if self._use_compat_endpoint:
+            return f"https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/compat/chat/completions"
+        return f"https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/workers-ai/v1/chat/completions"
 
-        content = data.get("result", {}).get("response", "")
-        return ReasoningResponse(
-            content=content,
-            raw_response=data,
-            usage={},
-            model_version=self._model,
-        )
-
-    async def generate_stream(self, request: ReasoningRequest) -> AsyncGenerator[str, None]:
-        # Cloudflare Workers AI doesn't support streaming in same way
-        result = await self.generate(request)
-        yield result.content
+    def _default_model(self) -> str:
+        if self._use_compat_endpoint and not self._model.startswith("workers-ai/"):
+            return f"workers-ai/{self._model}"
+        return self._model
 
 
-# ── Vercel AI Gateway Provider ────────────────────────────────────────────
+class VercelAIGatewayProvider(BaseGatewayProvider):
+    """Vercel AI Gateway provider using the OpenAI Chat Completions API surface."""
 
-class VercelAIGatewayProvider(ReasoningContract):
-    """Vercel AI Gateway Provider."""
+    provider_name = "vercel"
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        base_url: str = "",
-        project_id: Optional[str] = None,
-        model: str = "openai/gpt-4o",
+        api_key: str | None = None,
+        base_url: str = "https://ai-gateway.vercel.sh/v1",
+        model: str = "anthropic/claude-sonnet-4.6",
     ) -> None:
-        self._api_key = api_key or os.environ.get("VERCEL_API_KEY")
-        self._base_url = base_url or "https://gateway.vercel.ai"
-        self._project_id = project_id or os.environ.get("VERCEL_PROJECT_ID")
-        self._model = model
-        self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
-
-    async def generate(self, request: ReasoningRequest) -> ReasoningResponse:
-        url = f"{self._base_url}/api/{self._project_id or 'gateway'}"
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": request.metadata.get("model", self._model),
-            "messages": [],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-        }
-        if request.system_prompt:
-            payload["messages"].append({"role": "system", "content": request.system_prompt})
-        payload["messages"].append({"role": "user", "content": request.prompt})
-
-        t0 = time.monotonic()
-        response = await self._client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        latency = (time.monotonic() - t0) * 1000
-
-        content = data["choices"][0]["message"]["content"]
-        return ReasoningResponse(
-            content=content,
-            raw_response=data,
-            usage=data.get("usage", {}),
-            model_version=data.get("model", self._model),
+        super().__init__()
+        self._api_key = (
+            api_key or os.environ.get("AI_GATEWAY_API_KEY") or os.environ.get("VERCEL_API_KEY")
         )
+        self._base_url = base_url.rstrip("/")
+        self._model = model
 
-    async def generate_stream(self, request: ReasoningRequest) -> AsyncGenerator[str, None]:
-        url = f"{self._base_url}/api/{self._project_id or 'gateway'}"
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
+    def _headers(self) -> dict[str, str]:
+        token = self._require_value(self._api_key, "api key")
+        return {
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": request.metadata.get("model", self._model),
-            "messages": [],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-            "stream": True,
-        }
-        if request.system_prompt:
-            payload["messages"].append({"role": "system", "content": request.system_prompt})
-        payload["messages"].append({"role": "user", "content": request.prompt})
 
-        async with self._client.stream("POST", url, json=payload, headers=headers) as response:
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                chunk_data = line[6:]
-                if chunk_data == "[DONE]":
-                    break
-                try:
-                    chunk_json = json.loads(chunk_data)
-                    delta = chunk_json["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        yield delta
-                except Exception:
-                    continue
+    def _build_url(self) -> str:
+        return f"{self._base_url}/chat/completions"
 
+    def _default_model(self) -> str:
+        return self._model
 
-# ── AI Gateway Factory ────────────────────────────────────────────────
 
 class AIGatewayFactory:
-    """Factory for AI gateway providers."""
+    """Factory for gateway providers."""
 
-    _instances = {}
+    _instances: dict[str, ReasoningContract] = {}
+    _provider_map = {
+        "openrouter": OpenRouterProvider,
+        "cloudflare": CloudflareAIGatewayProvider,
+        "vercel": VercelAIGatewayProvider,
+    }
 
     @classmethod
-    def get_provider(cls, provider_type: str):
-        """Return an AI gateway provider instance."""
-        if provider_type in cls._instances:
-            return cls._instances[provider_type]
+    def get_provider(cls, provider_type: str) -> ReasoningContract:
+        key = provider_type.strip().lower()
+        if key in cls._instances:
+            return cls._instances[key]
 
-        provider = None
-        if provider_type == "openrouter":
-            from services.ml.providers.gateway import OpenRouterProvider
-            provider = OpenRouterProvider()
-        elif provider_type == "cloudflare":
-            from services.ml.providers.gateway import CloudflareAIGatewayProvider
-            provider = CloudflareAIGatewayProvider()
-        elif provider_type == "vercel":
-            from services.ml.providers.gateway import VercelAIGatewayProvider
-            provider = VercelAIGatewayProvider()
-        else:
+        provider_class = cls._provider_map.get(key)
+        if provider_class is None:
             raise ValueError(f"Unsupported AI gateway provider: {provider_type}")
 
-        cls._instances[provider_type] = provider
-        return provider
+        instance = provider_class()
+        cls._instances[key] = instance
+        return instance

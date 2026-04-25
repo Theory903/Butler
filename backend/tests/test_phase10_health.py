@@ -77,12 +77,11 @@ from core.health import (
     HealthChecker,
     HealthProbeResult,
     HealthState,
-    _STATE_HTTP_CODE,
     create_health_router,
 )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 async def _pass():
     pass
@@ -94,9 +93,11 @@ async def _fail():
 
 def _make_mock_cbr(breaker_states: dict[str, str]):
     """Minimal mock circuit breaker registry."""
+
     class MockCBR:
         def all_stats(self):
             return [{"name": k, "state": v} for k, v in breaker_states.items()]
+
     return MockCBR()
 
 
@@ -118,8 +119,8 @@ def _router_client(
 
 # ── HealthChecker unit tests ──────────────────────────────────────────────────
 
-class TestHealthChecker:
 
+class TestHealthChecker:
     @pytest.mark.asyncio
     async def test_live_returns_healthy(self):
         checker = HealthChecker()
@@ -241,8 +242,8 @@ class TestHealthChecker:
 
 # ── HealthProbeResult unit tests ──────────────────────────────────────────────
 
-class TestHealthProbeResult:
 
+class TestHealthProbeResult:
     def test_compute_state_no_failures_healthy(self):
         r = HealthProbeResult()
         assert r.compute_state() == HealthState.HEALTHY
@@ -273,8 +274,8 @@ class TestHealthProbeResult:
 
 # ── HTTP route tests via TestClient ──────────────────────────────────────────
 
-class TestHealthRoutes:
 
+class TestHealthRoutes:
     def test_live_always_200(self):
         client = _router_client(deps={"database": _fail})
         resp = client.get("/health/live")
@@ -347,11 +348,12 @@ class TestHealthRoutes:
 
 # ── Backward-compat tests ─────────────────────────────────────────────────────
 
-class TestBackwardCompat:
 
+class TestBackwardCompat:
     def test_old_style_deps_only_works(self):
         app = FastAPI()
         from core.health import create_health_router
+
         router = create_health_router(deps={"database": _pass, "redis": _pass})
         app.include_router(router)
         client = TestClient(app)
@@ -361,6 +363,7 @@ class TestBackwardCompat:
     def test_no_args_router_works(self):
         app = FastAPI()
         from core.health import create_health_router
+
         router = create_health_router()
         app.include_router(router)
         client = TestClient(app)
@@ -370,6 +373,7 @@ class TestBackwardCompat:
     def test_old_deps_router_healthy(self):
         app = FastAPI()
         from core.health import create_health_router
+
         router = create_health_router(deps={"redis": _pass})
         app.include_router(router)
         client = TestClient(app)
@@ -379,8 +383,8 @@ class TestBackwardCompat:
 
 # ── State machine ordering ────────────────────────────────────────────────────
 
-class TestStateMachineOrdering:
 
+class TestStateMachineOrdering:
     def test_unhealthy_overrides_degraded(self):
         r = HealthProbeResult()
         r.critical_failures.append("database")
@@ -401,5 +405,6 @@ class TestStateMachineOrdering:
     def test_no_registry_does_not_raise(self):
         checker = HealthChecker(circuit_breaker_registry=None)
         import asyncio
+
         body, code = asyncio.run(checker.ready())
         assert code == 200

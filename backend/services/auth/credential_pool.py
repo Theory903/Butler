@@ -27,25 +27,20 @@ Sovereignty rules:
 
 from __future__ import annotations
 
-import json
-import time
-import base64
 import hashlib
+import json
 import logging
 import os
+import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from redis.asyncio import Redis
 
-logger = logging.getLogger(__name__)
+from services.tenant.namespace import get_tenant_namespace
 
-# Redis key prefixes
-_TOKEN_CACHE_PREFIX = "butler:token:introspect:"
-_SESSION_REVOKE_PREFIX = "butler:token:revoked:session:"
-_JTI_REVOKE_PREFIX = "butler:token:revoked:jti:"
-_TOOL_CRED_PREFIX = "butler:creds:tool:"
+logger = logging.getLogger(__name__)
 
 # Max introspection cache TTL — even if token expires in 1h, we cap at 5min
 _MAX_INTROSPECT_TTL_S = 300
@@ -57,9 +52,28 @@ _MIN_INTROSPECT_TTL_S = 30
 _TOOL_CRED_CACHE_TTL_S = 900
 
 
+def _token_cache_key(tenant_id: str, token_fingerprint: str) -> str:
+    """Generate tenant-scoped token introspection cache key."""
+    namespace = get_tenant_namespace(tenant_id)
+    return f"{namespace.prefix}:token:introspect:{token_fingerprint}"
+
+
+def _session_revoke_key(tenant_id: str, session_id: str) -> str:
+    """Generate tenant-scoped session revocation key."""
+    namespace = get_tenant_namespace(tenant_id)
+    return f"{namespace.prefix}:token:revoked:session:{session_id}"
+
+
+def _jti_revoke_key(tenant_id: str, token_id: str) -> str:
+    """Generate tenant-scoped JTI revocation key."""
+    namespace = get_tenant_namespace(tenant_id)
+    return f"{namespace.prefix}:token:revoked:jti:{token_id}"
+
+
 @dataclass(frozen=True)
 class IntrospectionResult:
     """Result of a token introspection + revocation check."""
+
     valid: bool
     account_id: str | None = None
     session_id: str | None = None
@@ -72,8 +86,9 @@ class IntrospectionResult:
 @dataclass(frozen=True)
 class ToolCredential:
     """A single external API credential for a tool provider."""
-    provider: str        # e.g. "openai", "anthropic", "google", "github"
-    api_key: str         # plaintext at runtime only — never logged
+
+    provider: str  # e.g. "openai", "anthropic", "google", "github"
+    api_key: str  # plaintext at runtime only — never logged
     expires_at: datetime | None = None
     scopes: list[str] = ()
 
@@ -93,8 +108,8 @@ class ButlerCredentialPool:
     def __init__(
         self,
         redis: Redis,
-        jwks_manager: Any,                     # JWKSManager — imported lazily
-        encryption_key: str | None = None,     # Fernet key for tool creds
+        jwks_manager: Any,  # JWKSManager — imported lazily
+        encryption_key: str | None = None,  # Fernet key for tool creds
     ) -> None:
         self._redis = redis
         self._jwks = jwks_manager
@@ -114,7 +129,7 @@ class ButlerCredentialPool:
           4. Check session revocation list
           5. Cache result with capped TTL
         """
-        cache_key = _TOKEN_CACHE_PREFIX + _token_fingerprint(token)
+        cache_key = _token_cache_key(_token_fingerprint(token))
 
         # 1. Cache hit
         cached = await self._redis.get(cache_key)
@@ -164,12 +179,14 @@ class ButlerCredentialPool:
             ttl_s = int(exp - time.time())
             ttl_s = min(ttl_s, _MAX_INTROSPECT_TTL_S)
             if ttl_s > _MIN_INTROSPECT_TTL_S:
-                cache_data = json.dumps({
-                    "account_id": account_id,
-                    "session_id": session_id,
-                    "assurance_level": aal,
-                    "token_id": token_id,
-                })
+                cache_data = json.dumps(
+                    {
+                        "account_id": account_id,
+                        "session_id": session_id,
+                        "assurance_level": aal,
+                        "token_id": token_id,
+                    }
+                )
                 await self._redis.setex(cache_key, ttl_s, cache_data)
 
         return IntrospectionResult(
@@ -178,28 +195,34 @@ class ButlerCredentialPool:
             session_id=session_id,
             assurance_level=aal,
             token_id=token_id,
-            expires_at=datetime.fromtimestamp(exp, tz=timezone.utc) if exp else None,
+            expires_at=datetime.fromtimestamp(exp, tz=UTC) if exp else None,
         )
 
     # ── Revocation ────────────────────────────────────────────────────────────
 
     async def revoke_session(self, session_id: str, ttl_s: int = 86_400) -> None:
         """Mark a session as revoked. All tokens for this session are invalidated immediately."""
-        key = _SESSION_REVOKE_PREFIX + session_id
+        # Note: tenant_id needed for proper multi-tenant isolation
+        # This is a backward-compatible signature; callers should use tenant_id version
+        key = f"butler:token:revoked:session:{session_id}"
         await self._redis.setex(key, ttl_s, "1")
         logger.info("session_revoked", session_id=session_id)
 
     async def revoke_jti(self, token_id: str, ttl_s: int = 86_400) -> None:
         """Revoke a specific token by its JTI."""
-        key = _JTI_REVOKE_PREFIX + token_id
+        # Note: tenant_id needed for proper multi-tenant isolation
+        # This is a backward-compatible signature; callers should use tenant_id version
+        key = f"butler:token:revoked:jti:{token_id}"
         await self._redis.setex(key, ttl_s, "1")
         logger.info("jti_revoked", token_id=token_id)
 
     async def revoke_all_sessions(self, account_id: str, session_ids: list[str]) -> int:
         """Revoke all known sessions for an account. Returns count revoked."""
+        # Note: tenant_id needed for proper multi-tenant isolation
+        # This is a backward-compatible signature; callers should use tenant_id version
         pipe = self._redis.pipeline()
         for sid in session_ids:
-            pipe.setex(_SESSION_REVOKE_PREFIX + sid, 86_400, "1")
+            pipe.setex(f"butler:token:revoked:session:{sid}", 86_400, "1")
         await pipe.execute()
         logger.info("all_sessions_revoked", account_id=account_id, count=len(session_ids))
         return len(session_ids)
@@ -266,13 +289,17 @@ class ButlerCredentialPool:
     async def _is_session_revoked(self, session_id: str) -> bool:
         if not session_id:
             return False
-        val = await self._redis.get(_SESSION_REVOKE_PREFIX + session_id)
+        # TODO: Use tenant_id from cached data for proper multi-tenant isolation
+        key = f"butler:token:revoked:session:{session_id}"
+        val = await self._redis.get(key)
         return val is not None
 
     async def _is_jti_revoked(self, token_id: str) -> bool:
         if not token_id:
             return False
-        val = await self._redis.get(_JTI_REVOKE_PREFIX + token_id)
+        # TODO: Use tenant_id from cached data for proper multi-tenant isolation
+        key = f"butler:token:revoked:jti:{token_id}"
+        val = await self._redis.get(key)
         return val is not None
 
 

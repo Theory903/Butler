@@ -1,29 +1,30 @@
 import json
 import logging
-import asyncio
+
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+
+from api.schemas.mercury import MercuryRequest, MercuryResponse
 from core.deps import get_mercury_service
 from services.gateway.protocol_service import MercuryProtocolService
-from api.schemas.mercury import MercuryRequest, MercuryResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["mercury"])
 
+
 @router.websocket("/ws/mercury")
 async def mercury_gateway_ws(
-    websocket: WebSocket,
-    service: MercuryProtocolService = Depends(get_mercury_service)
+    websocket: WebSocket, service: MercuryProtocolService = Depends(get_mercury_service)
 ):
     """Mercury Protocol Gateway WebSocket (v3).
-    
+
     Ported from OpenClaw's unified control plane + node transport.
     """
     await websocket.accept()
-    
+
     # 1. Send Handshake Challenge
     challenge = service.create_challenge()
     await websocket.send_text(challenge.model_dump_json())
-    
+
     try:
         # 2. Main Loop
         while True:
@@ -31,7 +32,7 @@ async def mercury_gateway_ws(
             try:
                 data = json.loads(raw)
                 frame_type = data.get("type")
-                
+
                 if frame_type == "req":
                     req = MercuryRequest(**data)
                     if req.method == "connect":
@@ -42,14 +43,17 @@ async def mercury_gateway_ws(
                         resp = MercuryResponse(
                             id=req.id,
                             ok=False,
-                            error={"code": "METHOD_NOT_IMPLEMENTED", "message": f"Method {req.method} not yet ported"}
+                            error={
+                                "code": "METHOD_NOT_IMPLEMENTED",
+                                "message": f"Method {req.method} not yet ported",
+                            },
                         )
                         await websocket.send_text(resp.model_dump_json())
-                
+
                 elif frame_type == "res":
                     # Handle responses from the node (e.g. for node.invoke)
                     pass
-                    
+
                 elif frame_type == "event":
                     # Handle events from the node
                     pass
@@ -57,7 +61,7 @@ async def mercury_gateway_ws(
             except json.JSONDecodeError:
                 logger.warning("mercury_invalid_json")
                 continue
-            except Exception as e:
+            except Exception:
                 logger.exception("mercury_frame_error")
                 continue
 

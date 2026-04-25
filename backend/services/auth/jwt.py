@@ -13,13 +13,14 @@ In production, load from PEM files via JWT_PRIVATE_KEY_PATH setting.
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
+
+import jwt
 
 
 def _b64url(data: bytes) -> str:
@@ -34,6 +35,7 @@ def _int_to_bytes(n: int) -> bytes:
 
 class JWK:
     """Represents a single RSA key in the JWKS lifecycle."""
+
     def __init__(self, private_key: RSAPrivateKey, key_id: str, state: str = "active_signing"):
         self.private_key = private_key
         self.public_key: RSAPublicKey = private_key.public_key()  # type: ignore
@@ -76,25 +78,25 @@ class JWKSManager:
     def sign_access_token(self, claims: dict, ttl: timedelta) -> str:
         if not self._active_signing_kid:
             raise RuntimeError("No active signing key configured")
-        
+
         signing_key = self._keys[self._active_signing_kid]
-        now = datetime.now(timezone.utc)
-        
+        now = datetime.now(UTC)
+
         payload = {
             "iss": self._issuer,
             "aud": self._audience,
-            "sub": str(claims["sub"]),           # Principal ID
-            "sid": str(claims["sid"]),           # Session ID
-            "aid": str(claims["aid"]),           # Active Account ID (Context)
-            "amr": claims.get("amr", ["pwd"]),   # Auth Methods Reference
-            "acr": claims.get("acr", "aal1"),    # Assurance Level
+            "sub": str(claims["sub"]),  # Principal ID
+            "sid": str(claims["sid"]),  # Session ID
+            "aid": str(claims["aid"]),  # Active Account ID (Context)
+            "amr": claims.get("amr", ["pwd"]),  # Auth Methods Reference
+            "acr": claims.get("acr", "aal1"),  # Assurance Level
             "device_id": claims.get("device_id"),
             "scope": claims.get("scope", "butler:all"),
             "iat": now,
             "exp": now + ttl,
             "jti": str(uuid4()),
         }
-        
+
         return jwt.encode(
             payload,
             signing_key.private_pem,
@@ -110,10 +112,10 @@ class JWKSManager:
     ) -> str:
         if not self._active_signing_kid:
             raise RuntimeError("No active signing key configured")
-            
+
         signing_key = self._keys[self._active_signing_kid]
-        now = datetime.now(timezone.utc)
-        
+        now = datetime.now(UTC)
+
         payload = {
             "iss": self._issuer,
             "aud": self._audience,
@@ -126,7 +128,7 @@ class JWKSManager:
             "exp": now + ttl,
             "jti": str(uuid4()),
         }
-        
+
         return jwt.encode(
             payload,
             signing_key.private_pem,
@@ -148,7 +150,7 @@ class JWKSManager:
         kid = header.get("kid")
         if not kid or kid not in self._keys:
             raise jwt.exceptions.InvalidKeyError(f"Missing or invalid kid: {kid}")
-        
+
         key = self._keys[kid]
         if key.state == "revoked":
             raise jwt.exceptions.InvalidKeyError("Key revoked")
@@ -170,14 +172,16 @@ class JWKSManager:
         for key in self._keys.values():
             if key.state == "revoked":
                 continue
-            keys.append({
-                "kty": "RSA",
-                "use": "sig",
-                "alg": "RS256",
-                "kid": key.key_id,
-                "n": key.n,
-                "e": key.e,
-            })
+            keys.append(
+                {
+                    "kty": "RSA",
+                    "use": "sig",
+                    "alg": "RS256",
+                    "kid": key.key_id,
+                    "n": key.n,
+                    "e": key.e,
+                }
+            )
         return {"keys": keys}
 
 
@@ -187,13 +191,14 @@ class JWKSManager:
 
 _jwks_manager: JWKSManager | None = None
 
+
 def get_jwks_manager() -> JWKSManager:
     global _jwks_manager
     if _jwks_manager is None:
         from infrastructure.config import settings
-        
+
         mgr = JWKSManager(issuer=settings.JWT_ISSUER, audience=settings.JWT_AUDIENCE)
-        
+
         # Load primary key
         if settings.JWT_PRIVATE_KEY_PATH:
             with open(settings.JWT_PRIVATE_KEY_PATH, "rb") as f:
@@ -201,9 +206,9 @@ def get_jwks_manager() -> JWKSManager:
         else:
             # Dev mode fallback
             pkey = rsa.generate_private_key(65537, 2048)
-            
+
         mgr.add_key(JWK(pkey, key_id=settings.JWKS_KEY_ID, state="active_signing"))
-        
+
         _jwks_manager = mgr
-        
+
     return _jwks_manager

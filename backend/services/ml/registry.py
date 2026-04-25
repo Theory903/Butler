@@ -1,290 +1,534 @@
-"""Model Registry — Auto-discovery SOLID pattern.
+from __future__ import annotations
 
-PROVIDER_META → SINGLE SOURCE OF TRUTH for all provider metadata
-ModelRegistry.MODELS → Generated from PROVIDER_META
-ModelProviderFactory → Lazy-loads provider classes by convention
-
-DRY Principle: All provider metadata in ONE place.
-SOLID Principle: Open/Closed - Add new providers without modifying factory.
-"""
-
-from dataclasses import dataclass
-from typing import Any, Optional
 import importlib
 import os
+from dataclasses import dataclass, field
+from enum import StrEnum
+from functools import lru_cache
+from threading import RLock
+from typing import Any
 
 import structlog
 
-from domain.ml.contracts import ReasoningContract, IModelRegistry
+from domain.ml.contracts import IModelRegistry, ReasoningContract, ReasoningTier
+
+# Import settings for environment-based configuration
+from infrastructure.config import settings
 
 logger = structlog.get_logger(__name__)
 
-# =============================================================================
-# SINGLE SOURCE OF TRUTH - All provider metadata in ONE place
-# Format: "provider_name": {"module": "relative.to.services", "class": "ClassName", ...}
-# =============================================================================
-PROVIDER_META: dict[str, dict[str, Any]] = {
-    # --- LLM Providers ---
-    "openai": {"tier": 3, "type": "llm", "default_model": "gpt-4o", "cost": 0.010, "max_context": 128000, "module": "services.ml.providers", "class": "OpenAIProvider"},
-    "anthropic": {"tier": 3, "type": "llm", "default_model": "claude-sonnet-4", "cost": 0.010, "max_context": 200000, "module": "services.ml.providers", "class": "AnthropicProvider"},
-    "deepseek": {"tier": 3, "type": "llm", "default_model": "deepseek-chat", "cost": 0.001, "max_context": 64000, "module": "services.ml.providers.llm", "class": "DeepSeekProvider"},
-    "groq": {"tier": 3, "type": "llm", "default_model": "llama-3.3-70b-versatile", "cost": 0.0006, "max_context": 8192, "module": "services.ml.providers.llm", "class": "GroqProvider"},
-    "ollama": {"tier": 2, "type": "llm", "default_model": "llama3.1:latest", "cost": 0.0, "max_context": 8192, "module": "services.ml.providers.llm", "class": "OllamaProvider"},
-    "mistral": {"tier": 3, "type": "llm", "default_model": "mistral-large", "cost": 0.002, "max_context": 128000, "module": "services.ml.providers.llm", "class": "MistralProvider"},
-    "perplexity": {"tier": 3, "type": "llm", "default_model": "sonar-pro", "cost": 0.005, "max_context": 200000, "module": "services.ml.providers.llm", "class": "PerplexityProvider"},
-    "together": {"tier": 3, "type": "llm", "default_model": "meta-llama-3.1-70b", "cost": 0.0008, "max_context": 125000, "module": "services.ml.providers.llm", "class": "TogetherProvider"},
-    "xai": {"tier": 3, "type": "llm", "default_model": "grok-2", "cost": 0.005, "max_context": 131000, "module": "services.ml.providers.llm", "class": "xAIProvider"},
-    "google": {"tier": 3, "type": "llm", "default_model": "gemini-2.5-pro", "cost": 0.0035, "max_context": 1000000, "module": "services.ml.providers.llm", "class": "GoogleGeminiProvider"},
-    # Gateway Providers
-    "openrouter": {"tier": 3, "type": "gateway", "default_model": "anthropic/claude-3.5-sonnet", "cost": 0.003, "max_context": 200000, "module": "services.ml.providers.gateway", "class": "OpenRouterProvider"},
-    "cloudflare": {"tier": 3, "type": "gateway", "default_model": "@cf/meta/llama-3.1-8b-instruct", "cost": 0.0, "max_context": 128000, "module": "services.ml.providers.gateway", "class": "CloudflareAIGatewayProvider"},
-    "vercel": {"tier": 3, "type": "gateway", "default_model": "ai", "cost": 0.0, "max_context": 1000000, "module": "services.ml.providers.gateway", "class": "VercelAIGatewayProvider"},
-    # Cloud Providers - Extended
-    "alibaba": {"tier": 3, "type": "cloud", "default_model": "qwen-turbo", "cost": 0.001, "max_context": 32000, "module": "services.ml.providers.cloud", "class": "AlibabaProvider"},
-    "fireworks": {"tier": 3, "type": "llm", "default_model": "firefunction-v2", "cost": 0.0009, "max_context": 128000, "module": "services.ml.providers.llm", "class": "FireworksProvider"},
-    "nvidia": {"tier": 3, "type": "llm", "default_model": "nemotron-70b", "cost": 0.001, "max_context": 128000, "module": "services.ml.providers.llm", "class": "NVIDIAProvider"},
-    "venice": {"tier": 3, "type": "llm", "default_model": "venice-3-strong", "cost": 0.0, "max_context": 32000, "module": "services.ml.providers.llm", "class": "VeniceProvider"},
-    "qwen": {"tier": 3, "type": "llm", "default_model": "qwen-plus", "cost": 0.001, "max_context": 131000, "module": "services.ml.providers.llm", "class": "QwenProvider"},
-    "vllm": {"tier": 2, "type": "llm", "default_model": "meta-llama-3.1-8b", "cost": 0.0, "max_context": 32768, "triattention": True, "module": "services.ml.providers", "class": "VLLMProvider"},
-    # --- Cloud Providers ---
-    "azure": {"tier": 3, "type": "cloud", "default_model": "gpt-4o", "cost": 0.015, "max_context": 128000, "module": "services.ml.providers.cloud", "class": "AzureOpenAIProvider"},
-    "bedrock": {"tier": 3, "type": "cloud", "default_model": "claude-3-sonnet", "cost": 0.012, "max_context": 200000, "module": "services.ml.providers.cloud", "class": "AmazonBedrockProvider"},
-    "moonshot": {"tier": 3, "type": "cloud", "default_model": "moonshot-v1-128k", "cost": 0.001, "max_context": 128000, "module": "services.ml.providers.cloud", "class": "MoonshotProvider"},
-    "minimax": {"tier": 3, "type": "cloud", "default_model": "MiniMax-Text-01", "cost": 0.0005, "max_context": 1000000, "module": "services.ml.providers.cloud", "class": "MiniMaxProvider"},
-    "volcengine": {"tier": 3, "type": "cloud", "default_model": "doubao-pro", "cost": 0.0008, "max_context": 32000, "module": "services.ml.providers.cloud", "class": "VolcengineProvider"},
-    "stepfun": {"tier": 3, "type": "cloud", "default_model": "step-1-8k", "cost": 0.001, "max_context": 8000, "module": "services.ml.providers.cloud", "class": "StepFunProvider"},
-    # --- STT Providers ---
-    "deepgram": {"tier": 3, "type": "stt", "default_model": "nova-2", "cost": 0.001, "max_context": 0, "module": "services.ml.providers.stt", "class": "DeepgramProvider"},
-    "whisper": {"tier": 3, "type": "stt", "default_model": "base", "cost": 0.0, "max_context": 0, "module": "services.ml.providers.stt", "class": "WhisperProvider"},
-    # --- TTS Providers ---
-    "elevenlabs": {"tier": 3, "type": "tts", "default_model": "eleven_turbo", "cost": 0.001, "max_context": 0, "module": "services.ml.providers.tts", "class": "ElevenLabsProvider"},
-    "coqui": {"tier": 3, "type": "tts", "default_model": "tts-1", "cost": 0.0, "max_context": 0, "module": "services.ml.providers.tts", "class": "CoquiProvider"},
-    # --- Embedding Providers ---
-    "voyage": {"tier": 3, "type": "embedding", "default_model": "voyage-3", "cost": 0.0005, "max_context": 0, "dimensions": 1024, "module": "services.ml.providers.embeddings", "class": "VoyageProvider"},
-    "cohere": {"tier": 3, "type": "embedding", "default_model": "embed-english-v3", "cost": 0.0001, "max_context": 0, "dimensions": 1024, "module": "services.ml.providers.embeddings", "class": "CohereProvider"},
-    # --- Search Providers ---
-    "serper": {"tier": 3, "type": "search", "default_model": "default", "cost": 0.001, "max_context": 0, "module": "services.ml.providers.search", "class": "SerperProvider"},
-    # --- Internal ---
-    "internal": {"tier": 0, "type": "pattern", "default_model": "1.0", "cost": 0, "max_context": 0, "module": "services.ml.providers", "class": "InternalProvider"},
-}
+
+class ProviderKind(StrEnum):
+    """High-level provider category."""
+
+    LLM = "llm"
+    GATEWAY = "gateway"
+    CLOUD = "cloud"
+    STT = "stt"
+    TTS = "tts"
+    EMBEDDING = "embedding"
+    SEARCH = "search"
+    INTERNAL = "internal"
 
 
-def _discover_provider_classes() -> dict[str, tuple[str, str]]:
-    class_map: dict[str, tuple[str, str]] = {}
-    for provider, meta in PROVIDER_META.items():
-        module = meta.get("module", "services.ml.providers")
-        class_name = meta.get("class", f"{provider.title()}Provider")
-        class_map[provider] = (module, class_name)
-    return class_map
+@dataclass(frozen=True, slots=True)
+class ProviderSpec:
+    """Stable provider adapter metadata."""
 
-
-_PROVIDER_CLASS_MAP: dict[str, tuple[str, str]] = _discover_provider_classes()
-
-
-# Provider → Env Var mapping for API key discovery
-PROVIDER_API_KEYS: dict[str, str | None] = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "groq": "GROQ_API_KEY",
-    "mistral": "MISTRAL_API_KEY",
-    "deepseek": "DEEPSEEK_API_KEY",
-    "perplexity": "PERPLEXITY_API_KEY",
-    "together": "TOGETHER_API_KEY",
-    "xai": "XAI_API_KEY",
-    "google": "GOOGLE_API_KEY",
-    "fireworks": "FIREWORKS_API_KEY",
-    "nvidia": "NVIDIA_API_KEY",
-    "venice": "VENICE_API_KEY",
-    "qwen": "DASHSCOPE_API_KEY",
-    "azure": "AZURE_OPENAI_KEY",
-    "bedrock": "AWS_ACCESS_KEY_ID",
-    "moonshot": "MOONSHOT_API_KEY",
-    "minimax": "MINIMAX_API_KEY",
-    "volcengine": "VOLCENGINE_API_KEY",
-    "stepfun": "STEPFUN_API_KEY",
-    "ollama": None,
-    "vllm": None,
-}
-
-
-class ModelSelector:
-    """Smart model selection with fallback hierarchy.
-    
-    Priority:
-    1. User's explicit model param (e.g., "groq/llama-3.3-70b")
-    2. DEFAULT_MODEL env var (if key exists)
-    3. Auto-detected available provider (cheapest/fastest with key)
-    """
-    
-    @classmethod
-    def get_available_providers(cls) -> list[tuple[str, dict]]:
-        available = []
-        for provider, env_key in PROVIDER_API_KEYS.items():
-            if env_key is None:
-                continue
-            api_key = os.environ.get(env_key, "").strip()
-            if api_key:
-                meta = PROVIDER_META.get(provider, {})
-                available.append((provider, meta))
-        return available
-    
-    @classmethod
-    def _provider_has_key(cls, provider: str) -> bool:
-        env_key = PROVIDER_API_KEYS.get(provider)
-        if env_key is None:
-            return True
-        return bool(os.environ.get(env_key, "").strip())
-    
-    @classmethod
-    def resolve(cls, user_model: str | None = None) -> tuple[str, str]:
-        user_model = (user_model or "").strip()
-        
-        # 1. User explicit model
-        if user_model:
-            if "/" in user_model:
-                provider, model = user_model.split("/", 1)
-                provider = provider.lower()
-                # Special: qwen via groq
-                if provider == "qwen" and cls._provider_has_key("groq"):
-                    return ("groq", f"qwen/{model}")
-                if provider in PROVIDER_META:
-                    return (provider, model)
-            else:
-                provider = user_model.lower()
-                if provider in PROVIDER_META:
-                    meta = PROVIDER_META[provider]
-                    return (provider, meta.get("default_model", provider))
-        
-        # 2. DEFAULT_MODEL from env (only if provider has key)
-        default = os.environ.get("DEFAULT_MODEL", "").strip()
-        if default and "/" in default:
-            provider, model = default.split("/", 1)
-            provider = provider.lower()
-            if provider in PROVIDER_META and cls._provider_has_key(provider):
-                return (provider, model)
-        
-        # 3. Auto-select from available providers (cheapest first)
-        available = cls.get_available_providers()
-        if available:
-            available.sort(key=lambda x: x[1].get("cost", 0))
-            provider, meta = available[0]
-            return (provider, meta.get("default_model", provider))
-        
-        # 4. Hard fallback (groq has free tier)
-        return ("groq", "llama-3.3-70b-versatile")
-
-
-@dataclass
-class ModelEntry:
     name: str
-    tier: int
-    type: str
+    tier: ReasoningTier
+    kind: ProviderKind
+    module: str
+    class_name: str
+    default_model: str
+    max_context: int = 0
+    cost_per_1k_tokens: float = 0.0
+    dimensions: int = 0
+    tri_attention: bool = False
+    api_key_env: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ModelEntry:
+    """Resolved runtime model profile."""
+
+    name: str
+    tier: ReasoningTier
+    kind: ProviderKind
     version: str
     status: str
     provider: str
-    max_context: int = 128000
+    max_context: int = 0
     cost_per_1k_tokens: float = 0.0
     dimensions: int = 0
     rollout_percentage: int = 100
     tri_attention: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+PROVIDER_SPECS: dict[str, ProviderSpec] = {
+    "openai": ProviderSpec(
+        name="openai",
+        tier=ReasoningTier.T3,
+        kind=ProviderKind.LLM,
+        module="services.ml.providers",
+        class_name="OpenAIProvider",
+        default_model="gpt-4o",
+        max_context=128000,
+        cost_per_1k_tokens=0.010,
+        api_key_env="OPENAI_API_KEY",
+    ),
+    "anthropic": ProviderSpec(
+        name="anthropic",
+        tier=ReasoningTier.T3,
+        kind=ProviderKind.LLM,
+        module="services.ml.providers",
+        class_name="AnthropicProvider",
+        default_model="claude-sonnet-4.6",
+        max_context=200000,
+        cost_per_1k_tokens=0.003,
+        api_key_env="ANTHROPIC_API_KEY",
+    ),
+    "groq": ProviderSpec(
+        name="groq",
+        tier=ReasoningTier.T3,
+        kind=ProviderKind.LLM,
+        module="services.ml.providers.llm",
+        class_name="GroqProvider",
+        default_model=settings.DEFAULT_MODEL,
+        max_context=131072,
+        cost_per_1k_tokens=0.0006,
+        api_key_env="GROQ_API_KEY",
+    ),
+    "google": ProviderSpec(
+        name="google",
+        tier=ReasoningTier.T3,
+        kind=ProviderKind.LLM,
+        module="services.ml.providers.llm",
+        class_name="GoogleGeminiNativeProvider",
+        default_model="gemma-4-26b-a4b-it",
+        max_context=1000000,
+        cost_per_1k_tokens=0.0035,
+        api_key_env="GEMINI_API_KEY",
+    ),
+    "ollama": ProviderSpec(
+        name="ollama",
+        tier=ReasoningTier.T2,
+        kind=ProviderKind.LLM,
+        module="services.ml.providers.llm",
+        class_name="OllamaProvider",
+        default_model="llama3.1:latest",
+        max_context=8192,
+        cost_per_1k_tokens=0.0,
+        api_key_env=None,
+    ),
+    "vllm": ProviderSpec(
+        name="vllm",
+        tier=ReasoningTier.T2,
+        kind=ProviderKind.LLM,
+        module="services.ml.providers",
+        class_name="VLLMProvider",
+        default_model="meta-llama-3.1-8b",
+        max_context=32768,
+        cost_per_1k_tokens=0.0,
+        tri_attention=True,
+        api_key_env=None,
+    ),
+    "openrouter": ProviderSpec(
+        name="openrouter",
+        tier=ReasoningTier.T3,
+        kind=ProviderKind.GATEWAY,
+        module="services.ml.providers.gateway",
+        class_name="OpenRouterProvider",
+        default_model="anthropic/claude-sonnet-4.5",
+        max_context=200000,
+        cost_per_1k_tokens=0.003,
+        api_key_env="OPENROUTER_API_KEY",
+    ),
+    "deepgram": ProviderSpec(
+        name="deepgram",
+        tier=ReasoningTier.T3,
+        kind=ProviderKind.STT,
+        module="services.ml.providers.stt",
+        class_name="DeepgramProvider",
+        default_model="nova-2",
+        api_key_env="DEEPGRAM_API_KEY",
+    ),
+    "elevenlabs": ProviderSpec(
+        name="elevenlabs",
+        tier=ReasoningTier.T3,
+        kind=ProviderKind.TTS,
+        module="services.ml.providers.tts",
+        class_name="ElevenLabsProvider",
+        default_model="eleven_turbo",
+        api_key_env="ELEVENLABS_API_KEY",
+    ),
+    "voyage": ProviderSpec(
+        name="voyage",
+        tier=ReasoningTier.T3,
+        kind=ProviderKind.EMBEDDING,
+        module="services.ml.providers.embeddings",
+        class_name="VoyageProvider",
+        default_model="voyage-3",
+        dimensions=1024,
+        api_key_env="VOYAGE_API_KEY",
+    ),
+    "cohere": ProviderSpec(
+        name="cohere",
+        tier=ReasoningTier.T3,
+        kind=ProviderKind.EMBEDDING,
+        module="services.ml.providers.embeddings",
+        class_name="CohereProvider",
+        default_model="embed-english-v3",
+        dimensions=1024,
+        api_key_env="COHERE_API_KEY",
+    ),
+    "serper": ProviderSpec(
+        name="serper",
+        tier=ReasoningTier.T3,
+        kind=ProviderKind.SEARCH,
+        module="services.ml.providers.search",
+        class_name="SerperProvider",
+        default_model="default",
+        api_key_env="SERPER_API_KEY",
+    ),
+    "internal": ProviderSpec(
+        name="internal",
+        tier=ReasoningTier.T0,
+        kind=ProviderKind.INTERNAL,
+        module="services.ml.providers",
+        class_name="InternalProvider",
+        default_model="1.0",
+        api_key_env=None,
+    ),
+}
+
+
+class ModelSelector:
+    """Resolve preferred provider/model using config-first policy."""
+
+    @classmethod
+    def get_available_providers(cls) -> list[ProviderSpec]:
+        available: list[ProviderSpec] = []
+        for spec in PROVIDER_SPECS.values():
+            if cls._provider_is_available(spec):
+                available.append(spec)
+        return available
+
+    @classmethod
+    def resolve(cls, user_model: str | None = None) -> tuple[str, str]:
+        requested = (user_model or "").strip()
+
+        if requested:
+            resolved = cls._resolve_explicit_request(requested)
+            if resolved is not None:
+                return resolved
+
+        # Use settings.DEFAULT_MODEL instead of os.environ for consistency
+        from infrastructure.config import settings
+        env_default = (settings.DEFAULT_MODEL or "").strip()
+        if env_default:
+            resolved = cls._resolve_explicit_request(env_default)
+            if resolved is not None:
+                return resolved
+
+        available = cls.get_available_providers()
+        if available:
+            available.sort(key=lambda spec: (cls._tier_rank(spec.tier), spec.cost_per_1k_tokens))
+            selected = available[0]
+            return (selected.name, cls._model_override(selected) or selected.default_model)
+
+        groq_spec = PROVIDER_SPECS.get("groq")
+        if groq_spec is not None:
+            return ("groq", groq_spec.default_model)
+
+        raise RuntimeError("No model providers are available")
+
+    @classmethod
+    def _resolve_explicit_request(cls, value: str) -> tuple[str, str] | None:
+        if "/" in value:
+            provider_name, model_name = value.split("/", 1)
+            provider_name = provider_name.strip().lower()
+            model_name = model_name.strip()
+            spec = PROVIDER_SPECS.get(provider_name)
+            if spec and cls._provider_is_available(spec):
+                return (provider_name, model_name)
+            return None
+
+        provider_name = value.strip().lower()
+        spec = PROVIDER_SPECS.get(provider_name)
+        if spec and cls._provider_is_available(spec):
+            return (provider_name, cls._model_override(spec) or spec.default_model)
+        return None
+
+    @classmethod
+    def _provider_is_available(cls, spec: ProviderSpec) -> bool:
+        from infrastructure.config import settings
+
+        if spec.api_key_env is None:
+            return True
+
+        # Check settings object first as it loads from .env
+        val = getattr(settings, spec.api_key_env, None)
+        if val:
+            # Handle SecretStr
+            if hasattr(val, "get_secret_value"):
+                return bool(val.get_secret_value().strip())
+            return bool(str(val).strip())
+
+        # Fallback to os.environ
+        return bool(os.environ.get(spec.api_key_env, "").strip())
+
+    @classmethod
+    def _model_override(cls, spec: ProviderSpec) -> str | None:
+        env_key = f"{spec.name.upper()}_DEFAULT_MODEL"
+
+        # Try os.environ for overrides
+        override = os.environ.get(env_key, "").strip()
+        if override:
+            return override
+
+        return None
+
+    @staticmethod
+    def _tier_rank(tier: ReasoningTier) -> int:
+        mapping = {
+            ReasoningTier.T0: 0,
+            ReasoningTier.T1: 1,
+            ReasoningTier.T2: 2,
+            ReasoningTier.T3: 3,
+        }
+        return mapping[tier]
 
 
 class ModelProviderFactory:
+    """Lazy provider factory with instance reuse."""
+
     _instances: dict[str, ReasoningContract] = {}
+    _lock = RLock()
 
     @classmethod
     def get_provider(cls, provider_type: str) -> ReasoningContract:
-        key = provider_type.lower()
-        if key in cls._instances:
-            return cls._instances[key]
+        key = provider_type.strip().lower()
 
-        if key not in _PROVIDER_CLASS_MAP:
-            raise ValueError(f"Unknown provider type: {provider_type}")
+        with cls._lock:
+            if key in cls._instances:
+                return cls._instances[key]
 
-        module_path, class_name = _PROVIDER_CLASS_MAP[key]
-        module = importlib.import_module(module_path)
-        provider_class: type = getattr(module, class_name)
-        instance = provider_class()
-        cls._instances[key] = instance
-        return instance
+            spec = PROVIDER_SPECS.get(key)
+            if spec is None:
+                raise ValueError(f"Unknown provider type: {provider_type}")
+
+            module = importlib.import_module(spec.module)
+            provider_class: type = getattr(module, spec.class_name)
+            instance = provider_class()
+            cls._instances[key] = instance
+            return instance
 
     @classmethod
     def list_providers(cls) -> list[str]:
-        return list(PROVIDER_META.keys())
+        return list(PROVIDER_SPECS.keys())
 
     @classmethod
-    def get_meta(cls, provider_type: str) -> Optional[dict[str, Any]]:
-        return PROVIDER_META.get(provider_type.lower())
+    def get_meta(cls, provider_type: str) -> dict[str, Any] | None:
+        spec = PROVIDER_SPECS.get(provider_type.strip().lower())
+        if spec is None:
+            return None
+        return {
+            "name": spec.name,
+            "tier": spec.tier.value,
+            "kind": spec.kind.value,
+            "default_model": spec.default_model,
+            "max_context": spec.max_context,
+            "cost_per_1k_tokens": spec.cost_per_1k_tokens,
+            "dimensions": spec.dimensions,
+            "tri_attention": spec.tri_attention,
+            "api_key_env": spec.api_key_env,
+        }
 
     @classmethod
     def get_available_types(cls, provider_type: str) -> list[str]:
-        meta = PROVIDER_META.get(provider_type.lower())
-        if not meta:
+        key = provider_type.strip().lower()
+        spec = PROVIDER_SPECS.get(key)
+        if spec is None:
             return []
-        ptype = meta.get("type", "llm")
-        return [k for k, v in PROVIDER_META.items() if v.get("type") == ptype]
+        return [item.name for item in PROVIDER_SPECS.values() if item.kind == spec.kind]
+
+    @classmethod
+    def clear_cache(cls) -> None:
+        with cls._lock:
+            cls._instances.clear()
 
 
 class ModelRegistry(IModelRegistry):
-    MODELS: dict[str, ModelEntry] = {}
+    """Resolved model registry built from stable provider specs and runtime policy."""
 
     def __init__(self) -> None:
+        self._models: dict[str, ModelEntry] = {}
+        self._lock = RLock()
         self._build_models()
 
-    def _build_models(self) -> None:
-        if self.MODELS:
-            return
-        for provider_type, meta in PROVIDER_META.items():
-            name = f"cloud-{provider_type}" if meta.get("tier", 0) == 3 else f"local-{provider_type}"
-            self.MODELS[name] = ModelEntry(
-                name=name,
-                tier=meta.get("tier", 0),
-                type=meta.get("type", "llm"),
-                version=meta.get("default_model", "1.0.0"),
-                status="active",
-                provider=provider_type,
-                max_context=meta.get("max_context", 128000),
-                cost_per_1k_tokens=meta.get("cost", 0.0),
-                dimensions=meta.get("dimensions", 0),
-                tri_attention=meta.get("triattention", False),
-            )
+    @property
+    def models(self) -> dict[str, ModelEntry]:
+        """Compatibility surface for legacy callers."""
+        return self._models
 
-    def get_active_model(self, name: str) -> Optional[ModelEntry]:
-        entry = self.MODELS.get(name)
+    def _build_models(self) -> None:
+        with self._lock:
+            if self._models:
+                return
+
+            built: dict[str, ModelEntry] = {}
+            for spec in PROVIDER_SPECS.values():
+                prefix = "cloud" if spec.tier == ReasoningTier.T3 else "local"
+                entry_name = f"{prefix}-{spec.name}"
+
+                built[entry_name] = ModelEntry(
+                    name=entry_name,
+                    tier=spec.tier,
+                    kind=spec.kind,
+                    version=ModelSelector._model_override(spec) or spec.default_model,
+                    status="active" if ModelSelector._provider_is_available(spec) else "inactive",
+                    provider=spec.name,
+                    max_context=spec.max_context,
+                    cost_per_1k_tokens=spec.cost_per_1k_tokens,
+                    dimensions=spec.dimensions,
+                    tri_attention=spec.tri_attention,
+                    metadata={
+                        "module": spec.module,
+                        "class_name": spec.class_name,
+                    },
+                )
+
+            self._models = built
+
+    def refresh(self, *, clear_provider_cache: bool = False) -> None:
+        """Rebuild the registry from current environment and provider specs."""
+        with self._lock:
+            self._models = {}
+
+        self._build_models()
+
+        if clear_provider_cache:
+            ModelProviderFactory.clear_cache()
+
+    def get_active_model(self, name: str) -> ModelEntry | None:
+        normalized = name.strip()
+
+        # Check if it's a model ID that matches a provider's default model
+        for item in self._models.values():
+            if item.version == normalized and item.status == "active":
+                return item
+
+        # Handle model IDs in format "provider/model"
+        if "/" in normalized:
+            # First try to match against provider default models
+            for item in self._models.values():
+                if item.version == normalized and item.status == "active":
+                    return item
+            
+            # If not found, try treating first part as provider name
+            provider_name, _ = normalized.split("/", 1)
+            normalized_provider = provider_name.strip().lower()
+            for item in self._models.values():
+                if item.provider == normalized_provider and item.status == "active":
+                    return item
+            return None
+
+        entry = self._models.get(normalized)
         if entry and entry.status == "active":
             return entry
+
+        normalized_provider = normalized.lower()
+        for item in self._models.values():
+            if item.provider == normalized_provider and item.status == "active":
+                return item
+
         return None
 
-    def get_active_by_tier(self, tier: int) -> list[ModelEntry]:
-        return [m for m in self.MODELS.values() if m.tier == tier and m.status == "active"]
+    def get_active_by_tier(self, tier: ReasoningTier) -> list[ModelEntry]:
+        entries = [
+            entry
+            for entry in self._models.values()
+            if entry.tier == tier and entry.status == "active"
+        ]
+        entries.sort(key=lambda entry: entry.cost_per_1k_tokens)
+        return entries
 
-    def get_provider(self, tier: int, provider_name: Optional[str] = None) -> ReasoningContract:
+    def get_provider(
+        self,
+        tier: ReasoningTier,
+        provider_name: str | None = None,
+    ) -> ReasoningContract:
+        """Return a provider instance for a tier or explicit provider name."""
         if provider_name:
-            return ModelProviderFactory.get_provider(provider_name)
+            entry = self.get_active_model(provider_name)
+            if entry is None:
+                raise RuntimeError(f"No active provider available for {provider_name}")
+            return ModelProviderFactory.get_provider(entry.provider)
+
+        active_entries = self.get_active_by_tier(tier)
+        if active_entries:
+            return ModelProviderFactory.get_provider(active_entries[0].provider)
+
+        fallback_entries = self.get_active_by_tier(ReasoningTier.T3)
+        if fallback_entries:
+            return ModelProviderFactory.get_provider(fallback_entries[0].provider)
+
+        raise RuntimeError(f"No active providers available for tier {tier.value}")
+
+    def get_entry_for_tier(
+        self,
+        tier: ReasoningTier,
+        provider_name: str | None = None,
+    ) -> ModelEntry:
+        """Return the primary model entry for a tier or explicit provider."""
+        if provider_name:
+            entry = self.get_active_model(provider_name)
+            if entry is not None:
+                return entry
+            raise RuntimeError(f"No active provider entry available for {provider_name}")
+
         active = self.get_active_by_tier(tier)
         if active:
-            return ModelProviderFactory.get_provider(active[0].provider)
-        return ModelProviderFactory.get_provider("openai")
+            return active[0]
 
-    def get_fallback_profiles(self, tier: int, exclude_name: str) -> list[ModelEntry]:
-        """Return potential fallback models for a given tier."""
+        fallback = self.get_active_by_tier(ReasoningTier.T3)
+        if fallback:
+            return fallback[0]
+
+        raise RuntimeError(f"No active model entry available for tier {tier.value}")
+
+    def get_fallback_profiles(
+        self,
+        tier: ReasoningTier,
+        exclude_name: str,
+    ) -> list[ModelEntry]:
         candidates = [
-            m for m in self.MODELS.values()
-            if m.tier == tier and m.name != exclude_name and m.status == "active"
+            entry
+            for entry in self._models.values()
+            if entry.tier == tier and entry.name != exclude_name and entry.status == "active"
         ]
-        # Sort by cost (cheapest fallback first)
-        candidates.sort(key=lambda x: x.cost_per_1k_tokens)
+        candidates.sort(key=lambda entry: entry.cost_per_1k_tokens)
         return candidates
 
     def list_entries(self) -> list[dict[str, Any]]:
         return [
             {
-                "name": m.name,
-                "tier": m.tier,
-                "type": m.type,
-                "version": m.version,
-                "status": m.status,
-                "provider": m.provider,
+                "name": entry.name,
+                "tier": entry.tier.value,
+                "kind": entry.kind.value,
+                "version": entry.version,
+                "status": entry.status,
+                "provider": entry.provider,
+                "max_context": entry.max_context,
+                "cost_per_1k_tokens": entry.cost_per_1k_tokens,
             }
-            for m in self.MODELS.values()
+            for entry in self._models.values()
         ]
+
+
+@lru_cache(maxsize=1)
+def get_model_registry() -> ModelRegistry:
+    """Return a process-wide cached model registry."""
+    return ModelRegistry()

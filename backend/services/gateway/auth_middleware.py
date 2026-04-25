@@ -20,13 +20,13 @@ AccountContext is populated with:
 
 from __future__ import annotations
 
-import jwt
 from redis.asyncio import Redis
 
+import jwt
 from domain.auth.contracts import AccountContext, IJWKSVerifier
 from domain.auth.exceptions import GatewayErrors
 from infrastructure.config import settings
-
+from services.tenant.namespace import get_tenant_namespace
 
 # Permitted typ header values (RFC 9068 §2.1)
 _VALID_TYP = frozenset({"at+jwt", "application/at+jwt"})
@@ -36,7 +36,6 @@ _VALID_ALGS = frozenset({"RS256", "ES256", "RS384", "ES384", "RS512", "ES512"})
 
 # Configurable clock skew tolerance (seconds)
 _CLOCK_SKEW_S: int = 30
-
 
 
 class JWTAuthMiddleware:
@@ -86,12 +85,15 @@ class JWTAuthMiddleware:
         except Exception as exc:
             from core.errors import Problem
             from core.observability import get_metrics
+
             if isinstance(exc, Problem):
                 raise
             if isinstance(exc, jwt.ExpiredSignatureError):
                 get_metrics().inc_auth_failure(reason="expired")
                 raise GatewayErrors.TOKEN_EXPIRED
-            if isinstance(exc, (jwt.InvalidAudienceError, jwt.InvalidIssuerError, jwt.InvalidTokenError)):
+            if isinstance(
+                exc, (jwt.InvalidAudienceError, jwt.InvalidIssuerError, jwt.InvalidTokenError)
+            ):
                 get_metrics().inc_auth_failure(reason="invalid_token")
                 raise GatewayErrors.INVALID_TOKEN
             get_metrics().inc_auth_failure(reason="internal_error")
@@ -99,21 +101,31 @@ class JWTAuthMiddleware:
 
         # ── Step 3: revocation check via Redis (fast path before DB) ─────────
         session_id = claims.get("sid", "")
+        tenant_id = claims.get("tenant_id", "")
         if session_id:
-            revoked = await self._redis.get(f"session_revoked:{session_id}")
+            # Use tenant-scoped revocation key
+            if tenant_id:
+                namespace = get_tenant_namespace(tenant_id)
+                revoked_key = f"{namespace.prefix}:token:revoked:session:{session_id}"
+            else:
+                # Fallback for non-tenant contexts
+                revoked_key = f"butler:token:revoked:session:{session_id}"
+            revoked = await self._redis.get(revoked_key)
             if revoked:
                 from core.observability import get_metrics
+
                 get_metrics().inc_auth_failure(reason="revoked")
                 raise GatewayErrors.SESSION_REVOKED
 
         # ── Step 4: build AccountContext using canonical domain field names ───
+        aid = claims.get("aid", claims["sub"])
         return AccountContext(
             sub=claims["sub"],
             sid=session_id,
-            aid=claims.get("aid", claims["sub"]),  # fall back to sub if no aid claim
+            aid=aid,  # fall back to sub if no aid claim
+            tid=tenant_id or aid,  # fall back to aid if no tenant_id claim
             amr=claims.get("amr", []),
             acr=claims.get("acr") or claims.get("aal", "aal1"),
             device_id=None,  # injected by route layer from X-Device-ID header
             client_id=claims.get("client_id"),
         )
-

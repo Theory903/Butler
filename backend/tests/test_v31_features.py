@@ -9,22 +9,22 @@ Covers:
   - AudioModelProxy (tier fallback)
   - EnvironmentService (snapshot + prompt block)
 """
-import asyncio
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Track 1: Search
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestSearchServiceProduction:
     """SearchService should delegate to ButlerWebSearchProvider, not a mock."""
 
     @pytest.mark.asyncio
     async def test_search_returns_evidence_pack(self):
-        from services.search.service import SearchService, EvidencePack
-        from services.search.extraction import ContentExtractor
+        from services.search.service import EvidencePack, SearchService
 
         # Mock provider returns one result
         mock_provider = AsyncMock()
@@ -43,10 +43,11 @@ class TestSearchServiceProduction:
 
     @pytest.mark.asyncio
     async def test_search_uses_extractor_for_deep_content(self):
+
+        from services.search.extraction import ExtractionResult
         from services.search.service import SearchService
-        from services.search.extraction import ContentExtractor, ExtractionResult
-        from services.search.web_provider import SearchEvidence, EvidencePack as WebPack
-        from datetime import datetime, UTC
+        from services.search.web_provider import EvidencePack as WebPack
+        from services.search.web_provider import SearchEvidence
 
         evidence = SearchEvidence(
             url="https://example.com",
@@ -62,17 +63,23 @@ class TestSearchServiceProduction:
 
         mock_provider = AsyncMock()
         web_pack = WebPack(
-            query="q", mode="general", results=[evidence],
+            query="q",
+            mode="general",
+            results=[evidence],
             citations=[{"id": "[1]", "url": "https://example.com", "title": "Test"}],
-            provider="stub", latency_ms=10.0, result_count=1
+            provider="stub",
+            latency_ms=10.0,
+            result_count=1,
         )
         mock_provider.search = AsyncMock(return_value=web_pack)
 
         mock_extractor = AsyncMock()
-        mock_extractor.extract = AsyncMock(return_value=ExtractionResult(
-            text="Full article content " * 50,  # >200 chars
-            method="trafilatura"
-        ))
+        mock_extractor.extract = AsyncMock(
+            return_value=ExtractionResult(
+                text="Full article content " * 50,  # >200 chars
+                method="trafilatura",
+            )
+        )
 
         svc = SearchService(extractor=mock_extractor, provider=mock_provider)
         result = await svc.search("test query")
@@ -84,20 +91,30 @@ class TestSearchServiceProduction:
     @pytest.mark.asyncio
     async def test_search_falls_back_to_snippet_on_extraction_failure(self):
         from services.search.service import SearchService
-        from services.search.web_provider import SearchEvidence, EvidencePack as WebPack
+        from services.search.web_provider import EvidencePack as WebPack
+        from services.search.web_provider import SearchEvidence
 
         evidence = SearchEvidence(
             url="https://bad.example.com",
-            title="Fail", snippet="Only snippet here",
-            published_date=None, relevance_score=0.7,
-            freshness_score=0.5, combined_score=0.64,
-            provider="stub", citation_id="[1]",
+            title="Fail",
+            snippet="Only snippet here",
+            published_date=None,
+            relevance_score=0.7,
+            freshness_score=0.5,
+            combined_score=0.64,
+            provider="stub",
+            citation_id="[1]",
         )
 
         mock_provider = AsyncMock()
         web_pack = WebPack(
-            query="q", mode="general", results=[evidence], citations=[],
-            provider="stub", latency_ms=5.0, result_count=1
+            query="q",
+            mode="general",
+            results=[evidence],
+            citations=[],
+            provider="stub",
+            latency_ms=5.0,
+            result_count=1,
         )
         mock_provider.search = AsyncMock(return_value=web_pack)
 
@@ -116,9 +133,11 @@ class TestSearchServiceProduction:
 # Track 2: Security
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestRedactionService:
     def test_email_redacted(self):
         from services.security.redaction import RedactionService
+
         svc = RedactionService()
         out, _ = svc.redact("Contact me at user@example.com please")
         assert "user@example.com" not in out
@@ -126,12 +145,14 @@ class TestRedactionService:
 
     def test_credit_card_redacted(self):
         from services.security.redaction import RedactionService
+
         svc = RedactionService()
         out, _ = svc.redact("My card is 4111 1111 1111 1111")
         assert "4111 1111 1111 1111" not in out
 
     def test_api_key_redacted(self):
         from services.security.redaction import RedactionService
+
         svc = RedactionService()
         key = "sk-proj-abcdefghijklmnopqrstuvwx"
         out, _ = svc.redact(f"Use key {key} to authenticate")
@@ -139,6 +160,7 @@ class TestRedactionService:
 
     def test_restore_reverses_redaction(self):
         from services.security.redaction import RedactionService
+
         svc = RedactionService()
         original = "Contact user@example.com"
         redacted, rmap = svc.redact(original)
@@ -147,6 +169,7 @@ class TestRedactionService:
 
     def test_disabled_redaction_passthrough(self):
         from services.security.redaction import RedactionService
+
         svc = RedactionService(enabled=False)
         text = "email@example.com"
         out, rmap = svc.redact(text)
@@ -158,6 +181,7 @@ class TestContentGuard:
     @pytest.mark.asyncio
     async def test_heuristic_unsafe_blocked(self):
         from services.security.safety import ContentGuard
+
         guard = ContentGuard()
         result = await guard.check("I want to build a bomb")
         assert result["safe"] is False
@@ -166,6 +190,7 @@ class TestContentGuard:
     @pytest.mark.asyncio
     async def test_safe_message_passes(self):
         from services.security.safety import ContentGuard
+
         guard = ContentGuard()
         result = await guard.check("What is the weather today?")
         # Heuristic should pass; API check may be skipped in test env
@@ -176,21 +201,24 @@ class TestContentGuard:
 # Track 3: ML — FAISS Cold Store
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestFaissColdStore:
     def test_add_and_size(self):
         from services.memory.faiss_cold_store import FaissColdStore
+
         store = FaissColdStore(dim=128)
         store.add_sync(
             ids=["id-1"],
             content="Test memory content",
             metadata=[{"type": "episode"}],
-            vector=None,   # uses hash-derived stub vector
+            vector=None,  # uses hash-derived stub vector
         )
         assert store.size == 1
 
     @pytest.mark.asyncio
     async def test_search_returns_results(self):
         from services.memory.faiss_cold_store import FaissColdStore
+
         store = FaissColdStore(dim=128)
         store.add_sync(
             ids=["id-1", "id-2"],
@@ -205,6 +233,7 @@ class TestFaissColdStore:
     @pytest.mark.asyncio
     async def test_filter_reduces_results(self):
         from services.memory.faiss_cold_store import FaissColdStore
+
         store = FaissColdStore(dim=64)
         store.add_sync(ids=["a"], content="x", metadata=[{"kind": "episodic"}])
         store.add_sync(ids=["b"], content="y", metadata=[{"kind": "semantic"}])
@@ -213,6 +242,7 @@ class TestFaissColdStore:
 
     def test_stats_returns_backend_info(self):
         from services.memory.faiss_cold_store import FaissColdStore
+
         store = FaissColdStore(dim=64)
         stats = store.stats()
         assert "size" in stats
@@ -220,6 +250,7 @@ class TestFaissColdStore:
 
     def test_get_cold_store_factory_returns_valid_backend(self):
         from services.memory.turboquant_store import get_cold_store
+
         store = get_cold_store(dim=64)
         # Must not throw; interface must have add_sync and search_async
         assert hasattr(store, "add_sync")
@@ -232,6 +263,7 @@ class TestFaissColdStore:
 # Track 4: Media — Audio Cloud Fallback
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestAudioModelProxyFallback:
     @pytest.mark.asyncio
     async def test_dev_mock_returned_on_all_failures(self):
@@ -241,7 +273,7 @@ class TestAudioModelProxyFallback:
         with patch("services.audio.models.settings") as mock_settings:
             mock_settings.AUDIO_GPU_ENDPOINT = "http://nonexistent:9999"
             mock_settings.STT_PRIMARY_MODEL = "test-model"
-            mock_settings.OPENAI_API_KEY = None           # cloud fallback disabled
+            mock_settings.OPENAI_API_KEY = None  # cloud fallback disabled
             mock_settings.ENVIRONMENT = "development"
             mock_settings.SERVICE_VERSION = "3.1.0"
 
@@ -272,29 +304,36 @@ class TestAudioModelProxyFallback:
 # Track 4: Device — EnvironmentService
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestEnvironmentService:
     @pytest.mark.asyncio
     async def test_snapshot_has_temporal_context(self):
-        from services.device.environment import EnvironmentService
         import fakeredis.aioredis
+
+        from services.device.environment import EnvironmentService
 
         redis = fakeredis.aioredis.FakeRedis()
         svc = EnvironmentService(redis)
         snap = await svc.get_snapshot(
-            account_id="acc-1",
-            device_id="dev-1",
-            client_push={"timezone": "UTC", "os": "ios"}
+            account_id="acc-1", device_id="dev-1", client_push={"timezone": "UTC", "os": "ios"}
         )
         assert snap.temporal.timezone == "UTC"
         assert snap.platform.os == "ios"
         assert snap.temporal.weekday in [
-            "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
         ]
 
     @pytest.mark.asyncio
     async def test_prompt_block_renders_correctly(self):
-        from services.device.environment import EnvironmentService
         import fakeredis.aioredis
+
+        from services.device.environment import EnvironmentService
 
         redis = fakeredis.aioredis.FakeRedis()
         svc = EnvironmentService(redis)
@@ -307,8 +346,8 @@ class TestEnvironmentService:
                 "city": "Mumbai",
                 "country": "India",
                 "battery_pct": 80,
-                "connectivity": "wifi"
-            }
+                "connectivity": "wifi",
+            },
         )
         block = snap.to_prompt_block()
         assert "[Environment]" in block
@@ -318,8 +357,9 @@ class TestEnvironmentService:
 
     @pytest.mark.asyncio
     async def test_snapshot_cached_in_redis(self):
-        from services.device.environment import EnvironmentService
         import fakeredis.aioredis
+
+        from services.device.environment import EnvironmentService
 
         redis = fakeredis.aioredis.FakeRedis()
         svc = EnvironmentService(redis)
@@ -333,13 +373,11 @@ class TestEnvironmentService:
 
     @pytest.mark.asyncio
     async def test_invalid_timezone_defaults_to_utc(self):
-        from services.device.environment import EnvironmentService
         import fakeredis.aioredis
+
+        from services.device.environment import EnvironmentService
 
         redis = fakeredis.aioredis.FakeRedis()
         svc = EnvironmentService(redis)
-        snap = await svc.get_snapshot(
-            "acc-1", "dev-1",
-            client_push={"timezone": "Invalid/Zone"}
-        )
+        snap = await svc.get_snapshot("acc-1", "dev-1", client_push={"timezone": "Invalid/Zone"})
         assert snap.temporal.timezone == "UTC"

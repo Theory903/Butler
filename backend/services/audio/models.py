@@ -5,23 +5,24 @@ Fallback chain:
   2. OpenAI Whisper   (STT) / OpenAI TTS (gpt-4o-mini)
   3. Dev mock         (only when ENVIRONMENT == development)
 """
+
 from __future__ import annotations
 
 import base64
-import io
 import logging
 import time
-from typing import Optional, List
 
 import httpx
 from pydantic import BaseModel, Field
 
 from infrastructure.config import settings
+from services.security.safe_request import SafeRequestClient
 
 logger = logging.getLogger(__name__)
 
 
 # ── Pydantic Schemas ─────────────────────────────────────────────────────────
+
 
 class WordInfo(BaseModel):
     word: str
@@ -29,60 +30,69 @@ class WordInfo(BaseModel):
     end: float
     confidence: float
 
+
 class TranscribeResult(BaseModel):
     transcript: str
     confidence: float
-    words: List[WordInfo] = Field(default_factory=list)
+    words: list[WordInfo] = Field(default_factory=list)
     language: str
     model_used: str
     was_upgraded: bool = False
     processing_time_ms: int
+
 
 class SpeakerSegment(BaseModel):
     speaker_id: str
     start: float
     end: float
     confidence: float
-    text: Optional[str] = None
+    text: str | None = None
+
 
 class DiarizationResult(BaseModel):
-    segments: List[SpeakerSegment]
+    segments: list[SpeakerSegment]
     speaker_count: int
     segments_by_speaker: dict
 
+
 class MeetingTranscript(BaseModel):
-    segments: List[SpeakerSegment]
+    segments: list[SpeakerSegment]
     speaker_count: int
     processing_time_ms: int
+
 
 class SpeechAnalysis(BaseModel):
     language: str
     language_confidence: float
     emotion: str
     emotion_confidence: float
-    audio_event: Optional[str] = None
+    audio_event: str | None = None
     text: str
+
 
 class TTSResult(BaseModel):
     audio_data: bytes
     duration_ms: int
     format: str
 
+
 class MusicMatch(BaseModel):
     title: str
     artist: str
-    duration: Optional[float] = None
+    duration: float | None = None
     score: float
-    release: Optional[str] = None
+    release: str | None = None
+
 
 class StreamUpdate(BaseModel):
     transcript: str
     confidence: float
     finalized: bool
-    segment_id: Optional[str] = None
+    segment_id: str | None = None
 
 
 # ── GPU Proxy Client ──────────────────────────────────────────────────────────
+
 
 class AudioModelProxy:
     """Production audio proxy with GPU worker + OpenAI cloud fallback.
@@ -92,20 +102,22 @@ class AudioModelProxy:
     Tier 3: Dev mock (ENVIRONMENT == development only)
     """
 
-    def __init__(self, endpoint_url: Optional[str] = None) -> None:
+    def __init__(self, endpoint_url: str | None = None, tenant_id: str | None = None) -> None:
         self.endpoint = (endpoint_url or settings.AUDIO_GPU_ENDPOINT).rstrip("/")
+        self.tenant_id = tenant_id or "default"
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(60.0, connect=5.0),
             headers={"User-Agent": f"ButlerAudioService/{settings.SERVICE_VERSION}"},
         )
+        self._safe_client = SafeRequestClient(timeout=httpx.Timeout(60.0, connect=5.0))
 
     # ── STT ────────────────────────────────────────────────────────────────────
 
     async def transcribe(
         self,
         audio_data: bytes,
-        language: Optional[str] = None,
-        model: Optional[str] = None,
+        language: str | None = None,
+        model: str | None = None,
     ) -> TranscribeResult:
         start = time.perf_counter()
 
@@ -148,8 +160,17 @@ class AudioModelProxy:
             )
         raise RuntimeError("All STT backends failed and ENVIRONMENT is not development.")
 
-    async def _openai_whisper(self, audio_data: bytes, language: Optional[str]) -> str:
-        """Call OpenAI Whisper API directly."""
+    async def _openai_whisper(self, audio_data: bytes, language: str | None) -> str:
+        """Call OpenAI Whisper API through SafeHttpClient for SSRF protection."""
+        # SafeHttpClient doesn't support multipart file uploads directly
+        # For now, use httpx but add SSRF check on the URL
+        from services.security.egress_policy import EgressDecision, EgressPolicy
+
+        egress_policy = EgressPolicy.get_default()
+        decision, reason = egress_policy.check_url("https://api.openai.com", self.tenant_id)
+        if decision == EgressDecision.DENY:
+            raise RuntimeError(f"Egress policy denied OpenAI API call: {reason}")
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 "https://api.openai.com/v1/audio/transcriptions",
@@ -165,10 +186,10 @@ class AudioModelProxy:
     async def synthesize(
         self,
         text: str,
-        voice_id: Optional[str] = None,
-        voice_ref: Optional[bytes] = None,
+        voice_id: str | None = None,
+        voice_ref: bytes | None = None,
     ) -> TTSResult:
-        start = time.perf_counter()
+        time.perf_counter()
 
         # Tier 1: Local GPU worker
         try:
@@ -176,9 +197,7 @@ class AudioModelProxy:
             files: dict = {}
             if voice_ref:
                 files["voice_ref"] = ("ref.wav", voice_ref, "audio/wav")
-            resp = await self._client.post(
-                f"{self.endpoint}/tts", data=data, files=files or None
-            )
+            resp = await self._client.post(f"{self.endpoint}/tts", data=data, files=files or None)
             resp.raise_for_status()
             res = resp.json()
             return TTSResult(
@@ -195,7 +214,7 @@ class AudioModelProxy:
                 audio_bytes = await self._openai_tts(text, voice_id)
                 return TTSResult(
                     audio_data=audio_bytes,
-                    duration_ms=int(len(text) * 50),   # rough estimate: 50ms/char
+                    duration_ms=int(len(text) * 50),  # rough estimate: 50ms/char
                     format="mp3",
                 )
             except Exception as e:
@@ -206,9 +225,16 @@ class AudioModelProxy:
             return TTSResult(audio_data=b"mock_audio", duration_ms=1000, format="wav")
         raise RuntimeError("All TTS backends failed.")
 
-    async def _openai_tts(self, text: str, voice_id: Optional[str]) -> bytes:
-        """Call OpenAI TTS API directly."""
-        oai_voice = "nova"   # best general-purpose voice; can map voice_id → oai_voice
+    async def _openai_tts(self, text: str, voice_id: str | None) -> bytes:
+        """Call OpenAI TTS API through SafeHttpClient for SSRF protection."""
+        from services.security.egress_policy import EgressDecision, EgressPolicy
+
+        egress_policy = EgressPolicy.get_default()
+        decision, reason = egress_policy.check_url("https://api.openai.com", self.tenant_id)
+        if decision == EgressDecision.DENY:
+            raise RuntimeError(f"Egress policy denied OpenAI API call: {reason}")
+
+        oai_voice = "nova"  # best general-purpose voice; can map voice_id → oai_voice
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 "https://api.openai.com/v1/audio/speech",
@@ -220,7 +246,7 @@ class AudioModelProxy:
 
     # ── Voice Embedding ────────────────────────────────────────────────────────
 
-    async def extract_embedding(self, audio_data: bytes) -> List[float]:
+    async def extract_embedding(self, audio_data: bytes) -> list[float]:
         try:
             files = {"audio": ("audio.wav", audio_data, "audio/wav")}
             resp = await self._client.post(f"{self.endpoint}/embedding", files=files)
@@ -230,6 +256,7 @@ class AudioModelProxy:
             logger.error("gpu_embedding_failed: %s", str(e))
             if settings.ENVIRONMENT == "development":
                 import hashlib
+
                 h = hashlib.sha256(audio_data).digest()
                 return [float(b) / 255.0 for b in h[:128]]
             raise

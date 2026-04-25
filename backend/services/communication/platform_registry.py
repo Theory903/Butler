@@ -36,72 +36,75 @@ Sovereignty rules:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class PlatformId(str, Enum):
-    API            = "api"
-    WEB            = "web"
-    MOBILE_IOS     = "mobile_ios"
+class PlatformId(StrEnum):
+    API = "api"
+    WEB = "web"
+    MOBILE_IOS = "mobile_ios"
     MOBILE_ANDROID = "mobile_android"
-    SLACK          = "slack"
-    EMAIL          = "email"
-    WHATSAPP       = "whatsapp"
-    TELEGRAM       = "telegram"
-    SMS            = "sms"
-    DISCORD        = "discord"
-    TEAMS          = "teams"
-    VOICE          = "voice"
-    IOT            = "iot"
-    MCP_CLIENT     = "mcp_client"
-    SIGNAL         = "signal"
-    MATTERMOST     = "mattermost"
-    MATRIX         = "matrix"
-    DINGTALK       = "dingtalk"
-    FEISHU         = "feishu"
-    WECOM          = "wecom"
-    WEIXIN         = "weixin"
-    QQBOT          = "qqbot"
-    HOMEASSISTANT  = "homeassistant"
-    BLUEBUBBLES    = "bluebubbles"
-    WEBHOOK        = "webhook"
+    SLACK = "slack"
+    EMAIL = "email"
+    WHATSAPP = "whatsapp"
+    TELEGRAM = "telegram"
+    SMS = "sms"
+    DISCORD = "discord"
+    TEAMS = "teams"
+    VOICE = "voice"
+    IOT = "iot"
+    MCP_CLIENT = "mcp_client"
+    SIGNAL = "signal"
+    MATTERMOST = "mattermost"
+    MATRIX = "matrix"
+    DINGTALK = "dingtalk"
+    FEISHU = "feishu"
+    WECOM = "wecom"
+    WEIXIN = "weixin"
+    QQBOT = "qqbot"
+    HOMEASSISTANT = "homeassistant"
+    BLUEBUBBLES = "bluebubbles"
+    WEBHOOK = "webhook"
 
 
-class AuthMechanism(str, Enum):
-    JWT         = "jwt"
-    OAUTH2      = "oauth2"
-    API_KEY     = "api_key"
+class AuthMechanism(StrEnum):
+    JWT = "jwt"
+    OAUTH2 = "oauth2"
+    API_KEY = "api_key"
     WEBHOOK_SIG = "webhook_sig"
-    MTLS        = "mtls"
-    NONE        = "none"
+    MTLS = "mtls"
+    NONE = "none"
 
 
-class MessageFormat(str, Enum):
-    JSON       = "json"
-    MARKDOWN   = "markdown"
+class MessageFormat(StrEnum):
+    JSON = "json"
+    MARKDOWN = "markdown"
     PLAIN_TEXT = "plain_text"
-    HTML       = "html"
+    HTML = "html"
     VOICE_SSML = "voice_ssml"
-    MQTT       = "mqtt"
-    MCP_JSON   = "mcp_json"
+    MQTT = "mqtt"
+    MCP_JSON = "mcp_json"
 
 
 @dataclass(frozen=True)
 class PlatformAdapter:
     """Describes a Butler-supported platform channel."""
+
     id: PlatformId
     display_name: str
     description: str
     auth_mechanism: AuthMechanism
     message_format: MessageFormat
-    max_message_chars: int        # Hard limit; Butler truncates before dispatch
-    supports_streaming: bool      # SSE or WebSocket available
-    supports_files: bool          # Can receive file attachments
-    supports_voice: bool          # Can handle audio input/output
-    supports_multi_turn: bool     # Stateful multi-turn conversations
-    rate_limit_rpm: int           # Platform-imposed RPM limit (0 = unlimited)
-    webhook_path: str | None      # For outbound webhook delivery (None = pull)
-    requires_approval_for: list[str] = field(default_factory=list)  # Tool categories requiring approval on this platform
+    max_message_chars: int  # Hard limit; Butler truncates before dispatch
+    supports_streaming: bool  # SSE or WebSocket available
+    supports_files: bool  # Can receive file attachments
+    supports_voice: bool  # Can handle audio input/output
+    supports_multi_turn: bool  # Stateful multi-turn conversations
+    rate_limit_rpm: int  # Platform-imposed RPM limit (0 = unlimited)
+    webhook_path: str | None  # For outbound webhook delivery (None = pull)
+    requires_approval_for: list[str] = field(
+        default_factory=list
+    )  # Tool categories requiring approval on this platform
     notes: str = ""
     adapter_class: type | None = None  # Lazy-loaded Hermes adapter class
 
@@ -109,7 +112,6 @@ class PlatformAdapter:
 # ── Platform Definitions ───────────────────────────────────────────────────────
 
 _ADAPTERS: list[PlatformAdapter] = [
-
     PlatformAdapter(
         id=PlatformId.API,
         display_name="REST API",
@@ -124,7 +126,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=10_000,
         webhook_path=None,
     ),
-
     PlatformAdapter(
         id=PlatformId.WEB,
         display_name="Web Frontend",
@@ -139,7 +140,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=5_000,
         webhook_path=None,
     ),
-
     PlatformAdapter(
         id=PlatformId.MOBILE_IOS,
         display_name="iOS App",
@@ -155,7 +155,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         webhook_path=None,
         notes="APNs push notifications for background delivery.",
     ),
-
     PlatformAdapter(
         id=PlatformId.MOBILE_ANDROID,
         display_name="Android App",
@@ -171,24 +170,22 @@ _ADAPTERS: list[PlatformAdapter] = [
         webhook_path=None,
         notes="FCM push notifications for background delivery.",
     ),
-
     PlatformAdapter(
         id=PlatformId.SLACK,
         display_name="Slack",
         description="Slack Bot API with slash commands and app mentions.",
         auth_mechanism=AuthMechanism.WEBHOOK_SIG,
         message_format=MessageFormat.MARKDOWN,
-        max_message_chars=3_000,       # Slack Block Kit message limit
+        max_message_chars=3_000,  # Slack Block Kit message limit
         supports_streaming=False,
         supports_files=True,
         supports_voice=False,
         supports_multi_turn=True,
-        rate_limit_rpm=60,             # Slack Tier 2 rate limit
+        rate_limit_rpm=60,  # Slack Tier 2 rate limit
         webhook_path="/webhooks/slack",
         requires_approval_for=["file_write", "external_api_calls", "email_send"],
         notes="Slack signatures verified via HMAC-SHA256.",
     ),
-
     PlatformAdapter(
         id=PlatformId.EMAIL,
         display_name="Email",
@@ -199,13 +196,12 @@ _ADAPTERS: list[PlatformAdapter] = [
         supports_streaming=False,
         supports_files=True,
         supports_voice=False,
-        supports_multi_turn=False,     # Each email is independent
+        supports_multi_turn=False,  # Each email is independent
         rate_limit_rpm=10,
         webhook_path="/webhooks/email",
-        requires_approval_for=["*"],   # All tool calls require approval over email
+        requires_approval_for=["*"],  # All tool calls require approval over email
         notes="DKIM/SPF verified on inbound. SendGrid/SES on outbound.",
     ),
-
     PlatformAdapter(
         id=PlatformId.WHATSAPP,
         display_name="WhatsApp",
@@ -214,7 +210,7 @@ _ADAPTERS: list[PlatformAdapter] = [
         message_format=MessageFormat.PLAIN_TEXT,
         max_message_chars=4_096,
         supports_streaming=False,
-        supports_files=True,           # Images, docs, audio
+        supports_files=True,  # Images, docs, audio
         supports_voice=True,
         supports_multi_turn=True,
         rate_limit_rpm=80,
@@ -222,7 +218,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         requires_approval_for=["file_write", "external_api_calls", "email_send"],
         notes="Meta webhook signature verified via X-Hub-Signature-256.",
     ),
-
     PlatformAdapter(
         id=PlatformId.TELEGRAM,
         display_name="Telegram",
@@ -238,14 +233,13 @@ _ADAPTERS: list[PlatformAdapter] = [
         webhook_path="/webhooks/telegram",
         notes="Secret token in X-Telegram-Bot-Api-Secret-Token header.",
     ),
-
     PlatformAdapter(
         id=PlatformId.SMS,
         display_name="SMS",
         description="SMS via Twilio or Vonage.",
         auth_mechanism=AuthMechanism.WEBHOOK_SIG,
         message_format=MessageFormat.PLAIN_TEXT,
-        max_message_chars=160,         # Single SMS segment; Butler auto-splits
+        max_message_chars=160,  # Single SMS segment; Butler auto-splits
         supports_streaming=False,
         supports_files=False,
         supports_voice=False,
@@ -255,7 +249,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         requires_approval_for=["*"],
         notes="160 chars/segment. Butler chunks long replies into segments.",
     ),
-
     PlatformAdapter(
         id=PlatformId.DISCORD,
         display_name="Discord",
@@ -265,13 +258,12 @@ _ADAPTERS: list[PlatformAdapter] = [
         max_message_chars=2_000,
         supports_streaming=False,
         supports_files=True,
-        supports_voice=False,          # Voice channel audio via separate pipeline
+        supports_voice=False,  # Voice channel audio via separate pipeline
         supports_multi_turn=True,
         rate_limit_rpm=50,
         webhook_path="/webhooks/discord",
         notes="Ed25519 signature verification on interactions.",
     ),
-
     PlatformAdapter(
         id=PlatformId.TEAMS,
         display_name="Microsoft Teams",
@@ -287,14 +279,13 @@ _ADAPTERS: list[PlatformAdapter] = [
         webhook_path="/webhooks/teams",
         notes="Azure AD OAuth2 token validation. Adaptive Cards for rich messages.",
     ),
-
     PlatformAdapter(
         id=PlatformId.VOICE,
         display_name="Voice Call",
         description="Bidirectional voice via Twilio Voice or WebRTC.",
         auth_mechanism=AuthMechanism.JWT,
         message_format=MessageFormat.VOICE_SSML,
-        max_message_chars=5_000,       # SSML per turn
+        max_message_chars=5_000,  # SSML per turn
         supports_streaming=True,
         supports_files=False,
         supports_voice=True,
@@ -304,7 +295,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         requires_approval_for=["email_send", "file_write", "external_api_calls"],
         notes="STT → Butler → TTS pipeline. P99 latency target <800ms.",
     ),
-
     PlatformAdapter(
         id=PlatformId.IOT,
         display_name="IoT Device",
@@ -320,7 +310,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         webhook_path=None,
         notes="mTLS client certificate per device. OWASP IoT Top 10 compliant.",
     ),
-
     PlatformAdapter(
         id=PlatformId.MCP_CLIENT,
         display_name="MCP Client",
@@ -336,7 +325,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         webhook_path=None,
         notes="MCP 2025-03-26 protocol. tools/list + tools/call JSON-RPC.",
     ),
-
     PlatformAdapter(
         id=PlatformId.SIGNAL,
         display_name="Signal",
@@ -351,7 +339,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=60,
         webhook_path="/webhooks/signal",
     ),
-
     PlatformAdapter(
         id=PlatformId.MATTERMOST,
         display_name="Mattermost",
@@ -366,7 +353,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=60,
         webhook_path="/webhooks/mattermost",
     ),
-
     PlatformAdapter(
         id=PlatformId.MATRIX,
         display_name="Matrix",
@@ -381,7 +367,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=60,
         webhook_path="/webhooks/matrix",
     ),
-
     PlatformAdapter(
         id=PlatformId.DINGTALK,
         display_name="DingTalk",
@@ -396,7 +381,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=60,
         webhook_path="/webhooks/dingtalk",
     ),
-
     PlatformAdapter(
         id=PlatformId.FEISHU,
         display_name="Feishu / Lark",
@@ -411,7 +395,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=60,
         webhook_path="/webhooks/feishu",
     ),
-
     PlatformAdapter(
         id=PlatformId.WECOM,
         display_name="WeCom",
@@ -426,7 +409,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=60,
         webhook_path="/webhooks/wecom",
     ),
-
     PlatformAdapter(
         id=PlatformId.WEIXIN,
         display_name="WeChat",
@@ -441,7 +423,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=60,
         webhook_path="/webhooks/weixin",
     ),
-
     PlatformAdapter(
         id=PlatformId.QQBOT,
         display_name="QQ Bot",
@@ -456,7 +437,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=60,
         webhook_path="/webhooks/qqbot",
     ),
-
     PlatformAdapter(
         id=PlatformId.HOMEASSISTANT,
         display_name="Home Assistant",
@@ -471,7 +451,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=60,
         webhook_path="/webhooks/homeassistant",
     ),
-
     PlatformAdapter(
         id=PlatformId.BLUEBUBBLES,
         display_name="BlueBubbles",
@@ -486,7 +465,6 @@ _ADAPTERS: list[PlatformAdapter] = [
         rate_limit_rpm=60,
         webhook_path="/webhooks/bluebubbles",
     ),
-
     PlatformAdapter(
         id=PlatformId.WEBHOOK,
         display_name="Generic Webhook",
@@ -506,6 +484,7 @@ _ADAPTERS: list[PlatformAdapter] = [
 
 # ── Registry ───────────────────────────────────────────────────────────────────
 
+
 class PlatformRegistry:
     """Immutable registry of all supported Butler platforms.
 
@@ -516,9 +495,7 @@ class PlatformRegistry:
     """
 
     def __init__(self) -> None:
-        self._adapters: dict[PlatformId, PlatformAdapter] = {
-            a.id: a for a in _ADAPTERS
-        }
+        self._adapters: dict[PlatformId, PlatformAdapter] = {a.id: a for a in _ADAPTERS}
 
     def get(self, platform_id: PlatformId) -> PlatformAdapter | None:
         return self._adapters.get(platform_id)
@@ -568,7 +545,9 @@ class PlatformRegistry:
         adapter = self._adapters.get(platform_id)
         if adapter is None:
             return False
-        return "*" in adapter.requires_approval_for or tool_category in adapter.requires_approval_for
+        return (
+            "*" in adapter.requires_approval_for or tool_category in adapter.requires_approval_for
+        )
 
     def list_all(self) -> list[dict]:
         return [
@@ -592,12 +571,12 @@ class PlatformRegistry:
 
     def load_hermes_platform_adapters(self, platform_ids: list[PlatformId] | None = None) -> None:
         """Lazy load Hermes platform adapter classes into the registry.
-        
+
         Args:
             platform_ids: List of platforms to load. Defaults to all mapped platforms.
         """
         import importlib
-        
+
         mapping = {
             PlatformId.SLACK: "integrations.hermes.gateway.platforms.slack.SlackAdapter",
             PlatformId.TELEGRAM: "integrations.hermes.gateway.platforms.telegram.TelegramAdapter",
@@ -621,16 +600,16 @@ class PlatformRegistry:
 
         if platform_ids is None:
             platform_ids = list(mapping.keys())
-            
+
         for pid in platform_ids:
             if pid not in mapping:
                 continue
-                
+
             module_path, class_name = mapping[pid].rsplit(".", 1)
             try:
                 module = importlib.import_module(module_path)
                 cls = getattr(module, class_name)
-                
+
                 # Update the adapter in place
                 adapter = self._adapters[pid]
                 # Dataclasses with frozen=True prevent direct attribute assignment
@@ -638,7 +617,10 @@ class PlatformRegistry:
                 object.__setattr__(adapter, "adapter_class", cls)
             except Exception as e:
                 import logging
-                logging.getLogger(__name__).warning("Failed to load Hermes adapter for %s: %s", pid, e)
+
+                logging.getLogger(__name__).warning(
+                    "Failed to load Hermes adapter for %s: %s", pid, e
+                )
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────

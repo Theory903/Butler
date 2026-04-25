@@ -1,7 +1,8 @@
 import pytest
+
 from domain.policy.capability_flags import CapabilityArea, TrustLevel
-from domain.policy.product_tiers import ProductTier, check_capability
 from domain.policy.industry_profiles import IndustryProfile, check_profile_capability
+from domain.policy.product_tiers import ProductTier, check_capability
 
 
 class TestCapabilityEnforcement:

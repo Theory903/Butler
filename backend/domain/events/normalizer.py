@@ -17,58 +17,62 @@ No Hermes event type ever reaches a Butler consumer directly.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Any
+
 import structlog
-from typing import Any, Iterator
 
 from domain.events.schemas import (
     ButlerEvent,
+    SessionEndedEvent,
+    StreamApprovalRequiredEvent,
+    StreamErrorEvent,
+    StreamFinalEvent,
     StreamTokenEvent,
     StreamToolCallEvent,
     StreamToolResultEvent,
-    StreamApprovalRequiredEvent,
-    StreamFinalEvent,
-    StreamErrorEvent,
-    TaskStartedEvent,
-    TaskStepStartedEvent,
-    TaskStepCompletedEvent,
     TaskCompletedEvent,
     TaskFailedEvent,
-    ToolExecutingEvent,
+    TaskStepCompletedEvent,
     ToolExecutedEvent,
+    ToolExecutingEvent,
     ToolFailedEvent,
-    SessionEndedEvent,
 )
 
 logger = structlog.get_logger(__name__)
 
 # Tools that expose their params in StreamToolCallEvent (L0 only)
-_SAFE_AUTO_TOOLS = frozenset({
-    "web_search",
-    "memory_recall",
-    "session_search",
-    "list_files",
-    "read_file",
-    "clarify",
-    "get_time",
-    "get_weather",
-})
+_SAFE_AUTO_TOOLS = frozenset(
+    {
+        "web_search",
+        "memory_recall",
+        "session_search",
+        "list_files",
+        "read_file",
+        "clarify",
+        "get_time",
+        "get_weather",
+    }
+)
 
 # RFC 9457 problem type URIs for classified Hermes errors
 _ERROR_TYPE_MAP: dict[str, str] = {
-    "overloaded_error":     "https://butler.lasmoid.ai/problems/provider-overloaded",
-    "rate_limit_error":     "https://butler.lasmoid.ai/problems/rate-limited",
+    "overloaded_error": "https://butler.lasmoid.ai/problems/provider-overloaded",
+    "rate_limit_error": "https://butler.lasmoid.ai/problems/rate-limited",
     "context_window_error": "https://butler.lasmoid.ai/problems/context-too-large",
-    "auth_error":           "https://butler.lasmoid.ai/problems/provider-auth-failed",
-    "timeout":              "https://butler.lasmoid.ai/problems/tool-timeout",
-    "tool_not_found":       "https://butler.lasmoid.ai/problems/tool-not-found",
-    "default":              "https://butler.lasmoid.ai/problems/internal-error",
+    "auth_error": "https://butler.lasmoid.ai/problems/provider-auth-failed",
+    "timeout": "https://butler.lasmoid.ai/problems/tool-timeout",
+    "tool_not_found": "https://butler.lasmoid.ai/problems/tool-not-found",
+    "default": "https://butler.lasmoid.ai/problems/internal-error",
 }
 
-_RETRYABLE_ERRORS = frozenset({
-    "overloaded_error",
-    "rate_limit_error",
-    "timeout",
-})
+_RETRYABLE_ERRORS = frozenset(
+    {
+        "overloaded_error",
+        "rate_limit_error",
+        "timeout",
+    }
+)
 
 
 class EventNormalizer:
@@ -297,7 +301,9 @@ class EventNormalizer:
                 payload={
                     "type": _ERROR_TYPE_MAP.get(error_type, _ERROR_TYPE_MAP["default"]),
                     "title": error_type.replace("_", " ").title(),
-                    "status": 503 if error_type in ("overloaded_error", "rate_limit_error") else 500,
+                    "status": 503
+                    if error_type in ("overloaded_error", "rate_limit_error")
+                    else 500,
                     "detail": error_msg,
                     "retryable": retryable,
                 },

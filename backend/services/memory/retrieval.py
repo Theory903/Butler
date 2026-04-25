@@ -1,19 +1,20 @@
-import uuid
 import math
-import numpy as np
+import uuid
 from dataclasses import dataclass
-from typing import Any, List, Optional, Dict
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
+from typing import Any
 
-from domain.memory.models import MemoryEntry, ExplicitPreference, ExplicitDislike
+import numpy as np
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from domain.memory.models import ExplicitDislike, ExplicitPreference, MemoryEntry
 from domain.ml.contracts import EmbeddingContract
 from services.memory.knowledge_repo_contract import KnowledgeRepoContract
 
 
 def sanitize_and_normalize_embedding(vec: list[float]) -> list[float]:
     """OpenCLAW pattern: clean NaN/Inf values and L2-normalize.
-    
+
     This prevents pgvector serialization issues and ensures consistent
     similarity search results.
     """
@@ -27,21 +28,23 @@ def sanitize_and_normalize_embedding(vec: list[float]) -> list[float]:
         return sanitized
     return [v / magnitude for v in sanitized]
 
+
 @dataclass
 class ScoredMemory:
     memory: MemoryEntry
     score: float
-    signals: Dict[str, float]  # Breakdown for debugging
+    signals: dict[str, float]  # Breakdown for debugging
+
 
 class RetrievalFusionEngine:
     """Butler's Oracle-Grade Retrieval Fusion Engine."""
 
     def __init__(
-        self, 
-        db: AsyncSession, 
+        self,
+        db: AsyncSession,
         embedder: EmbeddingContract,
         knowledge_repo: KnowledgeRepoContract,
-        personalization: Optional[Any] = None
+        personalization: Any | None = None,
     ):
         self._db = db
         self._embedder = embedder
@@ -49,99 +52,175 @@ class RetrievalFusionEngine:
         self._personalization = personalization
 
     async def search(
-        self, 
-        account_id: str, 
-        query: str, 
-        memory_types: Optional[List[str]] = None, 
-        limit: int = 20
-    ) -> List[ScoredMemory]:
+        self,
+        account_id: str,
+        query: str,
+        memory_types: list[str] | None = None,
+        limit: int = 20,
+        tenant_id: str | None = None,
+    ) -> list[ScoredMemory]:
+        """Enhanced retrieval with semantic reranking and temporal decay.
+
+        Improvements:
+        - Temporal decay for older memories
+        - Semantic reranking using embedding similarity
+        - Access count boosting
+        - Importance weighting
+        - Tenant-scoped filtering (Phase 3: memory isolation)
+
+        Args:
+            tenant_id: Tenant scope for multi-tenant isolation. When provided,
+                results are filtered to the tenant scope in addition to account_id.
+        """
         # Safe UUID parsing - prevents recall failures on invalid account_id
         try:
             acc_id = uuid.UUID(account_id)
+            effective_tenant_id = uuid.UUID(tenant_id) if tenant_id else acc_id
         except (ValueError, TypeError):
             # Return empty if account_id is invalid - common cause of "returns 0 results"
             return []
-        
+
         # Pass both UUID and string for flexible query matching
         acc_id_str = str(acc_id)
-        
-        # 1. Broad Retrieval (Candidates)
-        candidate_pool = await self._get_candidates(acc_id, acc_id_str, query, limit * 3)
-        
-        # 2. Personalization Ranker (The Blender)
+
+        # 1. Broad Retrieval (Candidates) - tenant-scoped
+        candidate_pool = await self._get_candidates(
+            acc_id, acc_id_str, effective_tenant_id, query, limit * 3
+        )
+
+        if not candidate_pool:
+            return []
+
+        # 2. Apply temporal decay and access boosting
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        boosted_candidates = []
+
+        for mem in candidate_pool:
+            base_score = 0.5  # Base score for all candidates
+
+            # Temporal decay: newer memories get higher scores
+            if mem.created_at:
+                days_old = (now - mem.created_at).days
+                # Exponential decay: 0.98^days (slower decay than evolution engine)
+                decay_factor = 0.98 ** min(days_old, 60)  # Cap at 60 days
+                base_score *= decay_factor
+
+            # Access count boosting: frequently accessed memories get higher scores
+            if mem.access_count > 0:
+                access_boost = min(mem.access_count * 0.05, 0.3)  # Cap at 0.3
+                base_score += access_boost
+
+            # Importance weighting
+            if mem.importance:
+                importance_boost = mem.importance * 0.2
+                base_score += importance_boost
+
+            boosted_candidates.append((mem, base_score))
+
+        # Sort by boosted scores
+        boosted_candidates.sort(key=lambda x: x[1], reverse=True)
+        top_candidates = [mem for mem, score in boosted_candidates[: limit * 2]]
+
+        # 3. Personalization Ranker (The Blender)
         # If personalization is available, run the 5-stage pipeline
         if self._personalization:
             query_vector = await self._embedder.embed(query)
             context = {"user_id": account_id, "query": query}
-            
+
             # Map candidates to PersonalizationEngine.Candidate format
             from services.ml.personalization_engine import Candidate as MLPCandidate
+
             ml_candidates = [
                 MLPCandidate(
-                    id=m.id, 
-                    type="memory", 
-                    score=0.5, # Initial bias
-                    metadata={"ts": m.created_at.timestamp() if m.created_at else None}
-                ) for m in candidate_pool
-            ]
-            
-            ranked = await self._personalization.rank(
-                query_vector=np.array(query_vector),
-                context=context,
-                candidates=ml_candidates
-            )
-            
-            # Map back to ScoredMemory
-            memory_map = {m.id: m for m in candidate_pool}
-            return [
-                ScoredMemory(
-                    memory=memory_map[r.id],
-                    score=r.score,
-                    signals=r.features
+                    id=m.id,
+                    type="memory",
+                    score=score,  # Use boosted score as initial bias
+                    metadata={"ts": m.created_at.timestamp() if m.created_at else None},
                 )
-                for r in ranked if r.id in memory_map
-            ][:limit]
-        
-        # 3. Fallback: Extract Signals for Query
-        query_embedding = await self._embedder.embed(query)
-        preferences = await self._get_active_preferences(acc_id)
-        dislikes = await self._get_active_dislikes(acc_id)
-        
-        scored_results = []
-        for mem in candidate_pool:
-            score_data = await self._calculate_fusion_score(
-                mem, query, query_embedding, preferences, dislikes
-            )
-            scored_results.append(ScoredMemory(
-                memory=mem,
-                score=score_data["total"],
-                signals=score_data["signals"]
-            ))
+                for m, score in boosted_candidates[: limit * 2]
+            ]
 
-        scored_results.sort(key=lambda x: x.score, reverse=True)
-        return scored_results[:limit]
+            ranked = await self._personalization.rank(
+                query_vector=np.array(query_vector), context=context, candidates=ml_candidates
+            )
+
+            # Map back to ScoredMemory
+            memory_map = {m.id: m for m in top_candidates}
+            return [
+                ScoredMemory(memory=memory_map[r.id], score=r.score, signals=r.features)
+                for r in ranked[:limit]
+                if r.id in memory_map
+            ]
+
+        # 4. Fallback: Semantic reranking without personalization
+        if top_candidates:
+            query_vector = await self._embedder.embed(query)
+
+            # Compute semantic similarity for each candidate
+
+            scored_results = []
+
+            for mem in top_candidates:
+                if mem.embedding:
+                    # Cosine similarity
+                    mem_vec = np.array(mem.embedding)
+                    query_vec = np.array(query_vector)
+
+                    # Ensure vectors are normalized
+                    mem_norm = np.linalg.norm(mem_vec)
+                    query_norm = np.linalg.norm(query_vec)
+
+                    if mem_norm > 0 and query_norm > 0:
+                        similarity = np.dot(mem_vec, query_vec) / (mem_norm * query_norm)
+                        semantic_score = float(similarity)
+                    else:
+                        semantic_score = 0.0
+                else:
+                    semantic_score = 0.0
+
+                # Combine boosted score with semantic similarity
+                # Weight: 60% boosted, 40% semantic
+                base_score = next(score for m, score in boosted_candidates if m.id == mem.id)
+                final_score = 0.6 * base_score + 0.4 * semantic_score
+
+                scored_results.append(
+                    ScoredMemory(
+                        memory=mem,
+                        score=final_score,
+                        signals={
+                            "temporal_decay": base_score,
+                            "semantic_similarity": semantic_score,
+                            "access_count": mem.access_count,
+                            "importance": mem.importance,
+                        },
+                    )
+                )
+
+            # Sort by final score
+            scored_results.sort(key=lambda x: x.score, reverse=True)
+            return scored_results[:limit]
+
+        return []
 
     async def _calculate_fusion_score(
-        self, 
-        memory: MemoryEntry, 
-        query: str, 
-        query_embedding: List[float],
-        preferences: List[ExplicitPreference],
-        dislikes: List[ExplicitDislike]
-    ) -> Dict:
+        self,
+        memory: MemoryEntry,
+        query: str,
+        query_embedding: list[float],
+        preferences: list[ExplicitPreference],
+        dislikes: list[ExplicitDislike],
+    ) -> dict:
         """Weighted score calculation from docs/memory.md section 5.1."""
-        signals = {
-            "semantic": 0.0,
-            "keyword": 0.0,
-            "graph": 0.0,
-            "preference": 0.0,
-            "dislike": 0.0
-        }
+        signals = {"semantic": 0.0, "keyword": 0.0, "graph": 0.0, "preference": 0.0, "dislike": 0.0}
 
         # Semantic Score (Cosine similarity)
         if memory.embedding is not None:
             # Simple dot product as approximation for normalized vectors
-            signals["semantic"] = sum(a * b for a, b in zip(query_embedding, memory.embedding))
+            signals["semantic"] = sum(
+                a * b for a, b in zip(query_embedding, memory.embedding, strict=False)
+            )
 
         # Keyword Score (Basic overlap for now)
         if query.lower() in str(memory.content).lower():
@@ -160,39 +239,50 @@ class RetrievalFusionEngine:
         # Combine using weights
         # formula: (semantic * 0.4) + (keyword * 0.2) + (graph * 0.2) + (preference * 0.2) - (dislike * 0.5)
         total = (
-            (signals["semantic"] * 0.4) +
-            (signals["keyword"] * 0.2) +
-            (signals["graph"] * 0.2) +
-            (signals["preference"] * 0.2) -
-            (signals["dislike"] * 0.5)
+            (signals["semantic"] * 0.4)
+            + (signals["keyword"] * 0.2)
+            + (signals["graph"] * 0.2)
+            + (signals["preference"] * 0.2)
+            - (signals["dislike"] * 0.5)
         )
 
         return {"total": total, "signals": signals}
 
     async def _get_candidates(
-        self, 
-        account_id: uuid.UUID, 
+        self,
+        account_id: uuid.UUID,
         account_id_str: str,
-        query: str, 
-        limit: int
-    ) -> List[MemoryEntry]:
-        """Oracle-Grade retrieval with flexible account_id matching."""
-        from domain.memory.models import (
-            MemoryStatus,
-            KnowledgeEntity,
-            KnowledgeEdge,
-            MemoryEntityLink,
-        )
+        tenant_id: uuid.UUID,
+        query: str,
+        limit: int,
+    ) -> list[MemoryEntry]:
+        """Oracle-Grade retrieval with flexible account_id matching and tenant isolation.
+
+        Phase 3: Memory Isolation - Enforce tenant_id filtering in addition to
+        account_id filtering to prevent cross-tenant data leakage.
+        """
         from sqlalchemy import or_
 
-        # Primary scan with flexible account_id matching - fixes "0 results" bug
-        stmt = select(MemoryEntry).where(
-            or_(
-                MemoryEntry.account_id == account_id,
-                MemoryEntry.account_id == account_id_str,
-            ),
-            MemoryEntry.status == MemoryStatus.ACTIVE,
-        ).limit(limit)
+        from domain.memory.models import (
+            KnowledgeEdge,
+            KnowledgeEntity,
+            MemoryEntityLink,
+            MemoryStatus,
+        )
+
+        # Primary scan with flexible account_id matching AND tenant_id filtering
+        stmt = (
+            select(MemoryEntry)
+            .where(
+                or_(
+                    MemoryEntry.account_id == account_id,
+                    MemoryEntry.account_id == account_id_str,
+                ),
+                MemoryEntry.tenant_id == tenant_id,  # Phase 3: tenant isolation
+                MemoryEntry.status == MemoryStatus.ACTIVE,
+            )
+            .limit(limit)
+        )
         res = await self._db.execute(stmt)
         candidates = list(res.scalars().all())
         existing_ids: set[uuid.UUID] = {m.id for m in candidates}
@@ -218,9 +308,7 @@ class RetrievalFusionEngine:
             )
             seed_res = await self._db.execute(seed_entity_name_stmt)
             seed_ids: set[uuid.UUID] = {
-                row[0]
-                for row in seed_res
-                if any(tok in row[1].lower() for tok in query_tokens)
+                row[0] for row in seed_res if any(tok in row[1].lower() for tok in query_tokens)
             }
 
             if not seed_ids:
@@ -236,7 +324,7 @@ class RetrievalFusionEngine:
             for target_id, source_id in edge_res:
                 neighbour_ids.add(target_id)
                 neighbour_ids.add(source_id)
-            neighbour_ids.update(seed_ids)   # include seeds themselves
+            neighbour_ids.update(seed_ids)  # include seeds themselves
 
             # 2c. Resolve memory IDs via MemoryEntityLink join table
             link_stmt = select(MemoryEntityLink.memory_id).where(
@@ -252,11 +340,15 @@ class RetrievalFusionEngine:
 
             # 2d. Fetch the linked MemoryEntry rows (cap at half the primary limit)
             expansion_limit = max(1, limit // 2)
-            graph_stmt = select(MemoryEntry).where(
-                MemoryEntry.id.in_(linked_memory_ids),
-                MemoryEntry.account_id == account_id,
-                MemoryEntry.status == MemoryStatus.ACTIVE,
-            ).limit(expansion_limit)
+            graph_stmt = (
+                select(MemoryEntry)
+                .where(
+                    MemoryEntry.id.in_(linked_memory_ids),
+                    MemoryEntry.account_id == account_id,
+                    MemoryEntry.status == MemoryStatus.ACTIVE,
+                )
+                .limit(expansion_limit)
+            )
             graph_res = await self._db.execute(graph_stmt)
             graph_memories = list(graph_res.scalars().all())
 
@@ -264,19 +356,17 @@ class RetrievalFusionEngine:
 
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).warning(
-                f"memory.retrieval.graph_expansion_failed: {exc}"
-            )
+
+            logging.getLogger(__name__).warning(f"memory.retrieval.graph_expansion_failed: {exc}")
 
         return candidates
 
-
-    async def _get_active_preferences(self, account_id: uuid.UUID) -> List[ExplicitPreference]:
+    async def _get_active_preferences(self, account_id: uuid.UUID) -> list[ExplicitPreference]:
         stmt = select(ExplicitPreference).where(ExplicitPreference.account_id == account_id)
         res = await self._db.execute(stmt)
         return list(res.scalars().all())
 
-    async def _get_active_dislikes(self, account_id: uuid.UUID) -> List[ExplicitDislike]:
+    async def _get_active_dislikes(self, account_id: uuid.UUID) -> list[ExplicitDislike]:
         stmt = select(ExplicitDislike).where(ExplicitDislike.account_id == account_id)
         res = await self._db.execute(stmt)
         return list(res.scalars().all())

@@ -2,7 +2,7 @@
 """OpenClaw -> Hermes migration helper.
 
 This script migrates the parts of an OpenClaw user footprint that map cleanly
-into Butler, archives selected unmapped docs for manual review, and
+into Hermes Agent, archives selected unmapped docs for manual review, and
 reports exactly what was skipped and why.
 """
 
@@ -2565,7 +2565,7 @@ class Migrator:
             "## IMPORTANT: Archive the OpenClaw Directory",
             "",
             "After migration, your OpenClaw directory still exists on disk with workspace",
-            "state files (todo.json, sessions, logs). If the Butler discovers these",
+            "state files (todo.json, sessions, logs). If the Hermes agent discovers these",
             "directories, it may read/write to them instead of the Hermes state, causing",
             "confusion (e.g., cron jobs reading a different todo list than interactive sessions).",
             "",
@@ -2630,7 +2630,7 @@ class Migrator:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Migrate OpenClaw user state into Butler.")
+    parser = argparse.ArgumentParser(description="Migrate OpenClaw user state into Hermes Agent.")
     parser.add_argument("--source", default=str(Path.home() / ".openclaw"), help="OpenClaw home directory")
     parser.add_argument("--target", default=str(Path.home() / ".hermes"), help="Hermes home directory")
     parser.add_argument(

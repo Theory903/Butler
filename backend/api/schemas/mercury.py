@@ -1,37 +1,44 @@
 from __future__ import annotations
-from typing import Any, List, Optional, Dict
-from pydantic import BaseModel, Field, ConfigDict
+
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class MercuryFrame(BaseModel):
     model_config = ConfigDict(extra="allow")
     type: str = Field(..., pattern="^(req|res|event)$")
 
+
 class MercuryRequest(MercuryFrame):
     type: str = "req"
     id: str
     method: str
-    params: Dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
+
 
 class MercuryResponse(MercuryFrame):
     type: str = "res"
     id: str
     ok: bool
-    payload: Optional[Dict[str, Any]] = None
-    error: Optional[Dict[str, Any]] = None
+    payload: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
+
 
 class MercuryEvent(MercuryFrame):
     type: str = "event"
     event: str
-    payload: Dict[str, Any] = Field(default_factory=dict)
-    seq: Optional[int] = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    seq: int | None = None
+
 
 class ConnectParams(BaseModel):
     minProtocol: int = 3
     maxProtocol: int = 3
-    client: Dict[str, Any]
+    client: dict[str, Any]
     role: str = Field(..., pattern="^(node|operator)$")
-    scopes: List[str] = Field(default_factory=list)
-    caps: List[str] = Field(default_factory=list)
-    commands: List[str] = Field(default_factory=list)
-    auth: Dict[str, Any] = Field(default_factory=dict)
-    device: Dict[str, Any] = Field(default_factory=dict)
+    scopes: list[str] = Field(default_factory=list)
+    caps: list[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    auth: dict[str, Any] = Field(default_factory=dict)
+    device: dict[str, Any] = Field(default_factory=dict)

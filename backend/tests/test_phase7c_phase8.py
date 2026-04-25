@@ -62,22 +62,20 @@ Tests:
 from __future__ import annotations
 
 import asyncio
-import uuid
-from datetime import datetime, timedelta, UTC
-from unittest.mock import MagicMock
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 # ── Phase 7c: ButlerToolPolicyGate ────────────────────────────────────────────
 from domain.orchestrator.hermes_agent_backend import (
+    ApprovalRequired,
+    AssuranceInsufficient,
     ButlerToolPolicyGate,
     ToolPolicyViolation,
-    AssuranceInsufficient,
-    ApprovalRequired,
 )
-from domain.tools.hermes_compiler import ButlerToolSpec, RiskTier
-from domain.policy.product_tiers import ProductTier, CapabilityFlag
 from domain.policy.industry_profiles import IndustryProfile
+from domain.policy.product_tiers import ProductTier
+from domain.tools.hermes_compiler import ButlerToolSpec, RiskTier
 
 # ── Phase 8 ───────────────────────────────────────────────────────────────────
 from services.cron.cron_service import (
@@ -88,14 +86,14 @@ from services.cron.cron_service import (
     validate_cron_expression,
 )
 from services.workflow.acp_server import (
-    ButlerACPServer,
     ACPDecision,
     ACPStatus,
+    ButlerACPServer,
     get_acp_server,
 )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_spec(
     name: str = "web_search",
@@ -161,8 +159,8 @@ def _gate(
 # Phase 7c: ButlerToolPolicyGate
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerToolPolicyGatePhase7c:
 
+class TestButlerToolPolicyGatePhase7c:
     def test_step0_skipped_when_product_tier_none(self):
         """Backward-compat: no product_tier → step 0 is skipped entirely."""
         gate = _gate("web_search", product_tier=None, industry_profile=None)
@@ -281,8 +279,8 @@ class TestButlerToolPolicyGatePhase7c:
 # Phase 8: ButlerCronService
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerCronService:
 
+class TestButlerCronService:
     def _svc(self) -> ButlerCronService:
         return ButlerCronService()
 
@@ -343,19 +341,23 @@ class TestButlerCronService:
     def test_create_enforces_50_job_limit(self):
         svc = self._svc()
         for i in range(50):
-            svc.create(CreateCronJobRequest(
-                account_id="acc_limit",
-                name=f"job_{i}",
-                cron_expression="0 9 * * *",
-                action="noop",
-            ))
+            svc.create(
+                CreateCronJobRequest(
+                    account_id="acc_limit",
+                    name=f"job_{i}",
+                    cron_expression="0 9 * * *",
+                    action="noop",
+                )
+            )
         with pytest.raises(ValueError, match="maximum"):
-            svc.create(CreateCronJobRequest(
-                account_id="acc_limit",
-                name="one_too_many",
-                cron_expression="0 9 * * *",
-                action="noop",
-            ))
+            svc.create(
+                CreateCronJobRequest(
+                    account_id="acc_limit",
+                    name="one_too_many",
+                    cron_expression="0 9 * * *",
+                    action="noop",
+                )
+            )
 
     def test_pause_transitions_status(self):
         svc = self._svc()
@@ -388,7 +390,7 @@ class TestButlerCronService:
     def test_list_jobs_filter_by_status(self):
         svc = self._svc()
         j1 = svc.create(self._req())
-        j2 = svc.create(self._req())
+        svc.create(self._req())
         svc.pause(j1.id)
         paused = svc.list_jobs("acc1", status=CronJobStatus.PAUSED)
         assert len(paused) == 1
@@ -403,8 +405,11 @@ class TestButlerCronService:
     def test_record_trigger_auto_expires_on_max_runs(self):
         svc = self._svc()
         req = CreateCronJobRequest(
-            account_id="acc1", name="j", cron_expression="0 9 * * *",
-            action="noop", max_runs=2,
+            account_id="acc1",
+            name="j",
+            cron_expression="0 9 * * *",
+            action="noop",
+            max_runs=2,
         )
         job = svc.create(req)
         svc.record_trigger(job.id, success=True)
@@ -435,8 +440,8 @@ class TestButlerCronService:
 # Phase 8: ButlerACPServer
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerACPServer:
 
+class TestButlerACPServer:
     def _server(self) -> ButlerACPServer:
         return ButlerACPServer()
 
@@ -475,7 +480,7 @@ class TestButlerACPServer:
     def test_decide_denied_transitions_status(self):
         server = self._server()
         req = self._create(server)
-        result = server.decide(req.request_id, ACPDecision.DENIED, human_id="human_42")
+        server.decide(req.request_id, ACPDecision.DENIED, human_id="human_42")
         assert server.get(req.request_id).status == ACPStatus.DENIED
 
     def test_decide_unknown_request_returns_none(self):
@@ -501,7 +506,8 @@ class TestButlerACPServer:
             ttl_hours=0,  # Already expired
         )
         # Backdated expiry
-        from datetime import timedelta, UTC
+        from datetime import timedelta
+
         req.expires_at = req.created_at - timedelta(hours=1)
         result = server.decide(req.request_id, ACPDecision.APPROVED, human_id="h1")
         assert result is None
@@ -543,7 +549,7 @@ class TestButlerACPServer:
     def test_list_all_includes_all_statuses(self):
         server = self._server()
         r1 = self._create(server)
-        r2 = self._create(server)
+        self._create(server)
         server.decide(r1.request_id, ACPDecision.APPROVED, human_id="h1")
         all_reqs = server.list_all("acc1")
         assert len(all_reqs) == 2
@@ -596,6 +602,7 @@ class TestButlerACPServer:
     def test_singleton_returns_same_instance(self):
         # Reset for test isolation
         import services.workflow.acp_server as mod
+
         mod._acp_server = None
         s1 = get_acp_server()
         s2 = get_acp_server()

@@ -4,11 +4,19 @@ SWE-5 Grade Test Coverage
 """
 
 from datetime import datetime, timedelta
+
 import pytest
+
 from services.ml.training_pipeline import (
-    ConsentModel, ConsentLevel, DataCategory, TrainingCandidate,
-    TrainingCandidateStatus, Anonymizer, PoisoningGuard, OfflineTrainer,
-    CircuitBreaker, TrainingPipeline
+    Anonymizer,
+    CircuitBreaker,
+    ConsentLevel,
+    ConsentModel,
+    DataCategory,
+    OfflineTrainer,
+    PoisoningGuard,
+    TrainingCandidate,
+    TrainingPipeline,
 )
 
 
@@ -34,7 +42,7 @@ class TestConsentModel:
             ConsentModel(
                 user_id="test",
                 consent_level=ConsentLevel.OPT_IN_TRAINING,
-                expires_at=datetime.utcnow() - timedelta(hours=1)
+                expires_at=datetime.utcnow() - timedelta(hours=1),
             )
 
     def test_audit_trail_immutability(self):
@@ -99,6 +107,7 @@ class TestCircuitBreaker:
         assert cb.open
 
         import time
+
         time.sleep(1.1)
         assert cb.allow_request()
 
@@ -112,7 +121,7 @@ class TestPoisoningGuard:
             memory_id="mem-123",
             raw_content="test content",
             consent_level=ConsentLevel.OPT_IN_TRAINING,
-            data_category=DataCategory.PUBLIC
+            data_category=DataCategory.PUBLIC,
         )
 
         is_safe, score = guard.scan_candidate(candidate)
@@ -139,6 +148,7 @@ class TestTrainingPipeline:
         class MockStore:
             def get_consent(self, user_id):
                 return ConsentModel(user_id=user_id, consent_level=ConsentLevel.OPT_IN_TRAINING)
+
         return MockStore()
 
     def test_pipeline_initialization(self, mock_consent_store):

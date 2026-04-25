@@ -31,7 +31,7 @@ class PaginatedResponse(BaseModel):
     has_more: bool
 
     @classmethod
-    def from_list(cls, items: list, total: int, limit: int, offset: int) -> "PaginatedResponse":
+    def from_list(cls, items: list, total: int, limit: int, offset: int) -> PaginatedResponse:
         return cls(
             items=items,
             total=total,

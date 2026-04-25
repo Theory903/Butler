@@ -1,23 +1,20 @@
-"""
-Butler Personalization Engine
-SWE-5 Grade Implementation
-Pipeline: Candidate Generation → Feature Hydration → Light Rank → Heavy Rank → Recap
-"""
-
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Generic, Optional, Protocol, TypeVar
+from enum import StrEnum
+from time import monotonic
+from typing import Any, Protocol
 from uuid import UUID
 
 import numpy as np
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -27,14 +24,17 @@ tracer = trace.get_tracer(__name__)
 # CONFIGURATION MODELS
 # -----------------------------------------------------------------------------
 
-class RankerType(str, Enum):
+
+class RankerType(StrEnum):
     LIGHT = "light"
     HEAVY = "heavy"
     RECAP = "recap"
 
 
 class PersonalizationConfig(BaseModel):
-    """Pydantic configuration for personalization engine."""
+    """Configuration for the personalization engine."""
+
+    model_config = ConfigDict(extra="forbid")
 
     candidate_limit: int = Field(default=100, ge=1, le=1000)
     light_ranker_cutoff: int = Field(default=20, ge=1, le=100)
@@ -47,28 +47,29 @@ class PersonalizationConfig(BaseModel):
     circuit_breaker_recovery_timeout: int = Field(default=30, ge=1)
 
     batch_size: int = Field(default=32, ge=1, le=256)
-    timeout_ms: int = Field(default=500, ge=100, le=5000)
+    timeout_ms: int = Field(default=500, ge=100, le=10000)
 
-    @validator("light_ranker_cutoff")
-    def light_less_than_candidate(cls, v: int, values: dict[str, Any]) -> int:
-        if v >= values["candidate_limit"]:
+    recap_max_per_type: int = Field(default=2, ge=1, le=50)
+    graph_neighbor_base_score: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_cutoffs(self) -> PersonalizationConfig:
+        if self.light_ranker_cutoff >= self.candidate_limit:
             raise ValueError("light_ranker_cutoff must be less than candidate_limit")
-        return v
-
-    @validator("heavy_ranker_cutoff")
-    def heavy_less_than_light(cls, v: int, values: dict[str, Any]) -> int:
-        if v >= values["light_ranker_cutoff"]:
+        if self.heavy_ranker_cutoff >= self.light_ranker_cutoff:
             raise ValueError("heavy_ranker_cutoff must be less than light_ranker_cutoff")
-        return v
+        return self
 
 
 # -----------------------------------------------------------------------------
 # DOMAIN MODELS
 # -----------------------------------------------------------------------------
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, slots=True)
 class Candidate:
-    """Ranked candidate item."""
+    """Rankable candidate item."""
+
     id: UUID
     type: str
     score: float = 0.0
@@ -79,9 +80,9 @@ class Candidate:
         return Candidate(
             id=self.id,
             type=self.type,
-            score=score,
+            score=float(score),
             features=self.features,
-            metadata=self.metadata
+            metadata=self.metadata,
         )
 
     def with_features(self, features: dict[str, Any]) -> Candidate:
@@ -90,11 +91,11 @@ class Candidate:
             type=self.type,
             score=self.score,
             features={**self.features, **features},
-            metadata=self.metadata
+            metadata=self.metadata,
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RankedCandidate:
     id: UUID
     type: str
@@ -109,20 +110,26 @@ class RankedCandidate:
 # CIRCUIT BREAKER
 # -----------------------------------------------------------------------------
 
-class CircuitBreakerState(str, Enum):
+
+class CircuitBreakerState(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
 
 
 class CircuitBreakerError(Exception):
-    """Raised when circuit breaker is open."""
+    """Raised when a request is blocked by the circuit breaker."""
 
 
 class CircuitBreaker:
-    """Implementation of circuit breaker pattern for rankers."""
+    """Simple circuit breaker for rankers."""
 
-    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 30):
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 30) -> None:
+        if failure_threshold <= 0:
+            raise ValueError("failure_threshold must be greater than 0")
+        if recovery_timeout <= 0:
+            raise ValueError("recovery_timeout must be greater than 0")
+
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.state = CircuitBreakerState.CLOSED
@@ -136,25 +143,27 @@ class CircuitBreaker:
 
     def record_failure(self) -> None:
         self.failure_count += 1
-        self.last_failure_time = asyncio.get_event_loop().time()
+        self.last_failure_time = monotonic()
 
         if self.failure_count >= self.failure_threshold:
             self.state = CircuitBreakerState.OPEN
-            logger.warning(f"Circuit breaker OPEN after {self.failure_count} failures")
+            logger.warning("circuit_breaker_open", extra={"failures": self.failure_count})
 
     def allow_request(self) -> bool:
         if self.state == CircuitBreakerState.CLOSED:
             return True
 
         if self.state == CircuitBreakerState.OPEN:
-            now = asyncio.get_event_loop().time()
-            if self.last_failure_time is not None and now - self.last_failure_time > self.recovery_timeout:
+            now = monotonic()
+            if (
+                self.last_failure_time is not None
+                and (now - self.last_failure_time) > self.recovery_timeout
+            ):
                 self.state = CircuitBreakerState.HALF_OPEN
-                logger.info("Circuit breaker HALF_OPEN, allowing test request")
+                logger.info("circuit_breaker_half_open")
                 return True
             return False
 
-        # HALF_OPEN: allow one test request
         return True
 
 
@@ -162,24 +171,73 @@ class CircuitBreaker:
 # SERVICE INTERFACES
 # -----------------------------------------------------------------------------
 
+
 class VectorStore(Protocol):
-    async def search(self, query_vector: np.ndarray, limit: int, threshold: float) -> list[tuple[UUID, float]]:
-        ...
+    async def search(
+        self,
+        query_vector: np.ndarray,
+        limit: int,
+        threshold: float,
+    ) -> list[tuple[UUID, float]]: ...
 
 
 class GraphStore(Protocol):
-    async def get_neighbors(self, node_id: UUID, depth: int) -> set[UUID]:
-        ...
+    async def get_neighbors(self, node_id: UUID, depth: int) -> set[UUID]: ...
 
 
 class FeatureStore(Protocol):
-    async def get_features(self, entity_ids: list[UUID]) -> dict[UUID, dict[str, Any]]:
-        ...
+    async def get_features(self, entity_ids: list[UUID]) -> dict[UUID, dict[str, Any]]: ...
+
+
+class OnlineFeatureStore(FeatureStore, Protocol):
+    async def get_online_features(
+        self,
+        entity_id: str,
+        feature_names: list[str],
+    ) -> Any: ...
+
+
+# -----------------------------------------------------------------------------
+# UTILITIES
+# -----------------------------------------------------------------------------
+
+
+def _clip_score(value: float) -> float:
+    return float(np.clip(value, 0.0, 1.0))
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+class TemporalDecay:
+    """Temporal decay for persisted wall-clock timestamps.
+
+    Expects Unix epoch timestamps, not monotonic timestamps.
+    """
+
+    @staticmethod
+    def calculate(
+        timestamp_epoch_seconds: float,
+        base_score: float,
+        *,
+        now_epoch_seconds: float | None = None,
+    ) -> float:
+        current = now_epoch_seconds if now_epoch_seconds is not None else time.time()
+        age_hours = max(0.0, (current - timestamp_epoch_seconds) / 3600.0)
+        decay = 1.0 / math.log10(age_hours + 10.0)
+        return float(base_score) * decay
 
 
 # -----------------------------------------------------------------------------
 # CANDIDATE GENERATOR
 # -----------------------------------------------------------------------------
+
 
 class CandidateGenerator:
     """Generates candidates using hybrid vector + graph retrieval."""
@@ -188,8 +246,8 @@ class CandidateGenerator:
         self,
         vector_store: VectorStore,
         graph_store: GraphStore,
-        config: PersonalizationConfig
-    ):
+        config: PersonalizationConfig,
+    ) -> None:
         self.vector_store = vector_store
         self.graph_store = graph_store
         self.config = config
@@ -197,46 +255,74 @@ class CandidateGenerator:
     @tracer.start_as_current_span("CandidateGenerator.generate")
     async def generate(self, query_vector: np.ndarray, context: dict[str, Any]) -> list[Candidate]:
         """Generate candidate set using hybrid retrieval."""
+        del context
         span = trace.get_current_span()
 
-        # Vector retrieval
         vector_results = await self.vector_store.search(
             query_vector,
             limit=self.config.candidate_limit,
-            threshold=self.config.vector_similarity_threshold
+            threshold=self.config.vector_similarity_threshold,
         )
 
-        # Graph expansion
-        graph_candidates: set[UUID] = set()
-        for entity_id, _ in vector_results:
-            neighbors = await self.graph_store.get_neighbors(
-                entity_id,
-                depth=self.config.graph_traversal_depth
-            )
-            graph_candidates.update(neighbors)
+        vector_score_map: dict[UUID, float] = {
+            entity_id: _clip_score(score) for entity_id, score in vector_results
+        }
 
-        # Deduplicate and combine
-        all_ids = {entity_id for entity_id, _ in vector_results} | graph_candidates
+        neighbor_sets = await asyncio.gather(
+            *[
+                self.graph_store.get_neighbors(
+                    entity_id,
+                    depth=self.config.graph_traversal_depth,
+                )
+                for entity_id, _ in vector_results
+            ],
+            return_exceptions=True,
+        )
+
+        graph_candidates: set[UUID] = set()
+        for item in neighbor_sets:
+            if isinstance(item, Exception):
+                logger.warning("graph_expansion_failed", extra={"error": str(item)})
+                continue
+            graph_candidates.update(item)
+
+        all_ids = set(vector_score_map.keys()) | graph_candidates
 
         span.set_attribute("candidates.vector_count", len(vector_results))
         span.set_attribute("candidates.graph_count", len(graph_candidates))
         span.set_attribute("candidates.total", len(all_ids))
 
-        return [
-            Candidate(id=entity_id, type="entity", score=score)
-            for entity_id, score in vector_results
-            if entity_id in all_ids
-        ]
+        candidates: list[Candidate] = []
+        for entity_id in all_ids:
+            if entity_id in vector_score_map:
+                score = vector_score_map[entity_id]
+                source = "vector"
+            else:
+                score = self.config.graph_neighbor_base_score
+                source = "graph"
+
+            candidates.append(
+                Candidate(
+                    id=entity_id,
+                    type="entity",
+                    score=_clip_score(score),
+                    metadata={"retrieval_source": source},
+                )
+            )
+
+        candidates.sort(key=lambda item: (item.score, str(item.id)), reverse=True)
+        return candidates[: self.config.candidate_limit]
 
 
 # -----------------------------------------------------------------------------
 # FEATURE HYDRATOR
 # -----------------------------------------------------------------------------
 
+
 class FeatureHydrator:
     """Hydrates candidates with features from memory and signals."""
 
-    def __init__(self, feature_store: FeatureStore, config: PersonalizationConfig):
+    def __init__(self, feature_store: FeatureStore, config: PersonalizationConfig) -> None:
         self.feature_store = feature_store
         self.config = config
 
@@ -245,21 +331,19 @@ class FeatureHydrator:
         """Add features to candidate set in batches."""
         span = trace.get_current_span()
 
-        hydrated = []
+        hydrated: list[Candidate] = []
         batches = [
-            candidates[i:i + self.config.batch_size]
+            candidates[i : i + self.config.batch_size]
             for i in range(0, len(candidates), self.config.batch_size)
         ]
 
         for batch in batches:
-            ids = [c.id for c in batch]
+            ids = [candidate.id for candidate in batch]
             features = await self.feature_store.get_features(ids)
 
             for candidate in batch:
-                if candidate.id in features:
-                    hydrated.append(candidate.with_features(features[candidate.id]))
-                else:
-                    hydrated.append(candidate)
+                candidate_features = features.get(candidate.id, {})
+                hydrated.append(candidate.with_features(candidate_features))
 
         span.set_attribute("features.hydrated_count", len(hydrated))
         return hydrated
@@ -269,171 +353,213 @@ class FeatureHydrator:
 # RANKERS
 # -----------------------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# UTILITIES
-# -----------------------------------------------------------------------------
-
-class TemporalDecay:
-    """Logarithmic temporal decay for ranking signals."""
-    
-    @staticmethod
-    def calculate(timestamp: float, base_score: float) -> float:
-        """Score = Base / log10(age_hours + 10)."""
-        age_hours = (asyncio.get_event_loop().time() - timestamp) / 3600
-        decay = 1.0 / np.log10(max(0, age_hours) + 10)
-        return base_score * decay
-
-# -----------------------------------------------------------------------------
-# RANKERS
-# -----------------------------------------------------------------------------
 
 class LightRanker:
-    """Fast heuristic ranker for initial filtering (The Jet)."""
+    """Fast heuristic ranker for initial filtering."""
 
-    def __init__(self, config: PersonalizationConfig, feature_service: Optional[Any] = None):
+    def __init__(
+        self,
+        config: PersonalizationConfig,
+        feature_service: OnlineFeatureStore | None = None,
+    ) -> None:
         self.config = config
         self.features = feature_service
         self.circuit_breaker = CircuitBreaker(
             failure_threshold=config.circuit_breaker_failure_threshold,
-            recovery_timeout=config.circuit_breaker_recovery_timeout
+            recovery_timeout=config.circuit_breaker_recovery_timeout,
         )
 
     @tracer.start_as_current_span("LightRanker.rank")
-    async def rank(self, candidates: list[Candidate], context: dict[str, Any]) -> list[RankedCandidate]:
-        """Hybrid O(N) ranking using T1/T2 signals."""
-        user_id = context.get("user_id")
-        
-        # Hydrate global user signals
-        user_signals = {}
-        if self.features and user_id:
-            vector = await self.features.get_online_features(
-                str(user_id), 
-                ["user_affinity", "agent_success_rate", "affinity:concise"]
-            )
-            user_signals = vector.features
+    async def rank(
+        self,
+        candidates: list[Candidate],
+        context: dict[str, Any],
+    ) -> list[RankedCandidate]:
+        """Hybrid O(N) ranking using lightweight signals."""
+        if not self.circuit_breaker.allow_request():
+            raise CircuitBreakerError("LightRanker circuit breaker is open")
 
-        scored = []
-        for candidate in candidates:
-            score = self._calculate_hybrid_score(candidate, user_signals, context)
-            scored.append((score, candidate))
+        try:
+            user_id = context.get("user_id")
+            user_signals: dict[str, Any] = {}
 
-        scored.sort(reverse=True, key=lambda x: x[0])
-        scored = scored[:self.config.light_ranker_cutoff]
+            if self.features is not None and user_id is not None:
+                try:
+                    vector = await self.features.get_online_features(
+                        str(user_id),
+                        ["user_affinity", "agent_success_rate", "affinity:concise"],
+                    )
+                    user_signals = dict(getattr(vector, "features", {}) or {})
+                except Exception as exc:
+                    logger.warning("light_ranker_online_features_failed", extra={"error": str(exc)})
 
-        return [
-            RankedCandidate(
-                id=c.id, type=c.type, score=score,
-                features=c.features, metadata=c.metadata,
-                rank=i + 1, ranker_type=RankerType.LIGHT
-            )
-            for i, (score, c) in enumerate(scored)
-        ]
+            scored: list[tuple[float, Candidate]] = []
+            for candidate in candidates:
+                score = self._calculate_hybrid_score(candidate, user_signals, context)
+                scored.append((score, candidate))
 
-    def _calculate_hybrid_score(self, candidate: Candidate, user_signals: dict, context: dict) -> float:
-        score = candidate.score
-        
-        # 1. Temporal Decay (Tier 2/3)
+            scored.sort(key=lambda item: (item[0], str(item[1].id)), reverse=True)
+            scored = scored[: self.config.light_ranker_cutoff]
+
+            self.circuit_breaker.record_success()
+
+            return [
+                RankedCandidate(
+                    id=candidate.id,
+                    type=candidate.type,
+                    score=score,
+                    features=candidate.features,
+                    metadata=candidate.metadata,
+                    rank=index + 1,
+                    ranker_type=RankerType.LIGHT,
+                )
+                for index, (score, candidate) in enumerate(scored)
+            ]
+        except Exception:
+            self.circuit_breaker.record_failure()
+            raise
+
+    def _calculate_hybrid_score(
+        self,
+        candidate: Candidate,
+        user_signals: dict[str, Any],
+        context: dict[str, Any],
+    ) -> float:
+        del context
+
+        score = float(candidate.score)
+
         ts = candidate.metadata.get("timestamp") or candidate.metadata.get("ts")
-        if ts:
-            score = TemporalDecay.calculate(float(ts), score)
-            
-        # 2. Behavioral Boost (Tier 1/2)
-        affinity = user_signals.get("user_affinity", 0.5)
-        success = user_signals.get("agent_success_rate", 0.7)
-        
-        # Apply success bias for tools/actions
+        ts_float = _safe_float(ts, default=-1.0)
+        if ts_float > 0.0:
+            score = TemporalDecay.calculate(ts_float, score)
+
+        affinity = _safe_float(user_signals.get("user_affinity"), 0.5)
+        success = _safe_float(user_signals.get("agent_success_rate"), 0.7)
+        concise_affinity = _safe_float(user_signals.get("affinity:concise"), 0.0)
+
         if candidate.type == "tool":
-            score *= (0.5 + success) # 1.5x boost if success=1.0
-            
-        # 3. Personalization Override (Tier 3)
-        if "affinity:concise" in user_signals and "concise" in candidate.features:
-            score *= 1.2
-            
-        return np.clip(score, 0.0, 1.0)
+            score *= 0.5 + success
+
+        if concise_affinity > 0.5 and candidate.features.get("concise"):
+            score *= 1.0 + (0.2 * concise_affinity)
+
+        score *= 0.75 + (0.5 * affinity)
+        return _clip_score(score)
 
 
 class HeavyRanker:
-    """Deep semantic ranker for high-precision (The Brain)."""
+    """Deep semantic ranker for high-precision re-ranking."""
 
-    def __init__(self, config: PersonalizationConfig, feature_service: Optional[Any] = None):
+    def __init__(
+        self,
+        config: PersonalizationConfig,
+        feature_service: OnlineFeatureStore | None = None,
+    ) -> None:
         self.config = config
         self.features = feature_service
-        self.circuit_breaker = CircuitBreaker()
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=config.circuit_breaker_failure_threshold,
+            recovery_timeout=config.circuit_breaker_recovery_timeout,
+        )
 
     @tracer.start_as_current_span("HeavyRanker.rank")
-    async def rank(self, candidates: list[Candidate], context: dict[str, Any]) -> list[RankedCandidate]:
+    async def rank(
+        self,
+        candidates: list[Candidate],
+        context: dict[str, Any],
+    ) -> list[RankedCandidate]:
         """Contextual re-ranking with cross-feature interaction."""
-        # Simulated Deep Ranker for v3.1
-        # In production, this would call a local Cross-Encoder (e.g. BGE-Reranker)
-        scored = []
-        for candidate in candidates:
-            score = self._deep_score(candidate, context)
-            scored.append((score, candidate))
+        if not self.circuit_breaker.allow_request():
+            raise CircuitBreakerError("HeavyRanker circuit breaker is open")
 
-        scored.sort(reverse=True, key=lambda x: x[0])
-        return [
-            RankedCandidate(
-                id=c.id, type=c.type, score=score,
-                features=c.features, metadata=c.metadata,
-                rank=i + 1, ranker_type=RankerType.HEAVY
-            )
-            for i, (score, c) in enumerate(scored[:self.config.heavy_ranker_cutoff])
-        ]
+        try:
+            scored: list[tuple[float, Candidate]] = []
+            for candidate in candidates:
+                score = self._deep_score(candidate, context)
+                scored.append((score, candidate))
 
-    def _deep_score(self, candidate: Candidate, context: dict) -> float:
-        base = candidate.score
-        # Contextual alignment logic
-        intent = context.get("intent", "general")
-        
-        # High-entropy alignment (Oracle-Grade)
+            scored.sort(key=lambda item: (item[0], str(item[1].id)), reverse=True)
+            scored = scored[: self.config.heavy_ranker_cutoff]
+
+            self.circuit_breaker.record_success()
+
+            return [
+                RankedCandidate(
+                    id=candidate.id,
+                    type=candidate.type,
+                    score=score,
+                    features=candidate.features,
+                    metadata=candidate.metadata,
+                    rank=index + 1,
+                    ranker_type=RankerType.HEAVY,
+                )
+                for index, (score, candidate) in enumerate(scored)
+            ]
+        except Exception:
+            self.circuit_breaker.record_failure()
+            raise
+
+    def _deep_score(self, candidate: Candidate, context: dict[str, Any]) -> float:
+        base = float(candidate.score)
+        intent = str(context.get("intent", "general"))
+
         alignment = 0.0
         if intent == "utility" and candidate.type == "tool":
             alignment += 0.4
-        
-        # Interaction depth boost
-        depth = candidate.features.get("interaction_depth", 0)
-        alignment += (depth * 0.1)
-        
-        return np.clip(base + alignment, 0.0, 1.0)
+
+        depth = _safe_float(candidate.features.get("interaction_depth"), 0.0)
+        alignment += depth * 0.1
+
+        novelty = _safe_float(candidate.features.get("novelty"), 0.0)
+        alignment += min(0.2, novelty * 0.05)
+
+        return _clip_score(base + alignment)
 
 
 class RecapRanker:
-    """Diversity and summarization ranking for final output."""
+    """Diversity-aware final ranking."""
 
-    def __init__(self, config: PersonalizationConfig):
+    def __init__(self, config: PersonalizationConfig) -> None:
         self.config = config
 
     @tracer.start_as_current_span("RecapRanker.rank")
-    async def rank(self, candidates: list[Candidate], context: dict[str, Any]) -> list[RankedCandidate]:
-        """Diversity-aware ranking with type balancing."""
+    async def rank(
+        self,
+        candidates: list[Candidate],
+        context: dict[str, Any],
+    ) -> list[RankedCandidate]:
+        """Apply diversity and type balancing without weakening configured caps."""
+        del context
         span = trace.get_current_span()
 
-        # Type diversity enforcement
         type_counts: dict[str, int] = {}
-        # Type diversity enforcement: allow at least 2 of each type for small pools
-        max_per_type = max(2, len(candidates) // 2)
+        result: list[RankedCandidate] = []
 
-        result = []
-        seen_types: set[str] = set()
+        max_per_type = self.config.recap_max_per_type
 
-        for candidate in candidates:
-            type_counts[candidate.type] = type_counts.get(candidate.type, 0) + 1
+        for candidate in sorted(
+            candidates, key=lambda item: (item.score, str(item.id)), reverse=True
+        ):
+            current = type_counts.get(candidate.type, 0)
+            if current >= max_per_type:
+                continue
 
-            if type_counts[candidate.type] <= max_per_type:
-                result.append(RankedCandidate(
+            type_counts[candidate.type] = current + 1
+            result.append(
+                RankedCandidate(
                     id=candidate.id,
                     type=candidate.type,
                     score=candidate.score,
                     features=candidate.features,
                     metadata=candidate.metadata,
                     rank=len(result) + 1,
-                    ranker_type=RankerType.RECAP
-                ))
-                seen_types.add(candidate.type)
+                    ranker_type=RankerType.RECAP,
+                )
+            )
 
         span.set_attribute("ranker.recap.result_count", len(result))
-        span.set_attribute("ranker.recap.unique_types", len(seen_types))
-
+        span.set_attribute("ranker.recap.unique_types", len(type_counts))
         return result
 
 
@@ -441,23 +567,22 @@ class RecapRanker:
 # ONLINE FEATURE SERVER
 # -----------------------------------------------------------------------------
 
-class OnlineFeatureServer:
-    """Real-time feature serving with caching and batching."""
 
-    def __init__(self, feature_store: FeatureStore, config: PersonalizationConfig):
+class OnlineFeatureServer:
+    """Real-time feature serving with in-memory cache."""
+
+    def __init__(self, feature_store: FeatureStore, config: PersonalizationConfig) -> None:
         self.feature_store = feature_store
         self.config = config
         self._cache: dict[UUID, tuple[float, dict[str, Any]]] = {}
-        self._cache_ttl = 60.0  # 60 seconds
+        self._cache_ttl = 60.0
 
     @tracer.start_as_current_span("OnlineFeatureServer.get_features")
     async def get_features(self, entity_ids: list[UUID]) -> dict[UUID, dict[str, Any]]:
-        """Get features with cache and batch loading."""
-        now = asyncio.get_event_loop().time()
+        now = monotonic()
 
-        # Check cache
-        cached = {}
-        missing = []
+        cached: dict[UUID, dict[str, Any]] = {}
+        missing: list[UUID] = []
 
         for entity_id in entity_ids:
             if entity_id in self._cache:
@@ -467,7 +592,6 @@ class OnlineFeatureServer:
                     continue
             missing.append(entity_id)
 
-        # Load missing
         if missing:
             loaded = await self.feature_store.get_features(missing)
             for entity_id, features in loaded.items():
@@ -477,7 +601,7 @@ class OnlineFeatureServer:
         return cached
 
     def invalidate_cache(self, entity_id: UUID | None = None) -> None:
-        if entity_id:
+        if entity_id is not None:
             self._cache.pop(entity_id, None)
         else:
             self._cache.clear()
@@ -487,6 +611,7 @@ class OnlineFeatureServer:
 # PERSONALIZATION ENGINE
 # -----------------------------------------------------------------------------
 
+
 class PersonalizationEngine:
     """Full personalization pipeline implementation."""
 
@@ -495,14 +620,19 @@ class PersonalizationEngine:
         config: PersonalizationConfig,
         vector_store: VectorStore,
         graph_store: GraphStore,
-        feature_store: FeatureStore
-    ):
+        feature_store: FeatureStore,
+        online_feature_store: OnlineFeatureStore | None = None,
+    ) -> None:
         self.config = config
+
+        effective_online_store = online_feature_store or (
+            feature_store if hasattr(feature_store, "get_online_features") else None
+        )
 
         self.candidate_generator = CandidateGenerator(vector_store, graph_store, config)
         self.feature_hydrator = FeatureHydrator(feature_store, config)
-        self.light_ranker = LightRanker(config, feature_service=feature_store)
-        self.heavy_ranker = HeavyRanker(config, feature_service=feature_store)
+        self.light_ranker = LightRanker(config, feature_service=effective_online_store)
+        self.heavy_ranker = HeavyRanker(config, feature_service=effective_online_store)
         self.recap_ranker = RecapRanker(config)
         self.feature_server = OnlineFeatureServer(feature_store, config)
 
@@ -511,89 +641,103 @@ class PersonalizationEngine:
         self,
         query_vector: np.ndarray,
         context: dict[str, Any],
-        candidates: Optional[list[Candidate]] = None,
-        stream: bool = False
-    ) -> list[RankedCandidate] | AsyncGenerator[RankedCandidate, None]:
+        candidates: list[Candidate] | None = None,
+        stream: bool = False,
+    ) -> list[RankedCandidate] | AsyncGenerator[RankedCandidate]:
         """Execute full ranking pipeline."""
         span = trace.get_current_span()
 
         try:
-            # Step 1: Candidate generation (or bypass)
-            if candidates is None:
-                candidates = await self.candidate_generator.generate(query_vector, context)
-            
-            span.set_attribute("pipeline.candidates", len(candidates))
+            async with asyncio.timeout(self.config.timeout_ms / 1000.0):
+                if candidates is None:
+                    candidates = await self.candidate_generator.generate(query_vector, context)
 
-            if not candidates:
-                return []
+                span.set_attribute("pipeline.candidates", len(candidates))
 
-            # Step 2: Feature hydration
-            hydrated = await self.feature_hydrator.hydrate(candidates)
-            span.set_attribute("pipeline.hydrated", len(hydrated))
+                if not candidates:
+                    span.set_status(Status(StatusCode.OK))
+                    return []
 
-            # Step 3: Light ranking
-            light_ranked = await self.light_ranker.rank(hydrated, context)
-            span.set_attribute("pipeline.light_ranked", len(light_ranked))
+                hydrated = await self.feature_hydrator.hydrate(candidates)
+                span.set_attribute("pipeline.hydrated", len(hydrated))
 
-            # Convert RankedCandidate back to Candidate for heavy ranker
-            for_ranking = [
-                Candidate(
-                    id=c.id, type=c.type, score=c.score,
-                    features=c.features, metadata=c.metadata
-                )
-                for c in light_ranked
-            ]
+                light_ranked = await self.light_ranker.rank(hydrated, context)
+                span.set_attribute("pipeline.light_ranked", len(light_ranked))
 
-            # Step 4: Heavy ranking
-            heavy_ranked = await self.heavy_ranker.rank(for_ranking, context)
-            span.set_attribute("pipeline.heavy_ranked", len(heavy_ranked))
+                heavy_input = [
+                    Candidate(
+                        id=item.id,
+                        type=item.type,
+                        score=item.score,
+                        features=item.features,
+                        metadata=item.metadata,
+                    )
+                    for item in light_ranked
+                ]
 
-            # Step 5: Recap ranking
-            candidate_list: list[Candidate] = []
-            for c in heavy_ranked:
-                candidate_list.append(Candidate(
-                    id=c.id,
-                    type=c.type,
-                    score=c.score,
-                    features=c.features,
-                    metadata=c.metadata
-                ))
-            final = await self.recap_ranker.rank(candidate_list, context)
-            span.set_attribute("pipeline.final", len(final))
+                heavy_ranked = await self.heavy_ranker.rank(heavy_input, context)
+                span.set_attribute("pipeline.heavy_ranked", len(heavy_ranked))
 
-            span.set_status(Status(StatusCode.OK))
+                recap_input = [
+                    Candidate(
+                        id=item.id,
+                        type=item.type,
+                        score=item.score,
+                        features=item.features,
+                        metadata=item.metadata,
+                    )
+                    for item in heavy_ranked
+                ]
 
-            if stream:
-                return self._stream_results(final)
+                final = await self.recap_ranker.rank(recap_input, context)
+                span.set_attribute("pipeline.final", len(final))
+                span.set_status(Status(StatusCode.OK))
 
-            return final
+                if stream:
+                    return self._stream_results(final)
 
-        except Exception as e:
-            span.set_status(Status(StatusCode.ERROR, str(e)))
-            logger.exception("Personalization pipeline failed")
+                return final
+
+        except TimeoutError as exc:
+            span.set_status(Status(StatusCode.ERROR, "personalization_timeout"))
+            logger.exception("personalization_pipeline_timed_out")
+            raise RuntimeError("Personalization pipeline timed out") from exc
+        except Exception as exc:
+            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            logger.exception("personalization_pipeline_failed")
             raise
 
-    async def _stream_results(self, candidates: list[RankedCandidate]) -> AsyncGenerator[RankedCandidate, None]:
+    async def _stream_results(
+        self,
+        candidates: list[RankedCandidate],
+    ) -> AsyncGenerator[RankedCandidate]:
         """Stream results one by one with minimal delay."""
         for candidate in candidates:
             yield candidate
-            await asyncio.sleep(0)  # yield control
+            await asyncio.sleep(0)
 
     async def warmup(self) -> None:
-        """Warm up caches and connections."""
-        logger.info("Personalization engine warmup complete")
+        logger.info("personalization_engine_warmup_complete")
 
 
 # -----------------------------------------------------------------------------
 # FACTORY
 # -----------------------------------------------------------------------------
 
+
 def create_personalization_engine(
     vector_store: VectorStore,
     graph_store: GraphStore,
     feature_store: FeatureStore,
-    **kwargs
+    online_feature_store: OnlineFeatureStore | None = None,
+    **kwargs: Any,
 ) -> PersonalizationEngine:
-    """Factory function to create configured personalization engine."""
+    """Factory function to create a configured personalization engine."""
     config = PersonalizationConfig(**kwargs)
-    return PersonalizationEngine(config, vector_store, graph_store, feature_store)
+    return PersonalizationEngine(
+        config=config,
+        vector_store=vector_store,
+        graph_store=graph_store,
+        feature_store=feature_store,
+        online_feature_store=online_feature_store,
+    )

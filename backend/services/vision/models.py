@@ -25,20 +25,22 @@ from typing import Any
 import httpx
 
 from core.circuit_breaker import get_circuit_breaker_registry
+from services.security.safe_request import SafeRequestClient
 
 logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_MAX_IMAGE_BYTES = 10 * 1024 * 1024          # 10 MB guard
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB guard
 _SUPPORTED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-_GPU_TIMEOUT_S = 10.0                         # fast GPU path
-_OPENAI_TIMEOUT_S = 30.0                      # cloud fallback
+_GPU_TIMEOUT_S = 10.0  # fast GPU path
+_OPENAI_TIMEOUT_S = 30.0  # cloud fallback
 _OPENAI_VISION_MODEL = "gpt-4o"
 _OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
 
 # ── Input validation ──────────────────────────────────────────────────────────
+
 
 def _validate_image(image_data: bytes) -> None:
     """Raise ValueError on obviously invalid payloads."""
@@ -59,7 +61,7 @@ def _sniff_content_type(image_data: bytes) -> str:
         return "image/png"
     if image_data[:4] in (b"RIFF", b"WEBP"):
         return "image/webp"
-    return "image/jpeg"   # safe default for OpenAI
+    return "image/jpeg"  # safe default for OpenAI
 
 
 def _to_base64_url(image_data: bytes) -> str:
@@ -69,6 +71,7 @@ def _to_base64_url(image_data: bytes) -> str:
 
 
 # ── VisionModelProxy ──────────────────────────────────────────────────────────
+
 
 class VisionModelProxy:
     """Production GPU-endpoint router with OpenAI Responses API fallback.
@@ -92,30 +95,30 @@ class VisionModelProxy:
         gpu_endpoint_url: str = "http://vision-gpu:8008",
         openai_api_key: str | None = None,
         dev_mode: bool = False,
+        tenant_id: str | None = None,
     ) -> None:
         import os
+
         self._gpu_url = gpu_endpoint_url.rstrip("/")
         self._openai_key = openai_api_key or os.environ.get("OPENAI_API_KEY", "")
         self._dev_mode = dev_mode
+        self.tenant_id = tenant_id or "default"
 
         # Shared clients (connection pool, not per-call)
         self._gpu_client = httpx.AsyncClient(timeout=_GPU_TIMEOUT_S)
         self._oai_client = httpx.AsyncClient(timeout=_OPENAI_TIMEOUT_S)
+        self._safe_client = SafeRequestClient(timeout=httpx.Timeout(_OPENAI_TIMEOUT_S))
 
         # Per-dependency circuit breakers
         registry = get_circuit_breaker_registry()
-        self._gpu_breaker = registry.register(
-            "vision_gpu", threshold=3, window_s=60, recovery_s=30
-        )
+        self._gpu_breaker = registry.register("vision_gpu", threshold=3, window_s=60, recovery_s=30)
         self._oai_breaker = registry.register(
             "openai_vision", threshold=5, window_s=60, recovery_s=15
         )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    async def run_yolov8(
-        self, image_data: bytes, threshold: float = 0.5
-    ) -> dict[str, Any]:
+    async def run_yolov8(self, image_data: bytes, threshold: float = 0.5) -> dict[str, Any]:
         """Detect objects and bounding boxes via YOLOv8s."""
         _validate_image(image_data)
         logger.debug("vision.yolov8.start", bytes=len(image_data))
@@ -189,7 +192,12 @@ class VisionModelProxy:
         return {
             "text": "User login\nUsername\nPassword",
             "blocks": [
-                {"text": "User login", "bbox": [10, 10, 200, 50], "confidence": 0.95, "reading_order": 1}
+                {
+                    "text": "User login",
+                    "bbox": [10, 10, 200, 50],
+                    "confidence": 0.95,
+                    "reading_order": 1,
+                }
             ],
             "language": langs[0],
             "model_used": "paddleocr",
@@ -224,7 +232,9 @@ class VisionModelProxy:
         )
         if result is not None:
             result["_tier"] = "openai_approx"
-            result.setdefault("warning", "SAM2 GPU unavailable — bounding-box approximation from OpenAI")
+            result.setdefault(
+                "warning", "SAM2 GPU unavailable — bounding-box approximation from OpenAI"
+            )
             return result
 
         logger.warning("vision.sam2.dev_mock", reason="all_tiers_failed")
@@ -266,7 +276,10 @@ class VisionModelProxy:
         if result is not None:
             result["_tier"] = "openai"
             result.setdefault("model_used", _OPENAI_VISION_MODEL)
-            result["verification"] = {"exists": True, "verified_bbox": result.get("target", {}).get("bbox")}
+            result["verification"] = {
+                "exists": True,
+                "verified_bbox": result.get("target", {}).get("bbox"),
+            }
             return result
 
         logger.warning("vision.qwen_vl.dev_mock", reason="all_tiers_failed")
@@ -325,7 +338,10 @@ class VisionModelProxy:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": image_url, "detail": "high"},
+                            },
                             {"type": "text", "text": prompt},
                         ],
                     }
@@ -334,14 +350,25 @@ class VisionModelProxy:
                 "response_format": {"type": "json_object"},
             }
             t0 = time.monotonic()
-            resp = await self._oai_client.post(
-                _OPENAI_CHAT_URL,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {self._openai_key}",
-                    "Content-Type": "application/json",
-                },
-            )
+            if self._safe_client and self.tenant_id:
+                resp = await self._safe_client.post(
+                    _OPENAI_CHAT_URL,
+                    self.tenant_id,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {self._openai_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+            else:
+                resp = await self._oai_client.post(
+                    _OPENAI_CHAT_URL,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {self._openai_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
             resp.raise_for_status()
             self._oai_breaker.record_success()
             data = resp.json()

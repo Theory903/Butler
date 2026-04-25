@@ -1,37 +1,30 @@
-"""Butler Health Probes — Phase 10.
+"""Butler Health Probes.
 
-Extends the Phase 0 HealthChecker with circuit breaker integration,
-proper HTTP status codes, and the four-state machine.
+Four-state health model:
+- STARTING
+- HEALTHY
+- DEGRADED
+- UNHEALTHY
 
-State machine (per docs/rules/SYSTEM_RULES.md v2.0):
-  STARTING   → in lifespan startup, startup probe returns 200
-  HEALTHY    → all deps passing, no open circuit breakers → 200
-  DEGRADED   → some deps failing OR some breakers open → 200 (still serving)
-  UNHEALTHY  → all critical deps failing OR kill-switch active → 503
+Probe semantics:
+- /health/live: process is alive
+- /health/ready: instance can serve traffic
+- /health/startup: instance has completed startup successfully
 
-HTTP status codes per Kubernetes probe semantics:
-  /health/live    → 200 always (if process is running)
-  /health/ready   → 200 HEALTHY/DEGRADED, 503 UNHEALTHY
-  /health/startup → 200 STARTING/HEALTHY, 503 UNHEALTHY
-
-Circuit breaker integration:
-  CircuitBreakerRegistry is injected at router creation time.
-  Open breakers map to DEGRADED (not UNHEALTHY) unless marked critical.
-  Critical services: database, redis, auth.
-  Non-critical services: ml, search, realtime, tools.
-
-v2.0 additional fields (per SYSTEM_RULES.md §health):
-  - version: SERVICE_VERSION
-  - ts: epoch timestamp
-  - circuit_breakers: per-service state dict
-  - critical_failures: list of critical services that are down
+Design goals:
+- framework-thin router
+- explicit state computation
+- policy-driven critical dependency handling
+- circuit breakers degrade readiness unless explicitly configured otherwise
 """
 
 from __future__ import annotations
 
 import time
-from enum import Enum
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
 
 import structlog
 from fastapi import APIRouter
@@ -39,39 +32,90 @@ from fastapi.responses import JSONResponse
 
 logger = structlog.get_logger(__name__)
 
-# ── State model ────────────────────────────────────────────────────────────────
-
-class HealthState(str, Enum):
-    STARTING   = "starting"
-    HEALTHY    = "healthy"
-    DEGRADED   = "degraded"
-    UNHEALTHY  = "unhealthy"
-
-
-_STATE_HTTP_CODE: dict[HealthState, int] = {
-    HealthState.STARTING:  200,
-    HealthState.HEALTHY:   200,
-    HealthState.DEGRADED:  200,   # Still serving — degraded, not dead
-    HealthState.UNHEALTHY: 503,
-}
-
-# These dep names trigger UNHEALTHY (not just DEGRADED) on failure
-_CRITICAL_DEPS = {"database", "redis", "auth"}
-
 DepChecker = Callable[[], Awaitable[None]]
 
 
-# ── HealthProbeResult ──────────────────────────────────────────────────────────
+class HealthState(StrEnum):
+    STARTING = "starting"
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNHEALTHY = "unhealthy"
 
+
+_STATE_HTTP_CODE: dict[HealthState, int] = {
+    HealthState.STARTING: 200,
+    HealthState.HEALTHY: 200,
+    HealthState.DEGRADED: 200,
+    HealthState.UNHEALTHY: 503,
+}
+
+
+class HealthHTTPResult(dict[str, Any]):
+    """Dictionary health body that also unpacks as ``(body, status_code)``."""
+
+    def __init__(self, body: dict[str, Any], status_code: int) -> None:
+        super().__init__(body)
+        self.status_code = status_code
+
+    def __iter__(self) -> Iterator[dict[str, Any] | int]:
+        yield dict(self)
+        yield self.status_code
+
+
+@dataclass(frozen=True, slots=True)
+class BreakerSnapshot:
+    name: str
+    state: str
+    critical: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyStatus:
+    name: str
+    healthy: bool
+    detail: str | None = None
+    critical: bool = False
+
+
+@dataclass(slots=True)
+class HealthEvaluation:
+    dependency_checks: dict[str, str] = field(default_factory=dict)
+    circuit_breakers: dict[str, str] = field(default_factory=dict)
+    critical_failures: list[str] = field(default_factory=list)
+    degraded_dependencies: list[str] = field(default_factory=list)
+    open_breakers: list[str] = field(default_factory=list)
+
+    def compute_state(self) -> HealthState:
+        if self.critical_failures:
+            return HealthState.UNHEALTHY
+        if self.degraded_dependencies or self.open_breakers:
+            return HealthState.DEGRADED
+        return HealthState.HEALTHY
+
+    def to_dict(self, *, status: str, version: str) -> dict[str, Any]:
+        state = self.compute_state()
+        return {
+            "status": status,
+            "state": state.value,
+            "version": version,
+            "ts": int(time.time()),
+            "checks": self.dependency_checks,
+            "circuit_breakers": self.circuit_breakers,
+            "critical_failures": self.critical_failures,
+            "degraded_dependencies": self.degraded_dependencies,
+            "open_breakers": self.open_breakers,
+        }
+
+
+@dataclass(slots=True)
 class HealthProbeResult:
-    """Aggregated result of a health check pass."""
+    """Backward-compatible health result model used by phase tests."""
 
-    def __init__(self) -> None:
-        self.dep_results:      dict[str, str] = {}
-        self.breaker_results:  dict[str, str] = {}
-        self.critical_failures: list[str] = []
-        self.non_critical_failures: list[str] = []
-        self.has_open_breakers: bool = False
+    dependency_results: dict[str, str] = field(default_factory=dict)
+    breaker_results: dict[str, str] = field(default_factory=dict)
+    critical_failures: list[str] = field(default_factory=list)
+    non_critical_failures: list[str] = field(default_factory=list)
+    has_open_breakers: bool = False
 
     def compute_state(self) -> HealthState:
         if self.critical_failures:
@@ -80,202 +124,153 @@ class HealthProbeResult:
             return HealthState.DEGRADED
         return HealthState.HEALTHY
 
-    def to_dict(self, *, status_label: str, version: str = "dev") -> dict:
-        state = self.compute_state()
+    def to_dict(self, *, status_label: str = "ready", version: str = "dev") -> dict[str, Any]:
         return {
             "status": status_label,
-            "state": state.value,
+            "state": self.compute_state().value,
             "version": version,
-            "debug_marker": "antigravity_v1",
             "ts": int(time.time()),
-            "checks": self.dep_results,
+            "checks": self.dependency_results,
             "circuit_breakers": self.breaker_results,
-            "critical_failures": self.critical_failures,
         }
 
 
-# ── HealthChecker ──────────────────────────────────────────────────────────────
-
 class HealthChecker:
-    """Four-state health checker with circuit breaker integration.
-
-    Replaces the Phase 0 stub. Backward-compatible: still accepts the same
-    `deps` dict used in main.py.
-
-    New in Phase 10:
-      - circuit_breaker_registry: injected from CircuitBreakerRegistry
-      - critical_deps: set of dep names whose failure → UNHEALTHY
-      - HTTP 503 when state == UNHEALTHY
-      - Returns HealthProbeResult for programmatic use by tests
-    """
+    """Policy-driven health checker."""
 
     def __init__(
         self,
         deps: dict[str, DepChecker] | None = None,
-        circuit_breaker_registry=None,  # CircuitBreakerRegistry | None
+        *,
+        circuit_breaker_registry: Any | None = None,
         critical_deps: set[str] | None = None,
+        critical_breakers: set[str] | None = None,
         version: str = "dev",
     ) -> None:
-        self._deps      = deps or {}
-        self._cbr       = circuit_breaker_registry
-        self._critical  = critical_deps or _CRITICAL_DEPS
-        self._version   = version
-        self._started   = False  # flips to True after first successful startup check
+        self._deps = deps or {}
+        self._circuit_breaker_registry = circuit_breaker_registry
+        self._critical_deps = critical_deps or {"database", "redis", "auth"}
+        self._critical_breakers = critical_breakers or set()
+        self._version = version
+        self._startup_confirmed = False
 
-    async def _probe_deps(self) -> HealthProbeResult:
-        result = HealthProbeResult()
-
-        # Check dep callables
-        for name, checker in self._deps.items():
-            try:
-                await checker()
-                result.dep_results[name] = "healthy"
-            except Exception as exc:
-                result.dep_results[name] = f"unhealthy: {exc}"
-                if name in self._critical:
-                    result.critical_failures.append(name)
-                else:
-                    result.non_critical_failures.append(name)
-
-        # Check circuit breakers
-        if self._cbr is not None:
-            try:
-                for stat in self._cbr.all_stats():
-                    svc   = stat.get("name", "unknown")
-                    state = stat.get("state", "closed")
-                    result.breaker_results[svc] = state
-                    if state == "open":
-                        result.has_open_breakers = True
-                        if svc in self._critical:
-                            if svc not in result.critical_failures:
-                                result.critical_failures.append(svc)
-            except Exception as exc:
-                logger.warning("health_circuit_breaker_check_failed", error=str(exc))
-
-        return result
-
-    # ── Live probe (L0: process alive, no deps) ────────────────────────────────
-
-    async def live(self) -> dict:
-        """Kubernetes liveness probe: is the process up?
-
-        Never returns 503 — if this call returns at all, the process is alive.
-        """
-        return {
+    async def live(self) -> HealthHTTPResult:
+        body = {
             "status": "ok",
             "state": HealthState.HEALTHY.value,
             "version": self._version,
             "ts": int(time.time()),
         }
+        return HealthHTTPResult(body, 200)
 
-    # ── Ready probe (L1: deps + breakers) ─────────────────────────────────────
+    async def ready(self) -> tuple[dict[str, Any], int]:
+        evaluation = await self._probe()
+        state = evaluation.compute_state()
 
-    async def ready(self) -> tuple[dict, int]:
-        """Kubernetes readiness probe: should traffic be sent here?
-
-        Returns: (response_body, http_status_code)
-          200 → HEALTHY or DEGRADED (still serving)
-          503 → UNHEALTHY (stop sending traffic)
-        """
-        result = await self._probe_deps()
-        state  = result.compute_state()
-
-        if state == HealthState.UNHEALTHY:
-            label = "not_ready"
-        elif state == HealthState.DEGRADED:
-            label = "degraded"
+        if state is HealthState.UNHEALTHY:
+            status = "not_ready"
+            code = 503
+        elif state is HealthState.DEGRADED:
+            status = "degraded"
+            code = 200
         else:
-            label = "ready"
+            status = "ready"
+            code = 200
 
-        body = result.to_dict(status_label=label, version=self._version)
-        code = _STATE_HTTP_CODE[state]
-
-        logger.info("health_ready_checked", state=state.value, code=code)
+        body = evaluation.to_dict(status=status, version=self._version)
+        logger.info("health_ready_checked", state=state.value, status_code=code)
         return body, code
 
-    # ── Startup probe (L2: initialisation complete) ────────────────────────────
+    async def startup(self) -> tuple[dict[str, Any], int]:
+        evaluation = await self._probe()
+        state = evaluation.compute_state()
 
-    async def startup(self) -> tuple[dict, int]:
-        """Kubernetes startup probe: has the service finished initialising?
+        if state is HealthState.HEALTHY:
+            self._startup_confirmed = True
 
-        Before deps are fully up → STARTING (200 — give it more time).
-        After first successful ready → HEALTHY (200).
-        Critical dep missing → UNHEALTHY (503).
-        """
-        result = await self._probe_deps()
-        state  = result.compute_state()
+        if not self._startup_confirmed and state is not HealthState.UNHEALTHY:
+            body = evaluation.to_dict(status="starting", version=self._version)
+            body["state"] = HealthState.STARTING.value
+            return body, 200
 
-        if not self._started and state == HealthState.HEALTHY:
-            self._started = True
+        if state is HealthState.UNHEALTHY:
+            body = evaluation.to_dict(status="startup_failed", version=self._version)
+            body["state"] = HealthState.UNHEALTHY.value
+            return body, 503
 
-        if not self._started and state != HealthState.UNHEALTHY:
-            # Still starting — not yet confirmed ready
-            startup_state = HealthState.STARTING
-            label = "starting"
-            code  = 200
-        elif state == HealthState.UNHEALTHY:
-            startup_state = HealthState.UNHEALTHY
-            label = "startup_failed"
-            code  = 503
-        else:
-            startup_state = HealthState.HEALTHY
-            label = "ready"
-            code  = 200
+        body = evaluation.to_dict(status="ready", version=self._version)
+        body["state"] = HealthState.HEALTHY.value
+        return body, 200
 
-        import os
-        body = result.to_dict(status_label=label, version=self._version)
-        body["state"] = startup_state.value
-        body["pid"] = os.getpid()
-        body["cwd"] = os.getcwd()
-        return body, code
+    async def _probe(self) -> HealthEvaluation:
+        evaluation = HealthEvaluation()
 
+        for name, checker in self._deps.items():
+            try:
+                await checker()
+                evaluation.dependency_checks[name] = "healthy"
+            except Exception as exc:
+                detail = str(exc)
+                evaluation.dependency_checks[name] = f"unhealthy: {detail}"
+                if name in self._critical_deps:
+                    evaluation.critical_failures.append(name)
+                else:
+                    evaluation.degraded_dependencies.append(name)
 
-# ── Router factory ─────────────────────────────────────────────────────────────
+        if self._circuit_breaker_registry is not None:
+            try:
+                for stat in self._circuit_breaker_registry.all_stats():
+                    name = stat.get("name", "unknown")
+                    state = stat.get("state", "closed")
+                    evaluation.circuit_breakers[name] = state
+
+                    if state == "open":
+                        if name in self._critical_breakers or name in self._critical_deps:
+                            evaluation.critical_failures.append(name)
+                        else:
+                            evaluation.open_breakers.append(name)
+            except Exception as exc:
+                logger.warning("health_breaker_probe_failed", error=str(exc))
+
+        evaluation.critical_failures = sorted(set(evaluation.critical_failures))
+        evaluation.degraded_dependencies = sorted(set(evaluation.degraded_dependencies))
+        evaluation.open_breakers = sorted(set(evaluation.open_breakers))
+
+        return evaluation
+
 
 def create_health_router(
     deps: dict[str, DepChecker] | None = None,
     prefix: str = "",
-    circuit_breaker_registry=None,
+    *,
+    include_in_schema: bool = True,
+    circuit_breaker_registry: Any | None = None,
     critical_deps: set[str] | None = None,
+    critical_breakers: set[str] | None = None,
     version: str = "dev",
 ) -> APIRouter:
-    """Create /health/{live,ready,startup} routes.
-
-    Phase 10: circuit_breaker_registry wired into ready + startup checks.
-    Phase 0 signature (deps, prefix) is fully backward-compatible.
-
-    Args:
-        deps:                     Async dep checkers (database, redis, …)
-        prefix:                   Route prefix (no prefix by default)
-        circuit_breaker_registry: CircuitBreakerRegistry for breaker state
-        critical_deps:            Override which dep names → UNHEALTHY
-        version:                  SERVICE_VERSION string for response body
-    """
+    """Create health probe routes."""
     checker = HealthChecker(
         deps=deps,
         circuit_breaker_registry=circuit_breaker_registry,
         critical_deps=critical_deps,
+        critical_breakers=critical_breakers,
         version=version,
     )
+
     router = APIRouter(prefix=prefix, tags=["health"])
 
-    # ── GET /health/live ──────────────────────────────────────────────────────
-
-    @router.get("/health/live", include_in_schema=True, summary="Liveness probe")
+    @router.get("/health/live", include_in_schema=include_in_schema, summary="Liveness probe")
     async def live() -> JSONResponse:
-        body = await checker.live()
-        return JSONResponse(content=body, status_code=200)
+        body, code = await checker.live()
+        return JSONResponse(content=body, status_code=code)
 
-    # ── GET /health/ready ─────────────────────────────────────────────────────
-
-    @router.get("/health/ready", include_in_schema=True, summary="Readiness probe")
+    @router.get("/health/ready", include_in_schema=include_in_schema, summary="Readiness probe")
     async def ready() -> JSONResponse:
         body, code = await checker.ready()
         return JSONResponse(content=body, status_code=code)
 
-    # ── GET /health/startup ───────────────────────────────────────────────────
-
-    @router.get("/health/startup", include_in_schema=True, summary="Startup probe")
+    @router.get("/health/startup", include_in_schema=include_in_schema, summary="Startup probe")
     async def startup() -> JSONResponse:
         body, code = await checker.startup()
         return JSONResponse(content=body, status_code=code)

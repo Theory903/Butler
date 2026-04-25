@@ -14,24 +14,20 @@ avoid sending Authorization header over WebSocket upgrade.
 
 from __future__ import annotations
 
-import json
-
 from fastapi import APIRouter, Depends, Query, WebSocket
 from fastapi.responses import StreamingResponse
 from starlette.websockets import WebSocketDisconnect
 
 from core.deps import (
-    get_redis,
     get_connection_manager,
-    get_realtime_listener,
+    get_redis,
 )
-from services.realtime.events import RealtimeEvent, Events
 from services.realtime.manager import ConnectionManager
 from services.realtime.presence import PresenceService
 from services.realtime.stream_dispatcher import ButlerStreamDispatcher
 
-
 # ── Dependency factories ───────────────────────────────────────────────────────
+
 
 def get_presence(redis=Depends(get_redis)):
     return PresenceService(redis)
@@ -51,6 +47,7 @@ router = APIRouter(prefix="/realtime", tags=["realtime"])
 
 # ── 1. WebSocket — primary connection ─────────────────────────────────────────
 
+
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -67,7 +64,6 @@ async def websocket_endpoint(
     # Authenticate the upgrade ticket
     try:
         from services.auth.jwt import get_jwks_manager
-        from redis.asyncio import Redis as _Redis
 
         jwks = get_jwks_manager()
         claims = jwks.verify_token(token)
@@ -105,6 +101,7 @@ async def websocket_endpoint(
 
 # ── 2. GET /realtime/stream/{account_id} — SSE cursor replay ──────────────────
 
+
 @router.get(
     "/stream/{account_id}",
     summary="SSE cursor-based event replay",
@@ -134,6 +131,7 @@ async def sse_replay(
 
 # ── 3. GET /realtime/events/{account_id} — JSON snapshot ─────────────────────
 
+
 @router.get(
     "/events/{account_id}",
     summary="Recent events as JSON (up to 50)",
@@ -155,6 +153,7 @@ async def get_recent_events(
 
 # ── 4. GET /realtime/presence/{account_id} ────────────────────────────────────
 
+
 @router.get("/presence/{account_id}", summary="Account presence state")
 async def get_presence_endpoint(
     account_id: str,
@@ -165,6 +164,7 @@ async def get_presence_endpoint(
 
 # ── 5. POST /realtime/publish — admin event push ─────────────────────────────
 
+
 @router.post("/publish", summary="Push a Butler event to an account's stream (admin)")
 async def publish_event(
     account_id: str = Query(...),
@@ -174,6 +174,7 @@ async def publish_event(
 ) -> dict:
     """Admin-only: push a synthetic event to an account's realtime stream."""
     from domain.events.schemas import ButlerEvent
+
     if payload is None:
         payload = {}
 

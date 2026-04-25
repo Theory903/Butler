@@ -35,7 +35,8 @@
     "ses_2682c548fffeqYSa2sU44PAprH",
     "ses_268232837ffe1Ag95HGLDR3i3P",
     "ses_2681a6227ffetpqTMzy5Cb3IFe",
-    "ses_26818d1edfferR3IMPBHp6koqP"
+    "ses_26818d1edfferR3IMPBHp6koqP",
+    "ses_2417fea90ffexj8sbpYuUhTy6e"
   ],
   "plan_name": "butler-mvp-2day",
   "agent": "atlas",
@@ -44,10 +45,10 @@
       "task_key": "todo:1",
       "task_label": "1",
       "task_title": "Lock alpha MVP acceptance matrix",
-      "session_id": "ses_26818d1edfferR3IMPBHp6koqP",
+      "session_id": "ses_2411fe207ffeJ90V7znndETtlu",
       "agent": "Sisyphus-Junior",
-      "category": "writing",
-      "updated_at": "2026-04-16T20:14:18.525Z"
+      "category": "quick",
+      "updated_at": "2026-04-24T09:53:48.305Z"
     }
   }
 }

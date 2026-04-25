@@ -1,14 +1,3 @@
-"""
-Butler Sub-Agent Runtime System
-
-Implements sub-agent deployment, execution isolation, budget enforcement,
-and observability following Oracle-grade architectural patterns.
-
-Version: 2.0
-Status: Production Ready
-"""
-
-from typing import Callable
 from __future__ import annotations
 
 import asyncio
@@ -17,28 +6,30 @@ import inspect
 import logging
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import datetime
-from typing import Any, Generic, TypeVar, cast
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, TypeVar
 
+import structlog
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic import BaseModel, Field, root_validator, validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from domain.policy.capability_flags import SubagentIsolationClass, TrustLevel
+from domain.policy.capability_flags import TrustLevel
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 tracer = trace.get_tracer(__name__)
 
 T = TypeVar("T")
-T_awaitable = TypeVar("T_awaitable", bound=Any)
 
 
 # ============================================================================
-# Exception Classes - Defined first for forward reference compatibility
+# Exception Classes
 # ============================================================================
+
 
 class BudgetExceededError(Exception):
     """Raised when sub-agent exceeds allocated resource budget."""
@@ -51,6 +42,16 @@ class TrustBoundaryViolationError(Exception):
 class CircuitBreakerOpenError(Exception):
     """Raised when circuit breaker is open and blocking execution."""
 
+    def __init__(self, name: str, retry_after_seconds: float | None = None) -> None:
+        self.name = name
+        self.retry_after_seconds = retry_after_seconds
+        detail = (
+            f"Circuit breaker '{name}' is open."
+            if retry_after_seconds is None
+            else f"Circuit breaker '{name}' is open. Retry after {retry_after_seconds:.2f}s."
+        )
+        super().__init__(detail)
+
 
 class TransientExecutionError(Exception):
     """Raised when execution fails transiently and can be retried."""
@@ -60,18 +61,18 @@ class TransientExecutionError(Exception):
 # Core Enums and Models
 # ============================================================================
 
-class RuntimeClass(str, enum.Enum):
+
+class RuntimeClass(enum.StrEnum):
     """Sub-agent execution runtime isolation levels."""
 
-    IN_PROCESS = "in_process"             # Shared memory, same interpreter
-    PROCESS_POOL = "process_pool"         # Isolated Unix process
-    SANDBOX = "sandbox"                   # gVisor/Wasm container
-    REMOTE_PEER = "remote_peer"           # External ACP node
-    HUMAN_GATE = "human_gate"             # Human-in-the-loop
+    IN_PROCESS = "in_process"
+    PROCESS_POOL = "process_pool"
+    SANDBOX = "sandbox"
+    REMOTE_PEER = "remote_peer"
+    HUMAN_GATE = "human_gate"
 
     @property
     def isolation_level(self) -> int:
-        """Return numeric isolation level for comparison."""
         return {
             RuntimeClass.IN_PROCESS: 0,
             RuntimeClass.PROCESS_POOL: 1,
@@ -89,46 +90,65 @@ class SubAgentProfile(BaseModel):
     and resource quotas for a sub-agent instance.
     """
 
+    model_config = ConfigDict(frozen=True, use_enum_values=False)
+
     agent_id: str = Field(default_factory=lambda: f"sub:{uuid.uuid4().hex[:12]}")
     parent_agent_id: str
     session_id: str
     runtime_class: RuntimeClass
     trust_level: TrustLevel = Field(default=TrustLevel.UNTRUSTED)
+
     tool_permissions: set[str] = Field(default_factory=set)
     memory_scope: str
-    max_execution_time_ms: int = Field(gt=0, default=30000)
-    max_memory_mb: int = Field(gt=0, default=128)
-    max_tool_calls: int = Field(gt=0, default=50)
-    max_tokens: int = Field(gt=0, default=100000)
+
+    max_execution_time_ms: int = Field(default=30_000, gt=0)
+    max_memory_mb: int = Field(default=128, gt=0)
+    max_tool_calls: int = Field(default=50, gt=0)
+    max_tokens: int = Field(default=100_000, gt=0)
+
     allow_network_access: bool = False
     allow_file_system_access: bool = False
     allow_state_modification: bool = False
     inherit_parent_trace: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime | None = None
 
-    @validator("expires_at")
-    def validate_expiry(cls, v: datetime | None, values: dict[str, Any]) -> datetime | None:
-        if v is not None and v <= values["created_at"]:
-            raise ValueError("Expiry time must be after creation time")
-        return v
+    @field_validator("agent_id", "parent_agent_id", "session_id", "memory_scope")
+    @classmethod
+    def _validate_non_empty_string(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("field must not be empty")
+        return cleaned
 
-    @root_validator(skip_on_failure=True)
-    def validate_trust_boundaries(cls, values: dict[str, Any]) -> dict[str, Any]:
-        runtime_class = values.get("runtime_class")
-        trust_level = values.get("trust_level", 0)
+    @field_validator("tool_permissions")
+    @classmethod
+    def _normalize_permissions(cls, value: set[str]) -> set[str]:
+        return {item.strip() for item in value if item and item.strip()}
 
-        if runtime_class == RuntimeClass.IN_PROCESS and trust_level > TrustLevel.VERIFIED_USER:
-            raise ValueError("In-process execution requires high trust (INTERNAL or VERIFIED_USER)")
+    @model_validator(mode="after")
+    def _validate_profile(self) -> SubAgentProfile:
+        if self.expires_at is not None and self.expires_at <= self.created_at:
+            raise ValueError("expires_at must be after created_at")
 
-        if values.get("allow_state_modification") and trust_level < 50:
-            raise ValueError("State modification requires trust level >= 50")
+        trust_value = _trust_level_value(self.trust_level)
 
-        return values
+        if self.runtime_class == RuntimeClass.IN_PROCESS and trust_value < _trust_level_value(
+            TrustLevel.VERIFIED_USER
+        ):
+            raise ValueError("in-process execution requires trust level >= VERIFIED_USER")
 
-    class Config:
-        frozen = True
-        use_enum_values = True
+        if self.allow_state_modification and trust_value < 50:
+            raise ValueError("state modification requires trust level >= 50")
+
+        return self
+
+    def is_expired(self, *, now: datetime | None = None) -> bool:
+        if self.expires_at is None:
+            return False
+        now = now or datetime.now(UTC)
+        return now >= self.expires_at
 
 
 class BudgetUsage(BaseModel):
@@ -145,60 +165,77 @@ class BudgetUsage(BaseModel):
 class BudgetEnforcer:
     """
     Enforces resource quotas and budget limits for sub-agent execution.
-
-    Tracks consumption in real-time and terminates execution when limits are exceeded.
     """
 
     def __init__(self, profile: SubAgentProfile):
         self.profile = profile
         self.usage = BudgetUsage()
-        self.start_time: float | None = None
+        self.start_time_monotonic: float | None = None
         self._terminated = False
 
     def start(self) -> None:
-        """Start budget tracking."""
-        self.start_time = time.perf_counter()
+        self.start_time_monotonic = time.perf_counter()
+        self._terminated = False
 
     def check(self) -> None:
-        """
-        Check if budget limits have been exceeded.
-
-        Raises:
-            BudgetExceededError: If any quota limit is exceeded
-        """
         if self._terminated:
-            raise BudgetExceededError("Execution already terminated")
+            raise BudgetExceededError("execution terminated")
 
-        if self.start_time is None:
-            raise RuntimeError("Budget tracking not started")
+        if self.start_time_monotonic is None:
+            raise RuntimeError("budget tracking not started")
 
-        elapsed_ms = int((time.perf_counter() - self.start_time) * 1000)
+        elapsed_ms = int((time.perf_counter() - self.start_time_monotonic) * 1000)
         self.usage.execution_time_ms = elapsed_ms
 
         if elapsed_ms > self.profile.max_execution_time_ms:
             self._terminated = True
-            raise BudgetExceededError(f"Execution time exceeded: {elapsed_ms}ms > {self.profile.max_execution_time_ms}ms")
+            raise BudgetExceededError(
+                f"execution time exceeded: {elapsed_ms}ms > {self.profile.max_execution_time_ms}ms"
+            )
 
         if self.usage.tool_calls > self.profile.max_tool_calls:
             self._terminated = True
-            raise BudgetExceededError(f"Tool calls exceeded: {self.usage.tool_calls} > {self.profile.max_tool_calls}")
+            raise BudgetExceededError(
+                f"tool calls exceeded: {self.usage.tool_calls} > {self.profile.max_tool_calls}"
+            )
 
         if self.usage.tokens_used > self.profile.max_tokens:
             self._terminated = True
-            raise BudgetExceededError(f"Tokens exceeded: {self.usage.tokens_used} > {self.profile.max_tokens}")
+            raise BudgetExceededError(
+                f"tokens exceeded: {self.usage.tokens_used} > {self.profile.max_tokens}"
+            )
 
-    def record_tool_call(self) -> None:
-        """Record a tool call invocation."""
-        self.usage.tool_calls += 1
+        if self.usage.memory_used_mb > self.profile.max_memory_mb:
+            self._terminated = True
+            raise BudgetExceededError(
+                f"memory exceeded: {self.usage.memory_used_mb}MB > {self.profile.max_memory_mb}MB"
+            )
+
+    def record_tool_call(self, count: int = 1) -> None:
+        self.usage.tool_calls += count
         self.check()
 
     def record_tokens(self, count: int) -> None:
-        """Record token consumption."""
+        if count < 0:
+            raise ValueError("token count must be non-negative")
         self.usage.tokens_used += count
         self.check()
 
+    def record_memory_mb(self, used_mb: int) -> None:
+        if used_mb < 0:
+            raise ValueError("memory usage must be non-negative")
+        self.usage.memory_used_mb = used_mb
+        self.check()
+
+    def record_network_request(self, count: int = 1) -> None:
+        self.usage.network_requests += count
+        self.check()
+
+    def record_file_operation(self, count: int = 1) -> None:
+        self.usage.file_operations += count
+        self.check()
+
     def terminate(self) -> None:
-        """Force terminate budget tracking."""
         self._terminated = True
 
     @property
@@ -206,53 +243,112 @@ class BudgetEnforcer:
         return self._terminated
 
 
+# ============================================================================
+# Circuit Breaker
+# ============================================================================
+
+
+@dataclass
+class _CircuitState:
+    state: str = "CLOSED"
+    failure_count: int = 0
+    last_failure_monotonic: float | None = None
+    half_open_probe_in_flight: bool = False
+
+
 class CircuitBreaker:
     """
-    Circuit breaker pattern for sub-agent execution failure isolation.
+    Circuit breaker for sub-agent execution isolation.
 
-    Prevents cascading failures by opening circuit after consecutive failures.
+    Concurrency-safe for asyncio usage inside one process.
     """
 
-    def __init__(self, failure_threshold: int = 5, reset_timeout_ms: int = 30000):
+    def __init__(self, name: str, failure_threshold: int = 5, reset_timeout_ms: int = 30_000):
+        self.name = name
         self.failure_threshold = failure_threshold
         self.reset_timeout_ms = reset_timeout_ms
-        self.failure_count = 0
-        self.last_failure_time: float | None = None
-        self.state = "CLOSED"
+        self._state = _CircuitState()
+        self._lock = asyncio.Lock()
 
-    def record_success(self) -> None:
-        """Record successful execution."""
-        self.failure_count = 0
-        self.state = "CLOSED"
+    async def allow_execution(self) -> bool:
+        async with self._lock:
+            now = time.perf_counter()
 
-    def record_failure(self) -> None:
-        """Record failed execution."""
-        self.failure_count += 1
-        self.last_failure_time = time.perf_counter()
-
-        if self.failure_count >= self.failure_threshold:
-            self.state = "OPEN"
-            logger.warning(f"Circuit breaker OPEN after {self.failure_count} failures")
-
-    def allow_execution(self) -> bool:
-        """Check if execution is allowed."""
-        if self.state == "CLOSED":
-            return True
-
-        if self.state == "OPEN" and self.last_failure_time is not None:
-            elapsed_ms = (time.perf_counter() - self.last_failure_time) * 1000
-            if elapsed_ms > self.reset_timeout_ms:
-                self.state = "HALF_OPEN"
+            if self._state.state == "CLOSED":
                 return True
 
-        return False
+            if self._state.state == "OPEN":
+                if self._state.last_failure_monotonic is None:
+                    return False
+
+                elapsed_ms = (now - self._state.last_failure_monotonic) * 1000
+                if elapsed_ms >= self.reset_timeout_ms:
+                    self._state.state = "HALF_OPEN"
+                    self._state.half_open_probe_in_flight = True
+                    logger.info("circuit_breaker_half_open", name=self.name)
+                    return True
+                return False
+
+            if self._state.state == "HALF_OPEN":
+                if self._state.half_open_probe_in_flight:
+                    return False
+                self._state.half_open_probe_in_flight = True
+                return True
+
+            return False
+
+    async def record_success(self) -> None:
+        async with self._lock:
+            self._state.state = "CLOSED"
+            self._state.failure_count = 0
+            self._state.last_failure_monotonic = None
+            self._state.half_open_probe_in_flight = False
+            logger.debug("circuit_breaker_closed", name=self.name)
+
+    async def record_failure(self) -> None:
+        async with self._lock:
+            now = time.perf_counter()
+
+            if self._state.state == "HALF_OPEN":
+                self._state.state = "OPEN"
+                self._state.failure_count = self.failure_threshold
+                self._state.last_failure_monotonic = now
+                self._state.half_open_probe_in_flight = False
+                logger.warning("circuit_breaker_reopened", name=self.name)
+                return
+
+            self._state.failure_count += 1
+            self._state.last_failure_monotonic = now
+            self._state.half_open_probe_in_flight = False
+
+            if self._state.failure_count >= self.failure_threshold:
+                self._state.state = "OPEN"
+                logger.warning(
+                    "circuit_breaker_opened",
+                    name=self.name,
+                    failure_count=self._state.failure_count,
+                )
+
+    async def recovery_remaining_seconds(self) -> float | None:
+        async with self._lock:
+            if self._state.state != "OPEN" or self._state.last_failure_monotonic is None:
+                return None
+            elapsed = time.perf_counter() - self._state.last_failure_monotonic
+            return max(0.0, (self.reset_timeout_ms / 1000.0) - elapsed)
+
+    async def current_state(self) -> str:
+        async with self._lock:
+            return self._state.state
+
+
+# ============================================================================
+# Factory
+# ============================================================================
 
 
 class SubAgentFactory:
     """
     Factory for creating profiled sub-agent instances with inheritance.
-
-    Maintains trust boundary enforcement when creating child agents.
     """
 
     @staticmethod
@@ -262,87 +358,99 @@ class SubAgentFactory:
         additional_permissions: set[str] | None = None,
         budget_overrides: dict[str, int] | None = None,
     ) -> SubAgentProfile:
-        """
-        Create a child sub-agent profile inheriting from parent.
-
-        Child agents NEVER receive higher trust or permissions than parent.
-        """
         runtime = runtime_class or parent_profile.runtime_class
 
-        # Child cannot have higher isolation level than parent
         if runtime.isolation_level > parent_profile.runtime_class.isolation_level:
             raise TrustBoundaryViolationError(
-                f"Child agent cannot use higher isolation runtime {runtime} than parent {parent_profile.runtime_class}"
+                f"child agent cannot use higher isolation runtime {runtime.value} than parent {parent_profile.runtime_class.value}"
             )
 
-        permissions = parent_profile.tool_permissions.copy()
-        if additional_permissions:
-            # Only allow subset of parent permissions
-            invalid = additional_permissions - parent_profile.tool_permissions
+        permissions = set(parent_profile.tool_permissions)
+        if additional_permissions is not None:
+            invalid = set(additional_permissions) - parent_profile.tool_permissions
             if invalid:
-                raise TrustBoundaryViolationError(f"Cannot grant additional permissions: {invalid}")
-            permissions = additional_permissions
+                raise TrustBoundaryViolationError(
+                    f"cannot grant permissions not held by parent: {sorted(invalid)}"
+                )
+            permissions = set(additional_permissions)
 
         overrides = budget_overrides or {}
+        allowed_override_keys = {
+            "max_execution_time_ms",
+            "max_memory_mb",
+            "max_tool_calls",
+            "max_tokens",
+        }
 
-        # Budget overrides cannot exceed parent limits
         for key, value in overrides.items():
+            if key not in allowed_override_keys:
+                raise ValueError(f"unsupported budget override: {key}")
             parent_value = getattr(parent_profile, key)
             if value > parent_value:
-                raise TrustBoundaryViolationError(f"Budget override {key}={value} exceeds parent limit {parent_value}")
+                raise TrustBoundaryViolationError(
+                    f"budget override {key}={value} exceeds parent limit {parent_value}"
+                )
 
-        profile_data = parent_profile.dict(exclude={"agent_id", "created_at", "expires_at"})
-        profile_data.update({
-            "runtime_class": runtime,
-            "tool_permissions": permissions,
-            **overrides,
-        })
-
+        profile_data = parent_profile.model_dump(
+            exclude={"agent_id", "created_at", "expires_at"},
+            mode="python",
+        )
+        profile_data.update(
+            {
+                "runtime_class": runtime,
+                "tool_permissions": permissions,
+                **overrides,
+            }
+        )
         return SubAgentProfile(**profile_data)
 
 
-class SubAgentExecutor(Generic[T]):
+# ============================================================================
+# Executor
+# ============================================================================
+
+
+class SubAgentExecutor[T]:
     """
-    Executes sub-agent tasks with failure isolation, trace propagation,
-    and budget enforcement.
+    Executes sub-agent tasks with budget enforcement, timeout control,
+    retry for transient failures, and circuit-breaker isolation.
     """
 
     def __init__(self, profile: SubAgentProfile):
         self.profile = profile
         self.budget = BudgetEnforcer(profile)
-        self.circuit_breaker = CircuitBreaker()
+        self.circuit_breaker = CircuitBreaker(name=profile.agent_id)
         self.idempotency_key: str | None = None
 
     @contextmanager
     def execution_context(self, span_name: str = "subagent.execute"):
-        """Context manager for execution with telemetry and budget tracking."""
         with tracer.start_as_current_span(span_name) as span:
             span.set_attribute("subagent.id", self.profile.agent_id)
             span.set_attribute("subagent.parent_id", self.profile.parent_agent_id)
-            span.set_attribute("subagent.runtime", self.profile.runtime_class)
-            span.set_attribute("subagent.trust_level", self.profile.trust_level)
+            span.set_attribute("subagent.runtime", self.profile.runtime_class.value)
+            span.set_attribute("subagent.trust_level", str(self.profile.trust_level))
+            span.set_attribute("subagent.session_id", self.profile.session_id)
 
             self.budget.start()
 
             try:
                 yield span
-            except Exception as e:
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                self.circuit_breaker.record_failure()
-                raise
-            else:
-                self.circuit_breaker.record_success()
                 span.set_status(Status(StatusCode.OK))
+            except Exception as exc:
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
+                span.record_exception(exc)
+                raise
             finally:
                 span.set_attribute("budget.execution_time_ms", self.budget.usage.execution_time_ms)
                 span.set_attribute("budget.tool_calls", self.budget.usage.tool_calls)
                 span.set_attribute("budget.tokens_used", self.budget.usage.tokens_used)
+                span.set_attribute("budget.memory_used_mb", self.budget.usage.memory_used_mb)
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=100, max=1000),
-        retry=retry_if_exception_type((TransientExecutionError,)),
+        wait=wait_exponential(multiplier=0.1, min=0.1, max=1.0),
+        retry=retry_if_exception_type(TransientExecutionError),
+        reraise=True,
     )
     async def execute(
         self,
@@ -352,50 +460,96 @@ class SubAgentExecutor(Generic[T]):
         **kwargs: Any,
     ) -> Any:
         """
-        Execute a sub-agent task with full isolation and enforcement.
+        Execute a sub-agent task.
 
-        Args:
-            task: Callable task to execute
-            idempotency_key: Unique key for idempotent execution
-            *args: Task arguments
-            **kwargs: Task keyword arguments
-
-        Returns:
-            Task result
-
-        Raises:
-            CircuitBreakerOpenError: If circuit breaker is open
-            BudgetExceededError: If resource limits exceeded
-            TrustBoundaryViolationError: If security policy violated
-            TransientExecutionError: For retryable failures
+        Retry applies only to TransientExecutionError.
         """
-        if not self.circuit_breaker.allow_execution():
-            raise CircuitBreakerOpenError("Circuit breaker open, execution blocked")
+        await self._check_security_policy()
+
+        if self.profile.is_expired():
+            raise TrustBoundaryViolationError("sub-agent profile has expired")
+
+        if not await self.circuit_breaker.allow_execution():
+            retry_after = await self.circuit_breaker.recovery_remaining_seconds()
+            raise CircuitBreakerOpenError(self.profile.agent_id, retry_after)
 
         self.idempotency_key = idempotency_key or str(uuid.uuid4())
 
-        task_result = task(*args, **kwargs)
-        if inspect.iscoroutine(task_result):
-            result = await task_result
-        else:
-            result = task_result
+        with self.execution_context():
+            try:
+                result = await self._run_with_timeout(task, *args, **kwargs)
+                self.budget.check()
+                await self.circuit_breaker.record_success()
+                return result
+            except TransientExecutionError:
+                await self.circuit_breaker.record_failure()
+                raise
+            except (ConnectionError, TimeoutError, OSError) as exc:
+                await self.circuit_breaker.record_failure()
+                raise TransientExecutionError(str(exc)) from exc
+            except BudgetExceededError:
+                await self.circuit_breaker.record_failure()
+                raise
+            except Exception:
+                # Business/domain errors do not trip the breaker.
+                raise
 
+    async def _run_with_timeout(
+        self,
+        task: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        timeout_seconds = self.profile.max_execution_time_ms / 1000.0
+
+        task_result = task(*args, **kwargs)
+        if inspect.isawaitable(task_result):
+            try:
+                result = await asyncio.wait_for(task_result, timeout=timeout_seconds)
+            except TimeoutError as exc:
+                self.budget.terminate()
+                raise BudgetExceededError(
+                    f"execution timed out after {self.profile.max_execution_time_ms}ms"
+                ) from exc
+            return result
+
+        # Synchronous task result already computed by call site.
         self.budget.check()
-        return result
+        return task_result
 
     async def _check_security_policy(self) -> None:
-        """Internal security policy validation before execution."""
-        # This will integrate with Butler Security service policy engine
-        # Implementation placeholder for policy evaluation
+        """
+        Internal security policy validation before execution.
+
+        Hook this into Butler's policy engine later.
+        """
+        if (
+            self.profile.allow_state_modification
+            and self.profile.runtime_class == RuntimeClass.IN_PROCESS
+        ):
+            trust_value = _trust_level_value(self.profile.trust_level)
+            if trust_value < 80:
+                raise TrustBoundaryViolationError(
+                    "in-process state modification requires elevated trust"
+                )
 
     def interrupt(self) -> None:
-        """Gracefully interrupt running sub-agent execution."""
         self.budget.terminate()
-        logger.info(f"Sub-agent {self.profile.agent_id} interrupted")
+        logger.info("subagent_interrupted", agent_id=self.profile.agent_id)
 
 
-# Backwards compatibility aliases - do not remove
-BudgetExceededError = BudgetExceededError
-TrustBoundaryViolationError = TrustBoundaryViolationError
-CircuitBreakerOpenError = CircuitBreakerOpenError
-TransientExecutionError = TransientExecutionError
+# ============================================================================
+# Helpers
+# ============================================================================
+
+
+def _trust_level_value(value: TrustLevel | int) -> int:
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)  # handles IntEnum-like types
+    except Exception:
+        raw = getattr(value, "value", None)
+        if isinstance(raw, int):
+            return raw
+        raise TypeError(f"Unsupported TrustLevel value: {value!r}")

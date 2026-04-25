@@ -62,7 +62,7 @@ except ImportError:
 def _get_sessions_dir() -> Path:
     """Return the sessions directory using HERMES_HOME."""
     try:
-        from integrations.hermes.hermes_constants import get_hermes_home
+        from hermes_constants import get_hermes_home
         return get_hermes_home() / "sessions"
     except ImportError:
         return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "sessions"
@@ -71,7 +71,7 @@ def _get_sessions_dir() -> Path:
 def _get_session_db():
     """Get a SessionDB instance for reading message transcripts."""
     try:
-        from integrations.hermes.hermes_state import SessionDB
+        from hermes_state import SessionDB
         return SessionDB()
     except Exception as e:
         logger.debug("SessionDB unavailable: %s", e)
@@ -98,7 +98,7 @@ def _load_sessions_index() -> dict:
 def _load_channel_directory() -> dict:
     """Load the cached channel directory for available targets."""
     try:
-        from integrations.hermes.hermes_constants import get_hermes_home
+        from hermes_constants import get_hermes_home
         directory_file = get_hermes_home() / "channel_directory.json"
     except ImportError:
         directory_file = Path(
@@ -343,7 +343,7 @@ class EventBridge:
 
         # Check if state.db has changed
         try:
-            from integrations.hermes.hermes_constants import get_hermes_home
+            from hermes_constants import get_hermes_home
             db_file = get_hermes_home() / "state.db"
         except ImportError:
             db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
@@ -433,13 +433,13 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(
             "MCP server requires the 'mcp' package. "
-            "Install with: pip install 'butler-agent[mcp]'"
+            f"Install with: {sys.executable} -m pip install 'mcp'"
         )
 
     mcp = FastMCP(
         "hermes",
         instructions=(
-            "Butler messaging bridge. Use these tools to interact with "
+            "Hermes Agent messaging bridge. Use these tools to interact with "
             "conversations across Telegram, Discord, Slack, WhatsApp, Signal, "
             "Matrix, and other connected platforms."
         ),
@@ -724,7 +724,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps({"error": "Both target and message are required"})
 
         try:
-            from integrations.hermes.tools.send_message_tool import send_message_tool
+            from tools.send_message_tool import send_message_tool
             result_str = send_message_tool(
                 {"action": "send", "target": target, "message": message}
             )
@@ -838,7 +838,7 @@ def run_mcp_server(verbose: bool = False) -> None:
     if not _MCP_SERVER_AVAILABLE:
         print(
             "Error: MCP server requires the 'mcp' package.\n"
-            "Install with: pip install 'butler-agent[mcp]'",
+            f"Install with: {sys.executable} -m pip install 'mcp'",
             file=sys.stderr,
         )
         sys.exit(1)

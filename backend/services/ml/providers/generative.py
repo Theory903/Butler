@@ -1,14 +1,14 @@
 """Media Generation — ComfyUI, FAL, Video, Music."""
 
 from __future__ import annotations
+
 import os
-import base64
-import json
-from typing import Optional, AsyncGenerator
 from abc import ABC, abstractmethod
 
 import httpx
 import structlog
+
+from services.security.safe_request import SafeRequestClient
 
 logger = structlog.get_logger(__name__)
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=30.0, read=300.0, write=30.0)
@@ -103,12 +103,15 @@ class BaseMediaProvider(ABC):
 class ComfyUIProvider(BaseMediaProvider):
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         base_url: str = "http://localhost:8188",
+        tenant_id: str | None = None,
     ):
         self._api_key = api_key or os.environ.get("COMFY_API_KEY")
         self._base_url = base_url.rstrip("/")
+        self.tenant_id = tenant_id or "default"
         self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
+        self._safe_client = SafeRequestClient(timeout=_DEFAULT_TIMEOUT)
 
     async def generate_image(self, request: MediaGenerationRequest) -> MediaGenerationResponse:
         url = f"{self._base_url}/prompt"
@@ -131,20 +134,33 @@ class ComfyUIProvider(BaseMediaProvider):
                 ]
             }
         }
-        resp = await self._client.post(url, json=payload)
+        if self._safe_client and self.tenant_id:
+            resp = await self._safe_client.post(url, self.tenant_id, json=payload)
+        else:
+            resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
-        return MediaGenerationResponse(images=[], seed=payload["prompt"]["nodes"][0]["values"]["seed"])
+        return MediaGenerationResponse(
+            images=[], seed=payload["prompt"]["nodes"][0]["values"]["seed"]
+        )
 
     async def generate_video(self, request: VideoGenerationRequest) -> MediaGenerationResponse:
         url = f"{self._base_url}/prompt"
-        payload = {"prompt": {"nodes": [{"id": 1, "type": "TextToVideo", "values": {"prompt": request.prompt}}]}
+        payload = {
+            "prompt": {
+                "nodes": [{"id": 1, "type": "TextToVideo", "values": {"prompt": request.prompt}}]
+            }
+        }
         resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
         return MediaGenerationResponse()
 
     async def generate_music(self, request: MusicGenerationRequest) -> MediaGenerationResponse:
         url = f"{self._base_url}/prompt"
-        payload = {"prompt": {"nodes": [{"id": 1, "type": "TextToMusic", "values": {"prompt": request.prompt}}]}
+        payload = {
+            "prompt": {
+                "nodes": [{"id": 1, "type": "TextToMusic", "values": {"prompt": request.prompt}}]
+            }
+        }
         resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
         return MediaGenerationResponse()
@@ -153,12 +169,15 @@ class ComfyUIProvider(BaseMediaProvider):
 class FALProvider(BaseMediaProvider):
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         base_url: str = "https://queue.fal.run",
+        tenant_id: str | None = None,
     ):
         self._api_key = api_key or os.environ.get("FAL_API_KEY")
         self._base_url = base_url.rstrip("/")
+        self.tenant_id = tenant_id or "default"
         self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
+        self._safe_client = SafeRequestClient(timeout=_DEFAULT_TIMEOUT)
 
     async def generate_image(self, request: MediaGenerationRequest) -> MediaGenerationResponse:
         url = f"{self._base_url}/image-generation"
@@ -169,7 +188,10 @@ class FALProvider(BaseMediaProvider):
             "image_size": {"width": request.width, "height": request.height},
             "num_images": request.num_images,
         }
-        resp = await self._client.post(url, json=payload, headers=headers)
+        if self._safe_client and self.tenant_id:
+            resp = await self._safe_client.post(url, self.tenant_id, json=payload, headers=headers)
+        else:
+            resp = await self._client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
         return MediaGenerationResponse(images=[], urls=data.get("urls", []))
@@ -178,7 +200,10 @@ class FALProvider(BaseMediaProvider):
         url = f"{self._base_url}/video-generation"
         headers = {"Authorization": f"Key {self._api_key}"}
         payload = {"prompt": request.prompt, "duration": request.duration}
-        resp = await self._client.post(url, json=payload, headers=headers)
+        if self._safe_client and self.tenant_id:
+            resp = await self._safe_client.post(url, self.tenant_id, json=payload, headers=headers)
+        else:
+            resp = await self._client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         return MediaGenerationResponse()
 
@@ -186,7 +211,10 @@ class FALProvider(BaseMediaProvider):
         url = f"{self._base_url}/music-generation"
         headers = {"Authorization": f"Key {self._api_key}"}
         payload = {"prompt": request.prompt, "duration": request.duration}
-        resp = await self._client.post(url, json=payload, headers=headers)
+        if self._safe_client and self.tenant_id:
+            resp = await self._safe_client.post(url, self.tenant_id, json=payload, headers=headers)
+        else:
+            resp = await self._client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         return MediaGenerationResponse()
 

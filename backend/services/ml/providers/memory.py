@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import os
-import json
-from typing import Optional, Any, AsyncGenerator
 from dataclasses import dataclass, field
 
+import httpx
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -17,8 +16,8 @@ class MemoryEntry:
     id: str
     content: str
     metadata: dict = field(default_factory=dict)
-    vector: Optional[list[float]] = None
-    created_at: Optional[str] = None
+    vector: list[float] | None = None
+    created_at: str | None = None
 
 
 class LanceDBMemoryProvider:
@@ -38,6 +37,7 @@ class LanceDBMemoryProvider:
             return
         try:
             import lancedb
+
             self._db = await lancedb.connect(self._db_path)
             self._initialized = True
             logger.info("lancedb_initialized", path=self._db_path)
@@ -49,7 +49,7 @@ class LanceDBMemoryProvider:
         self,
         content: str,
         vector: list[float],
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> str:
         entry = MemoryEntry(
             id=f"mem_{os.urandom(8).hex()}",
@@ -86,7 +86,7 @@ class ActiveMemoryProvider:
         self,
         content: str,
         vector: list[float],
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> str:
         entry_id = f"am_{os.urandom(8).hex()}"
         entry = MemoryEntry(
@@ -121,14 +121,14 @@ class ActiveMemoryProvider:
         a: list[float],
         b: list[float],
     ) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=False))
         mag_a = sum(x * x for x in a) ** 0.5
         mag_b = sum(x * x for x in b) ** 0.5
         if mag_a == 0 or mag_b == 0:
             return 0.0
         return dot / (mag_a * mag_b)
 
-    async def get(self, entry_id: str) -> Optional[MemoryEntry]:
+    async def get(self, entry_id: str) -> MemoryEntry | None:
         return self._entries.get(entry_id)
 
     async def delete(self, entry_id: str) -> None:
@@ -172,7 +172,7 @@ class WikiMemoryProvider:
             for r in results
         ]
 
-    async def get_page(self, title: str) -> Optional[MemoryEntry]:
+    async def get_page(self, title: str) -> MemoryEntry | None:
         params = {
             "action": "query",
             "titles": title,
@@ -206,6 +206,7 @@ class MemoryProviderFactory:
             return cls._instances[provider_type]
         if provider_type == "lancedb":
             from .memory import LanceDBMemoryProvider
+
             provider = LanceDBMemoryProvider()
         elif provider_type == "active":
             provider = ActiveMemoryProvider()

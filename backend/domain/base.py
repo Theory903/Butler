@@ -7,13 +7,13 @@ This enforces the boundary: domain must NOT import FastAPI.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 T = TypeVar("T")
 ID = TypeVar("ID")
 
 
-class DomainService(ABC):
+class DomainService:
     """Marker base class for all domain service contracts.
 
     Domain services define WHAT can be done.
@@ -26,7 +26,7 @@ class DomainService(ABC):
     """
 
 
-class Repository(ABC, Generic[T, ID]):
+class Repository[T, ID](ABC):
     """Base repository contract.
 
     Domain layer defines the interface.

@@ -21,21 +21,23 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, UTC
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
-
 
 # ── Delivery Class ────────────────────────────────────────────────────────────
 
-class EventDeliveryClass(str, Enum):
+
+class EventDeliveryClass(StrEnum):
     """Delivery semantics per event category."""
+
     A = "A"  # Guaranteed / exactly-once — Redis Streams + consumer group
     B = "B"  # At-least-once — Redis Streams
     C = "C"  # Fire-and-forget — Redis Pub/Sub
 
 
 # ── Base Event ────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class ButlerEvent:
@@ -45,6 +47,7 @@ class ButlerEvent:
     and delivery semantics. Downstream consumers should never receive a raw
     dict — always a typed ButlerEvent subclass.
     """
+
     event_id: str = field(default_factory=lambda: f"evt_{uuid.uuid4().hex[:12]}")
     event_type: str = field(default="butler.event.v1")
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -73,6 +76,7 @@ class ButlerEvent:
     def to_sse(self) -> str:
         """SSE-formatted event string for streaming endpoints."""
         import json
+
         return f"data: {json.dumps(self.to_dict())}\n\n"
 
 
@@ -80,9 +84,11 @@ class ButlerEvent:
 # These are the ONLY events that reach API consumers via SSE/WebSocket.
 # Hermes internal events (delta, tool_use, end_turn, thinking) never appear here.
 
+
 @dataclass
 class StreamStartEvent(ButlerEvent):
     """Stream opened. First event on any streaming response."""
+
     event_type: str = "realtime.start.v1"
     delivery_class: EventDeliveryClass = EventDeliveryClass.C
 
@@ -94,6 +100,7 @@ class StreamTokenEvent(ButlerEvent):
     Hermes 'delta' events → normalized to this type.
     'thinking' blocks from Hermes are SUPPRESSED and never become this type.
     """
+
     event_type: str = "realtime.token.v1"
     delivery_class: EventDeliveryClass = EventDeliveryClass.C
 
@@ -110,6 +117,7 @@ class StreamToolCallEvent(ButlerEvent):
     Shows tool name + params only if tool risk tier is L0 (safe_auto).
     L1+ tools show name only; params are omitted for privacy/security.
     """
+
     event_type: str = "realtime.tool_call.v1"
     delivery_class: EventDeliveryClass = EventDeliveryClass.C
 
@@ -126,6 +134,7 @@ class StreamToolResultEvent(ButlerEvent):
     Hermes 'tool_result' content blocks → normalized to this type.
     Full result payload only for L0 tools. L1+ show status only.
     """
+
     event_type: str = "realtime.tool_result.v1"
     delivery_class: EventDeliveryClass = EventDeliveryClass.C
 
@@ -143,6 +152,7 @@ class StreamApprovalRequiredEvent(ButlerEvent):
     Delivery class A: this event must be durable. It initiates an
     ApprovalRequest in PostgreSQL and must survive restarts.
     """
+
     event_type: str = "approval.requested.v1"
     delivery_class: EventDeliveryClass = EventDeliveryClass.A
     durable: bool = True
@@ -158,11 +168,12 @@ class StreamApprovalRequiredEvent(ButlerEvent):
 @dataclass
 class StreamStatusEvent(ButlerEvent):
     """Workflow phase change or progress update."""
+
     event_type: str = "realtime.status.v1"
     delivery_class: EventDeliveryClass = EventDeliveryClass.B
 
     def __post_init__(self):
-        self.payload.setdefault("phase", "")       # planning, executing, paused, compensating
+        self.payload.setdefault("phase", "")  # planning, executing, paused, compensating
         self.payload.setdefault("step_index", 0)
         self.payload.setdefault("total_steps", 0)
         self.payload.setdefault("message", "")
@@ -175,6 +186,7 @@ class StreamFinalEvent(ButlerEvent):
     Hermes 'end_turn' → normalized to this type.
     Includes token usage summary for billing.
     """
+
     event_type: str = "realtime.final.v1"
     delivery_class: EventDeliveryClass = EventDeliveryClass.B
 
@@ -192,11 +204,12 @@ class StreamErrorEvent(ButlerEvent):
 
     Hermes internal errors → classified and normalized before forwarding.
     """
+
     event_type: str = "realtime.error.v1"
     delivery_class: EventDeliveryClass = EventDeliveryClass.B
 
     def __post_init__(self):
-        self.payload.setdefault("type", "")           # RFC 9457 problem type URI
+        self.payload.setdefault("type", "")  # RFC 9457 problem type URI
         self.payload.setdefault("title", "")
         self.payload.setdefault("status", 500)
         self.payload.setdefault("detail", "")
@@ -204,6 +217,7 @@ class StreamErrorEvent(ButlerEvent):
 
 
 # ── Domain Events (internal bus / Redis Streams) ──────────────────────────────
+
 
 @dataclass
 class TaskStartedEvent(ButlerEvent):
@@ -302,7 +316,7 @@ class MemoryStoredEvent(ButlerEvent):
     def __post_init__(self):
         self.payload.setdefault("memory_id", "")
         self.payload.setdefault("memory_type", "")
-        self.payload.setdefault("tiers", [])           # which storage tiers received the write
+        self.payload.setdefault("tiers", [])  # which storage tiers received the write
         self.payload.setdefault("importance", 0.5)
 
 
@@ -314,7 +328,7 @@ class MemoryRetrievedEvent(ButlerEvent):
     def __post_init__(self):
         self.payload.setdefault("query_type", "")
         self.payload.setdefault("result_count", 0)
-        self.payload.setdefault("source_tiers", [])    # hot|warm|cold|graph
+        self.payload.setdefault("source_tiers", [])  # hot|warm|cold|graph
 
 
 @dataclass
@@ -362,6 +376,6 @@ class SessionEndedEvent(ButlerEvent):
     delivery_class: EventDeliveryClass = EventDeliveryClass.B
 
     def __post_init__(self):
-        self.payload.setdefault("reason", "normal")   # normal|timeout|reset|error
+        self.payload.setdefault("reason", "normal")  # normal|timeout|reset|error
         self.payload.setdefault("turns", 0)
         self.payload.setdefault("duration_s", 0)

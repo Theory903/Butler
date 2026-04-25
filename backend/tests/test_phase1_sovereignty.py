@@ -20,52 +20,49 @@ No database required. No Hermes network calls. No real LLM.
 from __future__ import annotations
 
 import asyncio
-import pytest
 from dataclasses import dataclass, field
-from unittest.mock import AsyncMock, MagicMock, patch
-from typing import AsyncGenerator
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from domain.events.normalizer import EventNormalizer
 
 # ── Phase 0 imports ──────────────────────────────────────────────────────────
 from domain.events.schemas import (
-    ButlerEvent,
-    StreamTokenEvent,
+    StreamErrorEvent,
     StreamFinalEvent,
+    StreamTokenEvent,
     StreamToolCallEvent,
     StreamToolResultEvent,
-    StreamApprovalRequiredEvent,
-    StreamErrorEvent,
 )
-from domain.events.normalizer import EventNormalizer
 from domain.memory.write_policy import (
     MemoryWritePolicy,
     MemoryWriteRequest,
     StorageTier,
 )
-from domain.orchestrator.runtime_kernel import (
-    RuntimeKernel,
-    ExecutionContext,
-    ExecutionStrategy,
-)
-from domain.tools.hermes_compiler import (
-    HermesToolCompiler,
-    ButlerToolSpec,
-    RiskTier,
-)
 
 # ── Phase 1A imports ──────────────────────────────────────────────────────────
 from domain.orchestrator.hermes_agent_backend import (
-    HermesAgentBackend,
-    ButlerToolPolicyGate,
-    ToolPolicyViolation,
     ApprovalRequired,
     AssuranceInsufficient,
+    ButlerToolPolicyGate,
+    ToolPolicyViolation,
     _classify_exception,
 )
-
+from domain.orchestrator.runtime_kernel import (
+    ExecutionStrategy,
+    RuntimeKernel,
+)
+from domain.tools.hermes_compiler import (
+    ButlerToolSpec,
+    HermesToolCompiler,
+    RiskTier,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def compiler():
@@ -79,7 +76,10 @@ def compiled_specs(compiler):
     for name, meta in [
         ("web_search", {"description": "Search the web", "input_schema": {}, "output_schema": {}}),
         ("write_file", {"description": "Write file", "input_schema": {}, "output_schema": {}}),
-        ("run_terminal", {"description": "Run terminal command", "input_schema": {}, "output_schema": {}}),
+        (
+            "run_terminal",
+            {"description": "Run terminal command", "input_schema": {}, "output_schema": {}},
+        ),
     ]:
         spec = compiler.compile(name, meta)
         specs[spec.name] = spec
@@ -146,8 +146,8 @@ class _FakeWorkflow:
 # Test 1: RuntimeKernel strategy selection
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestRuntimeKernelStrategy:
 
+class TestRuntimeKernelStrategy:
     def _make_kernel(self):
         return RuntimeKernel()  # No backends wired — strategy selection only
 
@@ -160,7 +160,9 @@ class TestRuntimeKernelStrategy:
     def test_deterministic_for_single_query(self):
         kernel = self._make_kernel()
         task = _FakeTask(task_type="memory_recall")
-        workflow = _FakeWorkflow(mode="macro", plan_schema={"steps": [{}], "requires_reasoning": False})
+        workflow = _FakeWorkflow(
+            mode="macro", plan_schema={"steps": [{}], "requires_reasoning": False}
+        )
         assert kernel.choose_strategy(task, workflow) == ExecutionStrategy.DETERMINISTIC
 
     def test_workflow_dag_for_durable_mode(self):
@@ -192,8 +194,8 @@ class TestRuntimeKernelStrategy:
 # Test 2: ButlerToolPolicyGate
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestToolPolicyGate:
 
+class TestToolPolicyGate:
     def test_l0_tool_allowed_free_tier(self, policy_gate_free):
         """L0 (web_search) is allowed on free tier, no approval needed."""
         spec = policy_gate_free.check("web_search", {})
@@ -254,8 +256,8 @@ class TestToolPolicyGate:
 # Test 3: HermesToolCompiler
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestHermesToolCompiler:
 
+class TestHermesToolCompiler:
     def test_compile_web_search_is_l0(self, compiler):
         spec = compiler.compile("web_search", {"description": "Search web"})
         assert spec.risk_tier == RiskTier.L0
@@ -302,31 +304,43 @@ class TestHermesToolCompiler:
 # Test 4: EventNormalizer
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestEventNormalizer:
 
+class TestEventNormalizer:
     def test_text_delta_becomes_stream_token(self, normalizer):
-        events = list(normalizer.normalize({
-            "type": "content_block_delta",
-            "delta": {"type": "text_delta", "text": "Hello"},
-        }))
+        events = list(
+            normalizer.normalize(
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "Hello"},
+                }
+            )
+        )
         assert len(events) == 1
         assert isinstance(events[0], StreamTokenEvent)
         assert events[0].payload["content"] == "Hello"
 
     def test_thinking_delta_suppressed(self, normalizer):
         """CRITICAL: thinking blocks must NEVER reach Butler consumers."""
-        events = list(normalizer.normalize({
-            "type": "content_block_delta",
-            "delta": {"type": "thinking_delta", "thinking": "I should search first..."},
-        }))
+        events = list(
+            normalizer.normalize(
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "I should search first..."},
+                }
+            )
+        )
         assert len(events) == 0
 
     def test_message_stop_becomes_final(self, normalizer):
-        events = list(normalizer.normalize({
-            "type": "message_stop",
-            "_butler_usage": {"input_tokens": 100, "output_tokens": 50},
-            "_butler_duration_ms": 1200,
-        }))
+        events = list(
+            normalizer.normalize(
+                {
+                    "type": "message_stop",
+                    "_butler_usage": {"input_tokens": 100, "output_tokens": 50},
+                    "_butler_duration_ms": 1200,
+                }
+            )
+        )
         final = next((e for e in events if isinstance(e, StreamFinalEvent)), None)
         assert final is not None
         assert final.payload["input_tokens"] == 100
@@ -334,10 +348,14 @@ class TestEventNormalizer:
         assert final.payload["duration_ms"] == 1200
 
     def test_error_event_classified(self, normalizer):
-        events = list(normalizer.normalize({
-            "type": "error",
-            "error": {"type": "overloaded_error", "message": "Server overloaded"},
-        }))
+        events = list(
+            normalizer.normalize(
+                {
+                    "type": "error",
+                    "error": {"type": "overloaded_error", "message": "Server overloaded"},
+                }
+            )
+        )
         error_event = next((e for e in events if isinstance(e, StreamErrorEvent)), None)
         assert error_event is not None
         assert "overloaded" in error_event.payload["type"]
@@ -345,46 +363,62 @@ class TestEventNormalizer:
         assert error_event.payload["status"] == 503
 
     def test_tool_use_block_emits_two_events(self, normalizer):
-        events = list(normalizer.normalize({
-            "type": "content_block_start",
-            "content_block": {"type": "tool_use", "name": "web_search", "id": "tu_123"},
-        }))
+        events = list(
+            normalizer.normalize(
+                {
+                    "type": "content_block_start",
+                    "content_block": {"type": "tool_use", "name": "web_search", "id": "tu_123"},
+                }
+            )
+        )
         assert any(isinstance(e, StreamToolCallEvent) for e in events)
 
     def test_tool_result_success(self, normalizer):
-        events = list(normalizer.normalize({
-            "type": "tool_result",
-            "tool_name": "web_search",
-            "tool_use_id": "tu_123",
-            "is_error": False,
-            "duration_ms": 300,
-        }))
+        events = list(
+            normalizer.normalize(
+                {
+                    "type": "tool_result",
+                    "tool_name": "web_search",
+                    "tool_use_id": "tu_123",
+                    "is_error": False,
+                    "duration_ms": 300,
+                }
+            )
+        )
         assert any(isinstance(e, StreamToolResultEvent) for e in events)
         result = next(e for e in events if isinstance(e, StreamToolResultEvent))
         assert result.payload["success"] is True
 
     def test_l1_tool_result_visible_result_suppressed(self, normalizer):
         """L1+ tool results should not expose payload to stream."""
-        events = list(normalizer.normalize({
-            "type": "tool_result",
-            "tool_name": "write_file",  # Not in _SAFE_AUTO_TOOLS
-            "tool_use_id": "tu_456",
-            "is_error": False,
-            "content": "File written successfully",
-        }))
+        events = list(
+            normalizer.normalize(
+                {
+                    "type": "tool_result",
+                    "tool_name": "write_file",  # Not in _SAFE_AUTO_TOOLS
+                    "tool_use_id": "tu_456",
+                    "is_error": False,
+                    "content": "File written successfully",
+                }
+            )
+        )
         result = next((e for e in events if isinstance(e, StreamToolResultEvent)), None)
         assert result is not None
         assert result.payload["visible_result"] is None  # Suppressed
 
     def test_l0_tool_result_visible_result_shown(self, normalizer):
         """L0 safe_auto tool results can show payload."""
-        events = list(normalizer.normalize({
-            "type": "tool_result",
-            "tool_name": "web_search",  # In _SAFE_AUTO_TOOLS
-            "tool_use_id": "tu_789",
-            "is_error": False,
-            "content": [{"text": "Python 3.13 released"}],
-        }))
+        events = list(
+            normalizer.normalize(
+                {
+                    "type": "tool_result",
+                    "tool_name": "web_search",  # In _SAFE_AUTO_TOOLS
+                    "tool_use_id": "tu_789",
+                    "is_error": False,
+                    "content": [{"text": "Python 3.13 released"}],
+                }
+            )
+        )
         result = next((e for e in events if isinstance(e, StreamToolResultEvent)), None)
         assert result is not None
         assert result.payload["visible_result"] is not None
@@ -394,8 +428,8 @@ class TestEventNormalizer:
 # Test 5: MemoryWritePolicy
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestMemoryWritePolicy:
 
+class TestMemoryWritePolicy:
     def test_pii_blocked_from_cold_tier(self, write_policy):
         """PII items MUST NOT go to pyturboquant cold tier — erasure impossible.
         The policy routes old PII episodes to cold tier, but enforce_pii_rules
@@ -416,8 +450,10 @@ class TestMemoryWritePolicy:
         )
         # Non-PII cold writes must still be allowed
         non_pii_req = MemoryWriteRequest(
-            memory_type="episode", content="Generic memory",
-            age_days=60, has_pii=False,
+            memory_type="episode",
+            content="Generic memory",
+            age_days=60,
+            has_pii=False,
         )
         assert write_policy.enforce_pii_rules(non_pii_req, StorageTier.COLD) is True
 
@@ -482,8 +518,8 @@ class TestMemoryWritePolicy:
 # Test 6: Error classification
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestErrorClassification:
 
+class TestErrorClassification:
     def _make_exc(self, name: str) -> Exception:
         """Create an exception with a specific class name for classification."""
         exc_cls = type(name, (Exception,), {})
@@ -520,8 +556,8 @@ class TestErrorClassification:
 # Test 7: ButlerToolSpec integrity checks
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerToolSpec:
 
+class TestButlerToolSpec:
     def test_l0_tools_have_no_approval(self, compiler):
         """Every L0 tool must have approval_mode=none."""
         l0_tools = ["web_search", "memory_recall", "session_search", "list_files", "clarify"]
@@ -556,12 +592,13 @@ class TestButlerToolSpec:
 # Test 8: ButlerToolDispatch — output parsing and tier visibility
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerToolDispatch:
 
-    from domain.tools.hermes_dispatcher import ButlerToolDispatch, HermesEnvBridge, ButlerToolResult
+class TestButlerToolDispatch:
+    from domain.tools.hermes_dispatcher import ButlerToolDispatch, ButlerToolResult, HermesEnvBridge
 
     def _make_dispatcher(self, compiled_specs, account_tier="free"):
         from domain.tools.hermes_dispatcher import ButlerToolDispatch, HermesEnvBridge
+
         return ButlerToolDispatch(
             compiled_specs=compiled_specs,
             env_bridge=HermesEnvBridge(),
@@ -571,28 +608,28 @@ class TestButlerToolDispatch:
         )
 
     def test_parse_json_success(self, compiled_specs):
-        from domain.tools.hermes_dispatcher import ButlerToolDispatch, HermesEnvBridge
+
         d = self._make_dispatcher(compiled_specs)
         parsed, is_error = d._parse_raw_output('{"result": "ok"}', "web_search")
         assert parsed == {"result": "ok"}
         assert is_error is False
 
     def test_parse_json_error_key(self, compiled_specs):
-        from domain.tools.hermes_dispatcher import ButlerToolDispatch, HermesEnvBridge
+
         d = self._make_dispatcher(compiled_specs)
         parsed, is_error = d._parse_raw_output('{"error": "network timeout"}', "web_search")
         assert is_error is True
         assert parsed["error"] == "network timeout"
 
     def test_parse_non_json_plain_text_success(self, compiled_specs):
-        from domain.tools.hermes_dispatcher import ButlerToolDispatch, HermesEnvBridge
+
         d = self._make_dispatcher(compiled_specs)
         parsed, is_error = d._parse_raw_output("Search results here", "web_search")
         assert is_error is False
         assert "text" in parsed
 
     def test_parse_non_json_error_prefix(self, compiled_specs):
-        from domain.tools.hermes_dispatcher import ButlerToolDispatch, HermesEnvBridge
+
         d = self._make_dispatcher(compiled_specs)
         parsed, is_error = d._parse_raw_output("Error: connection refused", "web_search")
         assert is_error is True
@@ -600,10 +637,11 @@ class TestButlerToolDispatch:
     def test_l0_output_visible(self, compiler):
         """L0 tool dispatch: output is visible to caller."""
         from domain.tools.hermes_dispatcher import ButlerToolDispatch, HermesEnvBridge
+
         specs = {
             "web_search": compiler.compile("web_search", {}),
         }
-        d = ButlerToolDispatch(
+        ButlerToolDispatch(
             compiled_specs=specs,
             env_bridge=HermesEnvBridge(),
             account_tier="free",
@@ -613,6 +651,7 @@ class TestButlerToolDispatch:
         # Simulate parsed output visibility
         spec = specs["web_search"]
         from domain.tools.hermes_compiler import RiskTier
+
         assert spec.risk_tier == RiskTier.L0
         # L0: output field is populated (not suppressed)
         result_output = {"result": "ok"} if spec.risk_tier == RiskTier.L0 else None
@@ -622,6 +661,7 @@ class TestButlerToolDispatch:
         """L2 tool dispatch: output is NOT returned to caller. Only audit record has it."""
         spec = compiler.compile("write_file", {})
         from domain.tools.hermes_compiler import RiskTier
+
         assert spec.risk_tier == RiskTier.L2
         # L2: visible output is None (suppressed in ButlerToolResult.output)
         visible_output = {"result": "ok"} if spec.risk_tier == RiskTier.L0 else None
@@ -632,10 +672,11 @@ class TestButlerToolDispatch:
 # Test 9: HermesEnvBridge — sandbox profile mapping
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestHermesEnvBridge:
 
+class TestHermesEnvBridge:
     def _make_bridge(self):
         from domain.tools.hermes_dispatcher import HermesEnvBridge
+
         return HermesEnvBridge()
 
     def _spec_with_sandbox(self, compiler, tool_name, sandbox):
@@ -685,11 +726,10 @@ class TestHermesEnvBridge:
 # Test 10: ToolExecutor Phase 2 — spec-first lookup and param redaction
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestToolExecutorPhase2:
 
+class TestToolExecutorPhase2:
     def _make_executor(self, compiler, tools=None):
         """Build a ToolExecutor with mocked DB/Redis."""
-        from unittest.mock import AsyncMock, MagicMock
         from services.tools.executor import ToolExecutor
         from services.tools.verification import ToolVerifier
 
@@ -700,7 +740,11 @@ class TestToolExecutorPhase2:
         db.add = MagicMock()
         db.flush = AsyncMock()
         db.commit = AsyncMock()
-        db.execute = AsyncMock(return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(first=MagicMock(return_value=None)))))
+        db.execute = AsyncMock(
+            return_value=MagicMock(
+                scalars=MagicMock(return_value=MagicMock(first=MagicMock(return_value=None)))
+            )
+        )
 
         redis = AsyncMock()
         redis.get = AsyncMock(return_value=None)
@@ -717,34 +761,40 @@ class TestToolExecutorPhase2:
 
     def test_unknown_tool_raises_precondition_failed(self, compiler):
         """Tool not in compiled specs must raise immediately — no Hermes call."""
-        import asyncio
+
         executor = self._make_executor(compiler, tools=["web_search"])
         with pytest.raises(Exception) as exc_info:
-            asyncio.run(
-                executor.execute("mystery_tool", {}, account_id="acct_123")
-            )
+            asyncio.run(executor.execute("mystery_tool", {}, account_id="acct_123"))
         # ToolErrors.precondition_failed() returns a Problem instance
         # The detail field carries the message; str() only shows HTTP title.
         exc = exc_info.value
         detail = getattr(exc, "detail", str(exc))
-        assert "compiled" in detail.lower() or "not found" in detail.lower() or (
-            "precondition" in type(exc).__name__.lower() or
-            "precondition" in str(type(exc)).lower()
+        assert (
+            "compiled" in detail.lower()
+            or "not found" in detail.lower()
+            or (
+                "precondition" in type(exc).__name__.lower()
+                or "precondition" in str(type(exc)).lower()
+            )
         )
 
     def test_blocked_tool_raises_immediately(self, compiler):
         """FORBIDDEN tool must raise before dispatch — spec.blocked check."""
-        import asyncio
-        specs = {"bad_tool": ButlerToolSpec(
-            name="bad_tool",
-            hermes_name="bad_tool",
-            blocked=True,
-            block_reason="Explicitly forbidden",
-            risk_tier=RiskTier.L3,
-        )}
-        from unittest.mock import AsyncMock, MagicMock
+
+        specs = {
+            "bad_tool": ButlerToolSpec(
+                name="bad_tool",
+                hermes_name="bad_tool",
+                blocked=True,
+                block_reason="Explicitly forbidden",
+                risk_tier=RiskTier.L3,
+            )
+        }
+        from unittest.mock import AsyncMock
+
         from services.tools.executor import ToolExecutor
         from services.tools.verification import ToolVerifier
+
         executor = ToolExecutor(
             db=AsyncMock(),
             redis=AsyncMock(),
@@ -752,19 +802,19 @@ class TestToolExecutorPhase2:
             compiled_specs=specs,
         )
         with pytest.raises(Exception) as exc_info:
-            asyncio.run(
-                executor.execute("bad_tool", {}, account_id="acct_123")
-            )
+            asyncio.run(executor.execute("bad_tool", {}, account_id="acct_123"))
         exc = exc_info.value
         detail = getattr(exc, "detail", str(exc))
         assert (
-            "FORBIDDEN" in detail or "forbidden" in detail.lower() or
-            "blocked" in detail.lower() or "Precondition" in str(type(exc))
+            "FORBIDDEN" in detail
+            or "forbidden" in detail.lower()
+            or "blocked" in detail.lower()
+            or "Precondition" in str(type(exc))
         )
 
     def test_param_redaction_l1_plus(self, compiler):
         """L1+ tool audit parameters must have sensitive fields redacted."""
-        from services.tools.executor import ToolExecutor
+
         spec = compiler.compile("transcribe_audio", {})  # L1
         executor = self._make_executor(compiler, tools=["transcribe_audio"])
         params = {"file_path": "/audio.mp3", "api_key": "sk-real-key-here"}
@@ -774,7 +824,7 @@ class TestToolExecutorPhase2:
 
     def test_param_redaction_l0_passthrough(self, compiler):
         """L0 tool audit parameters must NOT be redacted (safe_auto)."""
-        from services.tools.executor import ToolExecutor
+
         spec = compiler.compile("web_search", {})  # L0
         executor = self._make_executor(compiler, tools=["web_search"])
         params = {"query": "python news", "safe_search": True}
@@ -783,11 +833,11 @@ class TestToolExecutorPhase2:
 
     def test_compensation_ref_stored_for_file_write(self, compiler):
         """write_file must produce a compensation_ref in dispatch result."""
-        from domain.tools.hermes_dispatcher import ButlerToolDispatch, HermesEnvBridge, ButlerToolResult
-        from domain.tools.hermes_compiler import RiskTier
+
         specs = {"write_file": compiler.compile("write_file", {})}
         spec = specs["write_file"]
         assert spec.has_compensation is True
         # Verify compensation ref would be built
         from domain.tools.hermes_dispatcher import _COMPENSATION_HANDLERS
+
         assert "write_file" in _COMPENSATION_HANDLERS

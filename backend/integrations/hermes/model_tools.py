@@ -27,7 +27,7 @@ import threading
 from typing import Dict, Any, List, Optional, Tuple
 
 from integrations.hermes.tools.registry import discover_builtin_tools, registry
-from integrations.hermes.toolsets import resolve_toolset, validate_toolset
+from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +108,15 @@ def _run_async(coro):
     if loop and loop.is_running():
         # Inside an async context (gateway, RL env) — run in a fresh thread.
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(asyncio.run, coro)
+        try:
             return future.result(timeout=300)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids
@@ -133,14 +139,14 @@ discover_builtin_tools()
 
 # MCP tool discovery (external MCP servers from config)
 try:
-    from integrations.hermes.tools.mcp_tool import discover_mcp_tools
+    from tools.mcp_tool import discover_mcp_tools
     discover_mcp_tools()
 except Exception as e:
     logger.debug("MCP tool discovery failed: %s", e)
 
 # Plugin tool discovery (user/project/pip plugins)
 try:
-    from integrations.hermes.hermes_cli.plugins import discover_plugins
+    from hermes_cli.plugins import discover_plugins
     discover_plugins()
 except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
@@ -231,7 +237,7 @@ def get_tool_definitions(
                     print(f"⚠️  Unknown toolset: {toolset_name}")
 
     elif disabled_toolsets:
-        from integrations.hermes.toolsets import get_all_toolsets
+        from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
@@ -250,7 +256,7 @@ def get_tool_definitions(
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
-        from integrations.hermes.toolsets import get_all_toolsets
+        from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
@@ -274,13 +280,38 @@ def get_tool_definitions(
     # execute_code" even when the API key isn't configured or the toolset is
     # disabled (#560-discord).
     if "execute_code" in available_tool_names:
-        from integrations.hermes.tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema
+        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
         sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
-        dynamic_schema = build_execute_code_schema(sandbox_enabled)
+        dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
         for i, td in enumerate(filtered_tools):
             if td.get("function", {}).get("name") == "execute_code":
                 filtered_tools[i] = {"type": "function", "function": dynamic_schema}
                 break
+
+    # Rebuild discord_server schema based on the bot's privileged intents
+    # (detected from GET /applications/@me) and the user's action allowlist
+    # in config.  Hides actions the bot's intents don't support so the
+    # model never attempts them, and annotates fetch_messages when the
+    # MESSAGE_CONTENT intent is missing.
+    if "discord_server" in available_tool_names:
+        try:
+            from tools.discord_tool import get_dynamic_schema
+            dynamic = get_dynamic_schema()
+        except Exception:  # pragma: no cover — defensive, fall back to static
+            dynamic = None
+        if dynamic is None:
+            # Tool filtered out entirely (empty allowlist or detection disabled
+            # the only remaining actions).  Drop it from the schema list.
+            filtered_tools = [
+                t for t in filtered_tools
+                if t.get("function", {}).get("name") != "discord_server"
+            ]
+            available_tool_names.discard("discord_server")
+        else:
+            for i, td in enumerate(filtered_tools):
+                if td.get("function", {}).get("name") == "discord_server":
+                    filtered_tools[i] = {"type": "function", "function": dynamic}
+                    break
 
     # Strip web tool cross-references from browser_navigate description when
     # web_search / web_extract are not available.  The static schema says
@@ -311,6 +342,18 @@ def get_tool_definitions(
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+
+    # Sanitize schemas for broad backend compatibility. llama.cpp's
+    # json-schema-to-grammar converter (used by its OAI server to build
+    # GBNF tool-call parsers) rejects some shapes that cloud providers
+    # silently accept — bare "type": "object" with no properties,
+    # string-valued schema nodes from malformed MCP servers, etc. This
+    # is a no-op for schemas that are already well-formed.
+    try:
+        from integrations.hermes.tools.schema_sanitizer import sanitize_tool_schemas
+        filtered_tools = sanitize_tool_schemas(filtered_tools)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning("Schema sanitization skipped: %s", e)
 
     return filtered_tools
 
@@ -387,6 +430,31 @@ def _coerce_value(value: str, expected_type):
         return _coerce_number(value, integer_only=(expected_type == "integer"))
     if expected_type == "boolean":
         return _coerce_boolean(value)
+    if expected_type == "array":
+        return _coerce_json(value, list)
+    if expected_type == "object":
+        return _coerce_json(value, dict)
+    return value
+
+
+def _coerce_json(value: str, expected_python_type: type):
+    """Parse *value* as JSON when the schema expects an array or object.
+
+    Handles model output drift where a complex oneOf/discriminated-union schema
+    causes the LLM to emit the array/object as a JSON string instead of a native
+    structure.  Returns the original string if parsing fails or yields the wrong
+    Python type.
+    """
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError):
+        return value
+    if isinstance(parsed, expected_python_type):
+        logger.debug(
+            "coerce_tool_args: coerced string to %s via json.loads",
+            expected_python_type.__name__,
+        )
+        return parsed
     return value
 
 
@@ -457,7 +525,7 @@ def handle_function_call(
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
-                from integrations.hermes.hermes_cli.plugins import get_pre_tool_call_block_message
+                from hermes_cli.plugins import get_pre_tool_call_block_message
                 block_message = get_pre_tool_call_block_message(
                     function_name,
                     function_args,
@@ -474,7 +542,7 @@ def handle_function_call(
             # Still fire the hook for observers — just don't check for blocking
             # (the caller already did that).
             try:
-                from integrations.hermes.hermes_cli.plugins import invoke_hook
+                from hermes_cli.plugins import invoke_hook
                 invoke_hook(
                     "pre_tool_call",
                     tool_name=function_name,
@@ -490,7 +558,7 @@ def handle_function_call(
         # so the *consecutive* counter resets (reads after other work are fine).
         if function_name not in _READ_SEARCH_TOOLS:
             try:
-                from integrations.hermes.tools.file_tools import notify_other_tool_call
+                from tools.file_tools import notify_other_tool_call
                 notify_other_tool_call(task_id or "default")
             except Exception:
                 pass  # file_tools may not be loaded yet
@@ -512,7 +580,7 @@ def handle_function_call(
             )
 
         try:
-            from integrations.hermes.hermes_cli.plugins import invoke_hook
+            from hermes_cli.plugins import invoke_hook
             invoke_hook(
                 "post_tool_call",
                 tool_name=function_name,
@@ -522,6 +590,30 @@ def handle_function_call(
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
             )
+        except Exception:
+            pass
+
+        # Generic tool-result canonicalization seam: plugins receive the
+        # final result string (JSON, usually) and may replace it by
+        # returning a string from transform_tool_result. Runs after
+        # post_tool_call (which stays observational) and before the result
+        # is appended back into conversation context. Fail-open; the first
+        # valid string return wins; non-string returns are ignored.
+        try:
+            from hermes_cli.plugins import invoke_hook
+            hook_results = invoke_hook(
+                "transform_tool_result",
+                tool_name=function_name,
+                args=function_args,
+                result=result,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
+            for hook_result in hook_results:
+                if isinstance(hook_result, str):
+                    result = hook_result
+                    break
         except Exception:
             pass
 

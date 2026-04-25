@@ -1,80 +1,64 @@
-"""ButlerCircuitBreaker — Phase 6.
+"""ButlerCircuitBreaker — production-grade dependency circuit breaker.
 
-Per-dependency circuit breaker implementing the three-state model:
+Three-state model:
   CLOSED     — normal operation; failures are counted
   OPEN       — dependency considered failed; calls rejected immediately
-  HALF_OPEN  — probe mode; one test call allowed through
+  HALF_OPEN  — controlled probe mode; exactly one probe call allowed through
 
 State transitions:
-  CLOSED  → OPEN       when failure_count >= threshold within window_s
-  OPEN    → HALF_OPEN  after recovery_s seconds have elapsed
-  HALF_OPEN → CLOSED   if the probe call succeeds
-  HALF_OPEN → OPEN     if the probe call fails
+  CLOSED    -> OPEN       when failure_count >= threshold within window_s
+  OPEN      -> HALF_OPEN  after recovery_s seconds have elapsed
+  HALF_OPEN -> CLOSED     when the probe succeeds
+  HALF_OPEN -> OPEN       when the probe fails
 
-Sovereignty rules:
-  - Each upstream dependency (Redis, PostgreSQL, Qdrant, Neo4j, vLLM,
-    external APIs) gets its own independent breaker.
-  - Breaker state is in-process only (no Redis). Restarts reset to CLOSED.
-    This is intentional — we don't want a stale OPEN to survive a fix.
-  - ButlerCircuitBreaker is a pure synchronous class. Async wrappers are
-    on the caller side (`async with breaker.guard():`).
-  - The circuit breaker NEVER catches non-infrastructure errors (e.g.
-    ToolPolicyViolation, MemoryWritePolicy decisions). Only IOError,
-    ConnectionError, TimeoutError, and explicit `record_failure()` calls.
-
-Usage:
-    breaker = ButlerCircuitBreaker("redis", threshold=5, window_s=60, recovery_s=30)
-
-    async def _redis_ping():
-        await redis.ping()
-
-    async with breaker.guard(_redis_ping):
-        ...  # runs only when CLOSED or HALF_OPEN probe allowed
-
-    # Or explicit:
-    if breaker.allow_request():
-        try:
-            result = await redis.get(key)
-            breaker.record_success()
-        except Exception:
-            breaker.record_failure()
+Design rules:
+- breaker state is process-local by design
+- only infrastructure-class exceptions trip the breaker automatically
+- application/business/policy exceptions are never swallowed
+- HALF_OPEN allows only one in-flight probe
+- safe for concurrent async callers within a single process
 """
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import time
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import AsyncIterator, Callable, Awaitable
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
 
 import structlog
 
 logger = structlog.get_logger(__name__)
 
 
-class CircuitState(str, Enum):
-    CLOSED    = "closed"
-    OPEN      = "open"
+InfrastructureExceptionTypes = (
+    ConnectionError,
+    TimeoutError,
+    OSError,
+    IOError,
+)
+
+
+class CircuitState(StrEnum):
+    CLOSED = "closed"
+    OPEN = "open"
     HALF_OPEN = "half_open"
 
 
 class CircuitOpenError(Exception):
     """Raised when a call is rejected because the circuit is OPEN."""
 
-    def __init__(self, name: str, opens_at: float) -> None:
+    def __init__(self, name: str, retry_after_s: float) -> None:
         self.name = name
-        self.opens_at = opens_at
-        recovery_in = max(0.0, opens_at - time.monotonic())
-        super().__init__(
-            f"Circuit '{name}' is OPEN. Recovery probe in {recovery_in:.1f}s."
-        )
+        self.retry_after_s = max(0.0, float(retry_after_s))
+        super().__init__(f"Circuit '{name}' is OPEN. Retry after {self.retry_after_s:.1f}s.")
 
 
-@dataclass
+@dataclass(slots=True, frozen=True)
 class CircuitStats:
-    """Snapshot of a circuit breaker's current state."""
     name: str
     state: CircuitState
     failure_count: int
@@ -85,82 +69,102 @@ class CircuitStats:
     threshold: int
     window_s: float
     recovery_s: float
+    half_open_probe_in_flight: bool
 
     @property
     def recovery_remaining_s(self) -> float:
-        if self.state == CircuitState.OPEN and self.opened_at:
-            remaining = (self.opened_at + self.recovery_s) - time.monotonic()
-            return max(0.0, remaining)
-        return 0.0
+        if self.state != CircuitState.OPEN or self.opened_at is None:
+            return 0.0
+        return max(0.0, (self.opened_at + self.recovery_s) - time.monotonic())
 
 
 class ButlerCircuitBreaker:
-    """Three-state (CLOSED/OPEN/HALF_OPEN) circuit breaker.
-
-    Thread-safe for async contexts (single-threaded event loop per process).
-    """
+    """Async-safe circuit breaker for infrastructure dependencies."""
 
     def __init__(
         self,
         name: str,
-        threshold: int = 5,        # failures before opening
-        window_s: float = 60.0,    # rolling window for failure counting
-        recovery_s: float = 30.0,  # seconds before OPEN → HALF_OPEN
+        threshold: int = 5,
+        window_s: float = 60.0,
+        recovery_s: float = 30.0,
+        exception_predicate: Callable[[BaseException], bool] | None = None,
     ) -> None:
-        self._name = name
-        self._threshold = threshold
-        self._window_s = window_s
-        self._recovery_s = recovery_s
+        if not name.strip():
+            raise ValueError("name must not be empty")
+        if threshold <= 0:
+            raise ValueError("threshold must be > 0")
+        if window_s <= 0:
+            raise ValueError("window_s must be > 0")
+        if recovery_s <= 0:
+            raise ValueError("recovery_s must be > 0")
 
+        self._name = name.strip()
+        self._threshold = int(threshold)
+        self._window_s = float(window_s)
+        self._recovery_s = float(recovery_s)
         self._state = CircuitState.CLOSED
-        self._failures: list[float] = []  # monotonic timestamps
+
+        self._failures: deque[float] = deque()
         self._success_count = 0
         self._last_failure_at: float | None = None
         self._last_success_at: float | None = None
         self._opened_at: float | None = None
 
-    # ── Public API ────────────────────────────────────────────────────────────
+        # Single-process async safety.
+        self._probe_in_flight = False
+
+        self._exception_predicate = exception_predicate or self._default_should_trip
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     @property
     def state(self) -> CircuitState:
         self._maybe_transition()
         return self._state
 
-    @property
-    def name(self) -> str:
-        return self._name
-
     def allow_request(self) -> bool:
-        """Return True if the circuit allows this call through."""
+        """Return True if the breaker currently allows one request through.
+
+        In HALF_OPEN, only one probe call is allowed at a time.
+        """
         self._maybe_transition()
 
         if self._state == CircuitState.CLOSED:
             return True
-        if self._state == CircuitState.HALF_OPEN:
-            return True  # one probe call
-        # OPEN
-        return False
+
+        if self._state == CircuitState.OPEN:
+            return False
+
+        # HALF_OPEN
+        if self._probe_in_flight:
+            return False
+
+        self._probe_in_flight = True
+        logger.info("circuit_half_open_probe_granted", name=self._name)
+        return True
 
     def record_success(self) -> None:
-        """Record a successful call. Closes circuit if in HALF_OPEN."""
-        self._last_success_at = time.monotonic()
+        now = time.monotonic()
+        self._last_success_at = now
         self._success_count += 1
+
         if self._state == CircuitState.HALF_OPEN:
             self._close()
             logger.info("circuit_closed", name=self._name, via="successful_probe")
 
     def record_failure(self) -> None:
-        """Record a failed call. Opens circuit if threshold exceeded."""
         now = time.monotonic()
         self._last_failure_at = now
-        self._failures.append(now)
-        self._prune_old_failures(now)
 
         if self._state == CircuitState.HALF_OPEN:
-            # Probe failed — stay OPEN
             self._open(now)
-            logger.warning("circuit_stayed_open", name=self._name, via="failed_probe")
+            logger.warning("circuit_reopened", name=self._name, via="failed_probe")
             return
+
+        self._prune_old_failures(now)
+        self._failures.append(now)
 
         if len(self._failures) >= self._threshold:
             self._open(now)
@@ -169,40 +173,45 @@ class ButlerCircuitBreaker:
                 name=self._name,
                 failures=len(self._failures),
                 threshold=self._threshold,
+                window_s=self._window_s,
             )
 
     @contextlib.asynccontextmanager
     async def guard(
         self,
-        call: Callable[[], Awaitable],
-        *,
-        fallback=None,
-    ) -> AsyncIterator:
-        """Async context manager that gates a single async call.
+        call: Callable[[], Awaitable[Any]],
+    ) -> AsyncIterator[Any]:
+        """Execute one guarded dependency call.
 
-        Usage:
-            async with breaker.guard(lambda: redis.ping()):
-                pass  # will not raise; exception mapped to record_failure
-
-        Raises CircuitOpenError if the circuit is OPEN.
-        Re-raises the call's exception after recording the failure.
+        - rejects immediately if OPEN
+        - permits at most one HALF_OPEN probe
+        - records success/failure automatically
+        - never swallows application exceptions
         """
         if not self.allow_request():
-            raise CircuitOpenError(self._name, self._opened_at + self._recovery_s if self._opened_at else 0)
+            retry_after_s = self._retry_after_seconds()
+            raise CircuitOpenError(self._name, retry_after_s)
 
         try:
             result = await call()
+        except BaseException as exc:
+            if self._exception_predicate(exc):
+                self.record_failure()
+            raise
+        else:
             self.record_success()
             yield result
-        except (ConnectionError, TimeoutError, OSError, IOError) as exc:
-            self.record_failure()
-            raise
-        except Exception:
-            # Non-infrastructure exceptions don't trip the breaker
-            yield None
+        finally:
+            if self._state == CircuitState.HALF_OPEN:
+                # Probe was granted but state did not transition yet due to odd flow.
+                # Keep invariant sane.
+                self._probe_in_flight = False
+            elif self._state == CircuitState.CLOSED or self._state == CircuitState.OPEN:
+                self._probe_in_flight = False
 
     def stats(self) -> CircuitStats:
         self._maybe_transition()
+        self._prune_old_failures(time.monotonic())
         return CircuitStats(
             name=self._name,
             state=self._state,
@@ -214,45 +223,50 @@ class ButlerCircuitBreaker:
             threshold=self._threshold,
             window_s=self._window_s,
             recovery_s=self._recovery_s,
+            half_open_probe_in_flight=self._probe_in_flight,
         )
 
     def reset(self) -> None:
-        """Force circuit back to CLOSED (admin/test use only)."""
         self._close()
         self._failures.clear()
         logger.info("circuit_reset", name=self._name)
 
-    # ── Private ───────────────────────────────────────────────────────────────
+    def _default_should_trip(self, exc: BaseException) -> bool:
+        return isinstance(exc, InfrastructureExceptionTypes)
 
     def _maybe_transition(self) -> None:
-        """Check if OPEN → HALF_OPEN transition is due."""
-        if (
-            self._state == CircuitState.OPEN
-            and self._opened_at is not None
-            and (time.monotonic() - self._opened_at) >= self._recovery_s
-        ):
+        if self._state != CircuitState.OPEN or self._opened_at is None:
+            return
+
+        if (time.monotonic() - self._opened_at) >= self._recovery_s:
             self._state = CircuitState.HALF_OPEN
+            self._probe_in_flight = False
             logger.info("circuit_half_open", name=self._name)
 
     def _open(self, now: float) -> None:
         self._state = CircuitState.OPEN
         self._opened_at = now
+        self._probe_in_flight = False
 
     def _close(self) -> None:
         self._state = CircuitState.CLOSED
         self._failures.clear()
         self._opened_at = None
+        self._probe_in_flight = False
 
     def _prune_old_failures(self, now: float) -> None:
         cutoff = now - self._window_s
-        self._failures = [t for t in self._failures if t >= cutoff]
+        while self._failures and self._failures[0] < cutoff:
+            self._failures.popleft()
+
+    def _retry_after_seconds(self) -> float:
+        if self._state != CircuitState.OPEN or self._opened_at is None:
+            return 0.0
+        return max(0.0, (self._opened_at + self._recovery_s) - time.monotonic())
 
 
 class CircuitBreakerRegistry:
-    """Global registry of all circuit breakers in the Butler process.
-
-    Used by AdminPlane and HealthChecker to inspect system state.
-    """
+    """Registry of process-local dependency breakers."""
 
     def __init__(self) -> None:
         self._breakers: dict[str, ButlerCircuitBreaker] = {}
@@ -263,64 +277,76 @@ class CircuitBreakerRegistry:
         threshold: int = 10,
         window_s: float = 60.0,
         recovery_s: float = 30.0,
+        exception_predicate: Callable[[BaseException], bool] | None = None,
     ) -> ButlerCircuitBreaker:
-        """Register and return a new circuit breaker (idempotent)."""
-        if name not in self._breakers:
-            self._breakers[name] = ButlerCircuitBreaker(
-                name=name,
+        normalized = name.strip().lower()
+        if not normalized:
+            raise ValueError("breaker name must not be empty")
+
+        breaker = self._breakers.get(normalized)
+        if breaker is None:
+            breaker = ButlerCircuitBreaker(
+                name=normalized,
                 threshold=threshold,
                 window_s=window_s,
                 recovery_s=recovery_s,
+                exception_predicate=exception_predicate,
             )
-        return self._breakers[name]
+            self._breakers[normalized] = breaker
+        return breaker
 
     def get(self, name: str) -> ButlerCircuitBreaker | None:
-        return self._breakers.get(name)
+        return self._breakers.get(name.strip().lower())
 
-    def all_stats(self) -> list[dict]:
+    def require(self, name: str) -> ButlerCircuitBreaker:
+        breaker = self.get(name)
+        if breaker is None:
+            raise KeyError(f"Unknown circuit breaker: {name}")
+        return breaker
+
+    def all_stats(self) -> list[dict[str, Any]]:
         return [
             {
-                "name": s.name,
-                "state": s.state.value,
-                "failure_count": s.failure_count,
-                "success_count": s.success_count,
-                "recovery_remaining_s": s.recovery_remaining_s,
-                "threshold": s.threshold,
-                "window_s": s.window_s,
-                "recovery_s": s.recovery_s,
+                "name": stats.name,
+                "state": stats.state.value,
+                "failure_count": stats.failure_count,
+                "success_count": stats.success_count,
+                "last_failure_at": stats.last_failure_at,
+                "last_success_at": stats.last_success_at,
+                "recovery_remaining_s": stats.recovery_remaining_s,
+                "threshold": stats.threshold,
+                "window_s": stats.window_s,
+                "recovery_s": stats.recovery_s,
+                "half_open_probe_in_flight": stats.half_open_probe_in_flight,
             }
             for breaker in self._breakers.values()
-            for s in [breaker.stats()]
+            for stats in [breaker.stats()]
         ]
 
     def any_open(self) -> bool:
-        return any(b.state == CircuitState.OPEN for b in self._breakers.values())
+        return any(breaker.state == CircuitState.OPEN for breaker in self._breakers.values())
 
     def reset_all(self) -> int:
-        """Admin: reset all breakers to CLOSED. Returns count reset."""
         count = 0
-        for b in self._breakers.values():
-            b.reset()
+        for breaker in self._breakers.values():
+            breaker.reset()
             count += 1
         return count
 
-
-# ── Singleton for dependency injection ────────────────────────────────────────
 
 _registry: CircuitBreakerRegistry | None = None
 
 
 def get_circuit_breaker_registry() -> CircuitBreakerRegistry:
-    """Return the global CircuitBreakerRegistry (lazy-init)."""
-    global _registry  # noqa: PLW0603
+    global _registry
     if _registry is None:
-        _registry = CircuitBreakerRegistry()
-        # Register default Butler infrastructure dependencies
-        _registry.register("redis",       threshold=5, window_s=60,  recovery_s=20)
-        _registry.register("postgres",    threshold=5, window_s=60,  recovery_s=30)
-        _registry.register("qdrant",      threshold=3, window_s=60,  recovery_s=30)
-        _registry.register("neo4j",       threshold=3, window_s=60,  recovery_s=30)
-        _registry.register("vllm",        threshold=3, window_s=120, recovery_s=60)
-        _registry.register("anthropic",   threshold=5, window_s=60,  recovery_s=15)
-        _registry.register("openai",      threshold=5, window_s=60,  recovery_s=15)
+        registry = CircuitBreakerRegistry()
+        registry.register("redis", threshold=5, window_s=60.0, recovery_s=20.0)
+        registry.register("postgres", threshold=5, window_s=60.0, recovery_s=30.0)
+        registry.register("qdrant", threshold=3, window_s=60.0, recovery_s=30.0)
+        registry.register("neo4j", threshold=3, window_s=60.0, recovery_s=30.0)
+        registry.register("vllm", threshold=3, window_s=120.0, recovery_s=60.0)
+        registry.register("anthropic", threshold=5, window_s=60.0, recovery_s=15.0)
+        registry.register("openai", threshold=5, window_s=60.0, recovery_s=15.0)
+        _registry = registry
     return _registry

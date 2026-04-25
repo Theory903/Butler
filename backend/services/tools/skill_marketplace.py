@@ -9,24 +9,24 @@ SWE-5 Requirements: Pydantic schemas, capability discovery, security sandbox, au
 
 from __future__ import annotations
 
-import os
-import json
 import hashlib
-import structlog
+import json
+import os
 from datetime import datetime
-from enum import Enum
-from typing import Any, Optional, Union, List, Dict, Set
+from enum import StrEnum
+from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, validator, root_validator
-from sqlalchemy import select
+import structlog
+from pydantic import BaseModel, Field, validator
 
 logger = structlog.get_logger(__name__)
 
 
 # Stub implementations - to be connected to real services
-class settings:
+class Settings:
     """Stub for core.settings."""
+
     SKILL_MARKETPLACE_DIR = os.environ.get("BUTLER_DATA_DIR", "/tmp/butler") + "/skills"
     ALLOWED_SANDBOX_PROFILES = ["ephemeral", "persistent", "privileged"]
     ALLOWED_SKILL_PERMISSIONS = ["filesystem:read", "filesystem:write", "network:outbound"]
@@ -34,11 +34,11 @@ class settings:
 
 class PermissionDenied(Exception):
     """Stub for core.security.PermissionDenied."""
-    pass
 
 
 class Tenant:
     """Stub for backend.domain.tenant.Tenant."""
+
     def __init__(self, id: str, name: str):
         self.id = id
         self.name = name
@@ -46,18 +46,20 @@ class Tenant:
 
 class AuditLog:
     """Stub for backend.services.tools.auditor.AuditLog."""
+
     @staticmethod
     async def log(event_type: str, tenant_id: Any, **kwargs):
         tid = str(tenant_id) if isinstance(tenant_id, UUID) else tenant_id
         logger.info("audit", event_type=event_type, tenant_id=tid, **kwargs)
 
     @classmethod
-    def get_instance(cls) -> "AuditLog":
+    def get_instance(cls) -> AuditLog:
         return cls()
 
 
 class AuditEventType:
     """Stub for backend.services.tools.auditor.AuditEventType."""
+
     SKILL_INSTALLED = "skill.installed"
     SKILL_EXECUTED = "skill.executed"
     SKILL_UNINSTALLED = "skill.uninstalled"
@@ -66,11 +68,12 @@ class AuditEventType:
 
 class SandboxManager:
     """Stub for backend.services.tools.sandbox_manager.SandboxManager."""
+
     def __init__(self):
         pass
 
     @classmethod
-    def get_instance(cls) -> "SandboxManager":
+    def get_instance(cls) -> SandboxManager:
         return cls()
 
     async def execute(self, skill_id: str, input_data: dict) -> dict:
@@ -79,24 +82,27 @@ class SandboxManager:
 
 class MCPBridge:
     """Stub for backend.services.tools.mcp_bridge.MCPBridge."""
+
     def __init__(self):
         pass
 
     @classmethod
-    def get_instance(cls) -> "MCPBridge":
+    def get_instance(cls) -> MCPBridge:
         return cls()
 
 
-class SkillType(str, Enum):
+class SkillType(StrEnum):
     """Type of skill package."""
-    NATIVE = "native"          # Butler native Python skill
-    MCP = "mcp"                # Model Context Protocol server
-    EXTERNAL = "external"      # External HTTP skill
-    COMPOSITE = "composite"    # Composite of multiple skills
+
+    NATIVE = "native"  # Butler native Python skill
+    MCP = "mcp"  # Model Context Protocol server
+    EXTERNAL = "external"  # External HTTP skill
+    COMPOSITE = "composite"  # Composite of multiple skills
 
 
-class CapabilityType(str, Enum):
+class CapabilityType(StrEnum):
     """Type of capability exposed by a skill."""
+
     TOOL = "tool"
     PROMPT = "prompt"
     TRANSFORMER = "transformer"
@@ -104,8 +110,9 @@ class CapabilityType(str, Enum):
     POLICY = "policy"
 
 
-class AssuranceLevel(str, Enum):
+class AssuranceLevel(StrEnum):
     """Assurance level for skill execution."""
+
     AAL0 = "aal0"  # No assurance (sandboxed only)
     AAL1 = "aal1"  # Verified signature
     AAL2 = "aal2"  # Audited
@@ -118,29 +125,34 @@ class SkillManifest(BaseModel):
     All skills MUST provide this manifest. No exceptions.
     Manifest is signed and verified before installation.
     """
+
     id: str = Field(description="Unique skill identifier (reverse DNS recommended)")
     name: str = Field(min_length=2, max_length=100, description="Human readable name")
     description: str = Field(min_length=10, max_length=1000, description="Full description")
     version: str = Field(description="Semantic version string")
     type: SkillType = Field(description="Skill execution type")
     author: str = Field(description="Author name/identifier")
-    homepage: Optional[str] = None
-    repository: Optional[str] = None
+    homepage: str | None = None
+    repository: str | None = None
     license: str = Field(description="SPDX license identifier")
 
-    capabilities: List[CapabilityDefinition] = Field(default_factory=list, description="Exposed capabilities")
-    requires: List[str] = Field(default_factory=list, description="Required skill dependencies")
-    provides: List[str] = Field(default_factory=list, description="Provided interfaces")
+    capabilities: list[CapabilityDefinition] = Field(
+        default_factory=list, description="Exposed capabilities"
+    )
+    requires: list[str] = Field(default_factory=list, description="Required skill dependencies")
+    provides: list[str] = Field(default_factory=list, description="Provided interfaces")
 
-    aal_required: AssuranceLevel = Field(default=AssuranceLevel.AAL0, description="Minimum assurance level required to run")
+    aal_required: AssuranceLevel = Field(
+        default=AssuranceLevel.AAL0, description="Minimum assurance level required to run"
+    )
     sandbox_profile: str = Field(default="default", description="Sandbox profile to use")
     timeout_seconds: int = Field(default=30, ge=1, le=3600, description="Maximum execution time")
 
-    permissions: Dict[str, bool] = Field(default_factory=dict, description="Requested permissions")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata")
+    permissions: dict[str, bool] = Field(default_factory=dict, description="Requested permissions")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata")
 
-    signature: Optional[str] = Field(None, description="ED25519 signature of manifest hash")
-    published_at: Optional[datetime] = None
+    signature: str | None = Field(None, description="ED25519 signature of manifest hash")
+    published_at: datetime | None = None
 
     @validator("version")
     def validate_semver(cls, v: str) -> str:
@@ -166,16 +178,19 @@ class SkillManifest(BaseModel):
 
 class CapabilityDefinition(BaseModel):
     """Definition of a single capability exposed by a skill."""
+
     id: str = Field(description="Capability identifier (unique within skill)")
     name: str = Field(description="Human readable name")
     type: CapabilityType = Field(description="Capability type")
     description: str = Field(description="Full description")
 
-    input_schema: Dict[str, Any] = Field(default_factory=dict, description="JSON Schema for input")
-    output_schema: Dict[str, Any] = Field(default_factory=dict, description="JSON Schema for output")
+    input_schema: dict[str, Any] = Field(default_factory=dict, description="JSON Schema for input")
+    output_schema: dict[str, Any] = Field(
+        default_factory=dict, description="JSON Schema for output"
+    )
 
-    examples: List[Dict[str, Any]] = Field(default_factory=list, description="Usage examples")
-    tags: List[str] = Field(default_factory=list, description="Classification tags")
+    examples: list[dict[str, Any]] = Field(default_factory=list, description="Usage examples")
+    tags: list[str] = Field(default_factory=list, description="Classification tags")
 
     class Config:
         use_enum_values = True
@@ -184,6 +199,7 @@ class CapabilityDefinition(BaseModel):
 
 class InstalledSkill(BaseModel):
     """Record of an installed skill for a specific tenant."""
+
     id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
     skill_id: str
@@ -192,11 +208,11 @@ class InstalledSkill(BaseModel):
 
     enabled: bool = True
     installed_at: datetime = Field(default_factory=datetime.utcnow)
-    installed_by: Optional[UUID] = None
+    installed_by: UUID | None = None
 
-    quota_limit: Optional[int] = None
+    quota_limit: int | None = None
     quota_used: int = 0
-    last_used_at: Optional[datetime] = None
+    last_used_at: datetime | None = None
 
     class Config:
         orm_mode = True
@@ -210,11 +226,13 @@ class CapabilityRegistry:
     """
 
     def __init__(self) -> None:
-        self._capabilities: Dict[str, CapabilityDefinition] = {}
-        self._skill_capabilities: Dict[str, Set[str]] = {}
-        self._tag_index: Dict[str, Set[str]] = {}
+        self._capabilities: dict[str, CapabilityDefinition] = {}
+        self._skill_capabilities: dict[str, set[str]] = {}
+        self._tag_index: dict[str, set[str]] = {}
 
-    def register_skill_capabilities(self, skill_id: str, capabilities: List[CapabilityDefinition]) -> None:
+    def register_skill_capabilities(
+        self, skill_id: str, capabilities: list[CapabilityDefinition]
+    ) -> None:
         """Register all capabilities from a skill."""
         self._skill_capabilities[skill_id] = set()
 
@@ -247,23 +265,20 @@ class CapabilityRegistry:
         del self._skill_capabilities[skill_id]
         logger.debug("capabilities_unregistered", skill_id=skill_id)
 
-    def get_capability(self, capability_id: str) -> Optional[CapabilityDefinition]:
+    def get_capability(self, capability_id: str) -> CapabilityDefinition | None:
         """Get capability by full identifier."""
         return self._capabilities.get(capability_id)
 
-    def search_by_tag(self, tag: str) -> List[CapabilityDefinition]:
+    def search_by_tag(self, tag: str) -> list[CapabilityDefinition]:
         """Search capabilities by tag."""
         cap_ids = self._tag_index.get(tag, set())
         return [self._capabilities[cap_id] for cap_id in cap_ids]
 
-    def search_by_type(self, capability_type: CapabilityType) -> List[CapabilityDefinition]:
+    def search_by_type(self, capability_type: CapabilityType) -> list[CapabilityDefinition]:
         """Search capabilities by type."""
-        return [
-            cap for cap in self._capabilities.values()
-            if cap.type == capability_type
-        ]
+        return [cap for cap in self._capabilities.values() if cap.type == capability_type]
 
-    def list_all(self) -> List[CapabilityDefinition]:
+    def list_all(self) -> list[CapabilityDefinition]:
         """List all registered capabilities."""
         return list(self._capabilities.values())
 
@@ -292,10 +307,9 @@ class SkillInstaller:
         """Perform full validation of a skill manifest."""
         # 1. Schema validation (already done by Pydantic)
         # 2. Signature verification if present
-        if manifest.signature:
-            if not await self._verify_signature(manifest):
-                logger.warning("invalid_skill_signature", skill_id=manifest.id)
-                raise ValueError("Invalid skill signature")
+        if manifest.signature and not await self._verify_signature(manifest):
+            logger.warning("invalid_skill_signature", skill_id=manifest.id)
+            raise ValueError("Invalid skill signature")
 
         # 3. Dependency check
         for dep_id in manifest.requires:
@@ -308,13 +322,15 @@ class SkillInstaller:
                 raise PermissionDenied(f"Permission not allowed: {permission}")
 
         # 5. Sandbox profile validation
-        if manifest.sandbox_profile not in settings.ALLOWED_SANDBOX_PROFILES:
+        if manifest.sandbox_profile not in Settings.ALLOWED_SANDBOX_PROFILES:
             raise ValueError(f"Invalid sandbox profile: {manifest.sandbox_profile}")
 
         logger.debug("skill_manifest_validated", skill_id=manifest.id, version=manifest.version)
         return True
 
-    async def install(self, tenant_id: UUID, manifest: SkillManifest, installed_by: Optional[UUID] = None) -> InstalledSkill:
+    async def install(
+        self, tenant_id: UUID, manifest: SkillManifest, installed_by: UUID | None = None
+    ) -> InstalledSkill:
         """Install a skill for a tenant."""
         await self.validate_manifest(manifest)
 
@@ -348,7 +364,9 @@ class SkillInstaller:
             details={"skill_id": manifest.id, "version": manifest.version},
         )
 
-        logger.info("skill_installed", tenant_id=tenant_id, skill_id=manifest.id, version=manifest.version)
+        logger.info(
+            "skill_installed", tenant_id=tenant_id, skill_id=manifest.id, version=manifest.version
+        )
         return installed
 
     async def uninstall(self, tenant_id: UUID, skill_id: str) -> None:
@@ -380,9 +398,9 @@ class SkillInstaller:
 
     def _is_permission_allowed(self, permission: str) -> bool:
         """Check if a requested permission is allowed."""
-        return permission in settings.ALLOWED_SKILL_PERMISSIONS
+        return permission in Settings.ALLOWED_SKILL_PERMISSIONS
 
-    async def _get_installed_skill(self, tenant_id: UUID, skill_id: str) -> Optional[InstalledSkill]:
+    async def _get_installed_skill(self, tenant_id: UUID, skill_id: str) -> InstalledSkill | None:
         """Get installed skill record for tenant."""
         # TODO: Implement database lookup
         return None
@@ -390,12 +408,10 @@ class SkillInstaller:
     async def _save_installed_skill(self, installed: InstalledSkill) -> None:
         """Save installed skill record to database."""
         # TODO: Implement database persistence
-        pass
 
     async def _delete_installed_skill(self, installed_id: UUID) -> None:
         """Delete installed skill record from database."""
         # TODO: Implement database deletion
-        pass
 
 
 class SkillGovernance:
@@ -412,7 +428,7 @@ class SkillGovernance:
         self,
         tenant_id: UUID,
         skill_id: str,
-        capability_id: Optional[str] = None,
+        capability_id: str | None = None,
     ) -> bool:
         """Check if a skill/capability can be executed for this tenant."""
         installed = await self._get_installed_skill(tenant_id, skill_id)
@@ -428,10 +444,7 @@ class SkillGovernance:
             return False
 
         # Check tenant policy
-        if not await self._check_tenant_policy(tenant_id, skill_id, capability_id):
-            return False
-
-        return True
+        return await self._check_tenant_policy(tenant_id, skill_id, capability_id)
 
     async def record_usage(
         self,
@@ -460,7 +473,7 @@ class SkillGovernance:
             },
         )
 
-    async def set_quota(self, tenant_id: UUID, skill_id: str, quota_limit: Optional[int]) -> None:
+    async def set_quota(self, tenant_id: UUID, skill_id: str, quota_limit: int | None) -> None:
         """Set execution quota for a tenant skill."""
         installed = await self._get_installed_skill(tenant_id, skill_id)
         if not installed:
@@ -493,7 +506,7 @@ class SkillGovernance:
         installed.enabled = False
         await self._save_installed_skill(installed)
 
-    async def list_installed_skills(self, tenant_id: UUID) -> List[InstalledSkill]:
+    async def list_installed_skills(self, tenant_id: UUID) -> list[InstalledSkill]:
         """List all skills installed for a tenant."""
         # TODO: Implement database query
         return []
@@ -502,13 +515,13 @@ class SkillGovernance:
         self,
         tenant_id: UUID,
         skill_id: str,
-        capability_id: Optional[str],
+        capability_id: str | None,
     ) -> bool:
         """Check tenant execution policy for this skill."""
         # TODO: Implement OPA policy evaluation
         return True
 
-    async def _get_installed_skill(self, tenant_id: UUID, skill_id: str) -> Optional[InstalledSkill]:
+    async def _get_installed_skill(self, tenant_id: UUID, skill_id: str) -> InstalledSkill | None:
         """Get installed skill record for tenant."""
         # TODO: Implement database lookup
         return None
@@ -516,7 +529,6 @@ class SkillGovernance:
     async def _save_installed_skill(self, installed: InstalledSkill) -> None:
         """Save installed skill record to database."""
         # TODO: Implement database persistence
-        pass
 
 
 class SkillMarketplace:
@@ -542,7 +554,10 @@ class SkillMarketplace:
         # Load all installed skills from database
         # TODO: Implement bulk loading
         self._initialized = True
-        logger.info("skill_marketplace_initialized", capability_count=self.capability_registry.capability_count)
+        logger.info(
+            "skill_marketplace_initialized",
+            capability_count=self.capability_registry.capability_count,
+        )
 
     @classmethod
     def get_instance(cls) -> SkillMarketplace:

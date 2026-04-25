@@ -39,26 +39,23 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
-import json
-import time
-from datetime import datetime, UTC, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
 from domain.events.schemas import ButlerEvent
 from services.realtime.stream_dispatcher import ButlerStreamDispatcher
-from services.realtime.events import RealtimeEvent
 from services.search.web_provider import (
     ButlerWebSearchProvider,
     RawSearchResult,
     _StubProvider,
 )
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_redis(xadd_return=b"1-0", xrange_return=None) -> AsyncMock:
     redis = AsyncMock()
@@ -105,8 +102,8 @@ def _raw_result(
 # Test 23: ButlerStreamDispatcher
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerStreamDispatcher:
 
+class TestButlerStreamDispatcher:
     # ── Event mapping ─────────────────────────────────────────────────────────
 
     def test_stream_token_maps_to_response_chunk(self):
@@ -118,7 +115,9 @@ class TestButlerStreamDispatcher:
 
     def test_workflow_complete_maps_durable(self):
         d = _dispatcher()
-        rt = d._map_to_realtime(_event("workflow.complete", {"workflow_id": "wf1", "content": "done"}))
+        rt = d._map_to_realtime(
+            _event("workflow.complete", {"workflow_id": "wf1", "content": "done"})
+        )
         assert rt is not None
         assert rt.event_type == "workflow.complete"
         assert rt.durable is True
@@ -132,14 +131,18 @@ class TestButlerStreamDispatcher:
 
     def test_approval_request_maps_durable(self):
         d = _dispatcher()
-        rt = d._map_to_realtime(_event("approval.request", {"approval_id": "ap1", "description": "Allow?"}))
+        rt = d._map_to_realtime(
+            _event("approval.request", {"approval_id": "ap1", "description": "Allow?"})
+        )
         assert rt is not None
         assert rt.event_type == "approval.request"
         assert rt.durable is True
 
     def test_error_event_maps_durable(self):
         d = _dispatcher()
-        rt = d._map_to_realtime(_event("error", {"type": "internal-error", "title": "Oops", "status": 500}))
+        rt = d._map_to_realtime(
+            _event("error", {"type": "internal-error", "title": "Oops", "status": 500})
+        )
         assert rt is not None
         assert rt.event_type == "error"
         assert rt.durable is True
@@ -179,7 +182,7 @@ class TestButlerStreamDispatcher:
         redis = _make_redis()
         d = _dispatcher(redis=redis)
         asyncio.run(d.dispatch(_event("tool.call", {"tool_name": "search"}), "acct_1"))
-        _, kwargs_or_args = redis.xadd.call_args.args, redis.xadd.call_args
+        _, _kwargs_or_args = redis.xadd.call_args.args, redis.xadd.call_args
         # Check the entry dict (second positional arg)
         entry = redis.xadd.call_args.args[1]
         for k, v in entry.items():
@@ -280,10 +283,7 @@ class TestButlerStreamDispatcher:
     def test_dispatch_batch_sends_all_events(self):
         redis = _make_redis()
         d = _dispatcher(redis=redis)
-        events = [
-            _event("workflow.complete", {"workflow_id": f"wf{i}"})
-            for i in range(3)
-        ]
+        events = [_event("workflow.complete", {"workflow_id": f"wf{i}"}) for i in range(3)]
         asyncio.run(d.dispatch_batch(events, "acct_1"))
         assert redis.xadd.call_count == 3
 
@@ -292,8 +292,8 @@ class TestButlerStreamDispatcher:
 # Test 24: ButlerWebSearchProvider
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerWebSearchProvider:
 
+class TestButlerWebSearchProvider:
     def _provider(self, results: list[RawSearchResult] | None = None) -> ButlerWebSearchProvider:
         backend = _StubProvider()
         provider = ButlerWebSearchProvider(backend=backend, provider_name="stub")
@@ -301,6 +301,7 @@ class TestButlerWebSearchProvider:
             # Patch the backend search to return controlled results
             async def _mock_search(query, max_results=5):
                 return results[:max_results]
+
             backend.search = _mock_search
         return provider
 

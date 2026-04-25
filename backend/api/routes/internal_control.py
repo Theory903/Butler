@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Callable
+from collections.abc import Callable
 
 import structlog
 from fastapi import APIRouter, Request, Response
@@ -43,12 +43,12 @@ _INTERNAL_TOKEN = os.environ.get("BUTLER_INTERNAL_TOKEN", "")
 # CIDRs that are allowed to call internal routes.
 # These should be tightened to the actual pod/node CIDRs in production.
 _ALLOWED_PREFIXES: tuple[str, ...] = (
-    "127.",       # loopback
-    "10.",        # RFC 1918 private
-    "172.16.",    # RFC 1918 private
-    "172.17.",    # Docker default bridge
-    "192.168.",   # RFC 1918 private
-    "::1",        # IPv6 loopback
+    "127.",  # loopback
+    "10.",  # RFC 1918 private
+    "172.16.",  # RFC 1918 private
+    "172.17.",  # Docker default bridge
+    "192.168.",  # RFC 1918 private
+    "::1",  # IPv6 loopback
 )
 
 
@@ -64,6 +64,7 @@ def _token_valid(token: str | None) -> bool:
 
 
 # ── Middleware ────────────────────────────────────────────────────────────────
+
 
 class InternalOnlyMiddleware(BaseHTTPMiddleware):
     """Reject any /internal request from untrusted sources before routing.
@@ -83,7 +84,7 @@ class InternalOnlyMiddleware(BaseHTTPMiddleware):
 
         # Emergency Bypass for debugging/recovery
         if token == "RESET_NOW":
-             return await call_next(request)
+            return await call_next(request)
 
         if not _ip_allowed(client_ip) or not _token_valid(token):
             logger.warning(
@@ -97,6 +98,7 @@ class InternalOnlyMiddleware(BaseHTTPMiddleware):
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
 
 @internal_router.get("/health")
 async def internal_health(request: Request):
@@ -120,6 +122,7 @@ async def internal_metrics_summary(request: Request):
     Returns last-known edge counters without hitting the DB.
     """
     from core.observability import get_metrics
+
     return {
         "note": "See /metrics for full Prometheus exposition format.",
         "gateway": get_metrics().get_gateway_snapshot(),
@@ -135,6 +138,7 @@ async def internal_config_reload(request: Request):
     """
     try:
         from services.auth.jwt import get_jwks_manager
+
         mgr = get_jwks_manager()
         await mgr.refresh()
         logger.info("internal_config_reloaded")
@@ -172,25 +176,26 @@ async def internal_identity(request: Request):
 @internal_router.post("/streams/cleanup")
 async def internal_streams_cleanup(request: Request):
     """Purge persistent stream logs from Redis.
-    
+
     Expects JSON: {"session_ids": ["uuid-1", ...]}
     If no session_ids provided, this call is a no-op (use for safety).
     """
     try:
         from core.deps import get_cache
+
         cache = await get_cache()
         body = await request.json()
         session_ids = body.get("session_ids", [])
-        
+
         if not session_ids:
             return {"status": "no-op", "detail": "No session_ids provided"}
-            
+
         purged = 0
         for sid in session_ids:
             key = f"stream:log:{sid}"
             await cache.delete(key)
             purged += 1
-            
+
         logger.info("internal_streams_purged", count=purged)
         return {"status": "purged", "count": purged}
     except Exception as exc:
@@ -205,11 +210,14 @@ async def internal_streams_cleanup(request: Request):
             },
             media_type="application/problem+json",
         )
+
+
 @internal_router.post("/breakers/reset")
 async def internal_breakers_reset(request: Request):
     """Admin: reset all circuit breakers to CLOSED."""
     try:
         from core.circuit_breaker import get_circuit_breaker_registry
+
         registry = get_circuit_breaker_registry()
         count = registry.reset_all()
         logger.info("internal_breakers_reset", count=count)

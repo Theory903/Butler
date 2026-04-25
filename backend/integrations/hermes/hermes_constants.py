@@ -1,4 +1,4 @@
-"""Shared constants for Butler.
+"""Shared constants for Hermes Agent.
 
 Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
@@ -9,38 +9,39 @@ from pathlib import Path
 
 
 def get_hermes_home() -> Path:
-    """Return the Hermes home directory (default: ~/.butler).
+    """Return the Hermes home directory (default: ~/.hermes).
 
-    Reads BUTLER_HOME env var, falls back to ~/.butler.
+    Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
-    return Path(os.getenv("BUTLER_HOME", Path.home() / ".butler"))
+    val = os.environ.get("HERMES_HOME", "").strip()
+    return Path(val) if val else Path.home() / ".hermes"
 
 
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 
-    In standard deployments this is ``~/.butler``.
+    In standard deployments this is ``~/.hermes``.
 
-    In Docker or custom deployments where ``BUTLER_HOME`` points outside
-    ``~/.butler`` (e.g. ``/opt/data``), returns ``BUTLER_HOME`` directly
+    In Docker or custom deployments where ``HERMES_HOME`` points outside
+    ``~/.hermes`` (e.g. ``/opt/data``), returns ``HERMES_HOME`` directly
     — that IS the root.
 
-    In profile mode where ``BUTLER_HOME`` is ``<root>/profiles/<name>``,
+    In profile mode where ``HERMES_HOME`` is ``<root>/profiles/<name>``,
     returns ``<root>`` so that ``profile list`` can see all profiles.
-    Works both for standard (``~/.butler/profiles/coder``) and Docker
+    Works both for standard (``~/.hermes/profiles/coder``) and Docker
     (``/opt/data/profiles/coder``) layouts.
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = Path.home() / ".butler"
-    env_home = os.environ.get("BUTLER_HOME", "")
+    native_home = Path.home() / ".hermes"
+    env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home
     env_path = Path(env_home)
     try:
         env_path.resolve().relative_to(native_home.resolve())
-        # BUTLER_HOME is under ~/.butler (normal or profile mode)
+        # HERMES_HOME is under ~/.hermes (normal or profile mode)
         return native_home
     except ValueError:
         pass
@@ -52,7 +53,7 @@ def get_default_hermes_root() -> Path:
     if env_path.parent.name == "profiles":
         return env_path.parent.parent
 
-    # Not a profile path — BUTLER_HOME itself is the root
+    # Not a profile path — HERMES_HOME itself is the root
     return env_path
 
 
@@ -60,9 +61,9 @@ def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 
     Packaged installs may ship ``optional-skills`` outside the Python package
-    tree and expose it via ``BUTLER_OPTIONAL_SKILLS``.
+    tree and expose it via ``HERMES_OPTIONAL_SKILLS``.
     """
-    override = os.getenv("BUTLER_OPTIONAL_SKILLS", "").strip()
+    override = os.getenv("HERMES_OPTIONAL_SKILLS", "").strip()
     if override:
         return Path(override)
     if default is not None:
@@ -78,8 +79,8 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     keep using it — no migration required.
 
     Args:
-        new_subpath: Preferred path relative to BUTLER_HOME (e.g. ``"cache/images"``).
-        old_name: Legacy path relative to BUTLER_HOME (e.g. ``"image_cache"``).
+        new_subpath: Preferred path relative to HERMES_HOME (e.g. ``"cache/images"``).
+        old_name: Legacy path relative to HERMES_HOME (e.g. ``"image_cache"``).
 
     Returns:
         Absolute ``Path`` — old location if it exists on disk, otherwise the new one.
@@ -92,16 +93,16 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
 
 
 def display_hermes_home() -> str:
-    """Return a user-friendly display string for the current BUTLER_HOME.
+    """Return a user-friendly display string for the current HERMES_HOME.
 
     Uses ``~/`` shorthand for readability::
 
-        default:  ``~/.butler``
-        profile:  ``~/.butler/profiles/coder``
+        default:  ``~/.hermes``
+        profile:  ``~/.hermes/profiles/coder``
         custom:   ``/opt/hermes-custom``
 
     Use this in **user-facing** print/log messages instead of hardcoding
-    ``~/.butler``.  For code that needs a real ``Path``, use
+    ``~/.hermes``.  For code that needs a real ``Path``, use
     :func:`get_hermes_home` instead.
     """
     home = get_hermes_home()
@@ -114,7 +115,7 @@ def display_hermes_home() -> str:
 def get_subprocess_home() -> str | None:
     """Return a per-profile HOME directory for subprocesses, or None.
 
-    When ``{BUTLER_HOME}/home/`` exists on disk, subprocesses should use it
+    When ``{HERMES_HOME}/home/`` exists on disk, subprocesses should use it
     as ``HOME`` so system tools (git, ssh, gh, npm …) write their configs
     inside the Hermes data directory instead of the OS-level ``/root`` or
     ``~/``.  This provides:
@@ -128,7 +129,7 @@ def get_subprocess_home() -> str | None:
     Activation is directory-based: if the ``home/`` subdirectory doesn't
     exist, returns ``None`` and behavior is unchanged.
     """
-    hermes_home = os.getenv("BUTLER_HOME")
+    hermes_home = os.getenv("HERMES_HOME")
     if not hermes_home:
         return None
     profile_home = os.path.join(hermes_home, "home")
@@ -224,7 +225,7 @@ def is_container() -> bool:
 
 
 def get_config_path() -> Path:
-    """Return the path to ``config.yaml`` under BUTLER_HOME.
+    """Return the path to ``config.yaml`` under HERMES_HOME.
 
     Replaces the ``get_hermes_home() / "config.yaml"`` pattern repeated
     in 7+ files (skill_utils.py, hermes_logging.py, hermes_time.py, etc.).
@@ -233,13 +234,13 @@ def get_config_path() -> Path:
 
 
 def get_skills_dir() -> Path:
-    """Return the path to the skills directory under BUTLER_HOME."""
+    """Return the path to the skills directory under HERMES_HOME."""
     return get_hermes_home() / "skills"
 
 
 
 def get_env_path() -> Path:
-    """Return the path to the ``.env`` file under BUTLER_HOME."""
+    """Return the path to the ``.env`` file under HERMES_HOME."""
     return get_hermes_home() / ".env"
 
 

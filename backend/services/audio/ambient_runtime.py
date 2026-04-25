@@ -6,19 +6,22 @@ canvas session management, and ambient context capture with SWE-5 standards.
 Version: 2.0
 Status: Oracle-Grade
 """
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import time
 import uuid
 from collections import deque
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Deque, Optional, Set, Tuple
+from typing import Any
 
 import numpy as np
 from opentelemetry import trace
-from pydantic import BaseModel, Field, PositiveFloat, PositiveInt, validator
+from pydantic import BaseModel
 from structlog import get_logger
 
 logger = get_logger(__name__)
@@ -27,6 +30,7 @@ tracer = trace.get_tracer(__name__)
 
 class TalkModeState(enum.Enum):
     """Talk mode state machine states"""
+
     IDLE = "idle"
     LISTENING = "listening"
     PROCESSING = "processing"
@@ -37,12 +41,14 @@ class TalkModeState(enum.Enum):
 
 class AudioChannelType(enum.Enum):
     """Dual audio channel types"""
+
     USER_MIC = "user_mic"
     SYSTEM_OUTPUT = "system_output"
 
 
 class ConsentLevel(enum.Enum):
     """Ambient context consent levels"""
+
     NONE = "none"
     AUDIO_ONLY = "audio_only"
     SCREEN = "screen"
@@ -53,6 +59,7 @@ class ConsentLevel(enum.Enum):
 
 class WakeWordConfig(BaseModel):
     """Wake word detector configuration"""
+
     model_path: str = ""
     threshold: float = 0.7
     sample_rate: int = 16000
@@ -63,6 +70,7 @@ class WakeWordConfig(BaseModel):
 
 class VADConfig(BaseModel):
     """Voice Activity Detection configuration"""
+
     threshold: float = 0.5
     hangover_ms: int = 300
     noise_floor: float = -40.0
@@ -72,6 +80,7 @@ class VADConfig(BaseModel):
 
 class CircuitBreakerConfig(BaseModel):
     """Circuit breaker configuration for resource control"""
+
     failure_threshold: int = 5
     reset_timeout_ms: int = 30000
     half_open_max_calls: int = 2
@@ -80,6 +89,7 @@ class CircuitBreakerConfig(BaseModel):
 
 class AmbientRuntimeConfig(BaseModel):
     """Full ambient runtime configuration"""
+
     wake_word: WakeWordConfig = WakeWordConfig()
     vad: VADConfig = VADConfig()
     circuit_breaker: CircuitBreakerConfig = CircuitBreakerConfig()
@@ -92,8 +102,9 @@ class AmbientRuntimeConfig(BaseModel):
 @dataclass
 class CircularAudioBuffer:
     """Thread-safe circular audio buffer for streaming audio"""
+
     max_size_bytes: int
-    buffer: Deque[bytes] = field(default_factory=deque)
+    buffer: deque[bytes] = field(default_factory=deque)
     total_bytes: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -107,7 +118,7 @@ class CircularAudioBuffer:
                 evicted = self.buffer.popleft()
                 self.total_bytes -= len(evicted)
 
-    async def read(self, n_bytes: Optional[int] = None) -> bytes:
+    async def read(self, n_bytes: int | None = None) -> bytes:
         """Read up to n_bytes from buffer, or all available if None"""
         async with self.lock:
             if not self.buffer:
@@ -140,6 +151,7 @@ class CircularAudioBuffer:
 @dataclass
 class CircuitBreaker:
     """Circuit breaker for fault tolerance and resource control"""
+
     config: CircuitBreakerConfig
     failure_count: int = 0
     state: str = "closed"
@@ -192,12 +204,14 @@ class WakeWordDetector:
         self.config = config
         self.last_detection_time = 0.0
         self._model_loaded = False
-        self.circuit_breaker = CircuitBreaker(CircuitBreakerConfig(
-            failure_threshold=5,
-            reset_timeout_ms=30000,
-            half_open_max_calls=2,
-            execution_timeout_ms=5000
-        ))
+        self.circuit_breaker = CircuitBreaker(
+            CircuitBreakerConfig(
+                failure_threshold=5,
+                reset_timeout_ms=30000,
+                half_open_max_calls=2,
+                execution_timeout_ms=5000,
+            )
+        )
         logger.info("WakeWordDetector initialized", threshold=config.threshold)
 
     async def load_model(self) -> None:
@@ -207,7 +221,7 @@ class WakeWordDetector:
             self._model_loaded = True
             logger.debug("Wake word model loaded")
 
-    async def detect(self, audio_frame: np.ndarray) -> Tuple[bool, float]:
+    async def detect(self, audio_frame: np.ndarray) -> tuple[bool, float]:
         """Detect wake word in audio frame"""
         if not await self.circuit_breaker.allow_request():
             return False, 0.0
@@ -291,7 +305,7 @@ class DualAudioChannel:
 
         self.user_channel = CircularAudioBuffer(max_buffer_bytes)
         self.system_channel = CircularAudioBuffer(max_buffer_bytes)
-        self.active_channels: Set[AudioChannelType] = set()
+        self.active_channels: set[AudioChannelType] = set()
 
         self.vad = VoiceActivityDetector(config.vad)
         self.circuit_breaker = CircuitBreaker(config.circuit_breaker)
@@ -317,15 +331,15 @@ class DualAudioChannel:
             logger.error("Audio channel write failed", channel=channel, error=str(e))
             await self.circuit_breaker.record_failure()
 
-    async def read_channel(self, channel: AudioChannelType, n_bytes: Optional[int] = None) -> bytes:
+    async def read_channel(self, channel: AudioChannelType, n_bytes: int | None = None) -> bytes:
         """Read audio data from specified channel"""
         if channel == AudioChannelType.USER_MIC:
             return await self.user_channel.read(n_bytes)
-        elif channel == AudioChannelType.SYSTEM_OUTPUT:
+        if channel == AudioChannelType.SYSTEM_OUTPUT:
             return await self.system_channel.read(n_bytes)
         return b""
 
-    async def stream_channel(self, channel: AudioChannelType) -> AsyncGenerator[bytes, None]:
+    async def stream_channel(self, channel: AudioChannelType) -> AsyncGenerator[bytes]:
         """Stream audio from channel as async generator"""
         while True:
             data = await self.read_channel(channel, 1024)
@@ -340,7 +354,7 @@ class TalkModeController:
     def __init__(self, config: AmbientRuntimeConfig):
         self.config = config
         self.state = TalkModeState.IDLE
-        self.session_id: Optional[str] = None
+        self.session_id: str | None = None
         self.state_changed_at = time.time()
         self.interrupt_count = 0
         self.lock = asyncio.Lock()
@@ -350,15 +364,13 @@ class TalkModeController:
     async def transition_to(self, new_state: TalkModeState) -> bool:
         """Transition to new state with validation"""
         async with self.lock:
-            with tracer.start_as_current_span("talk_mode.transition", attributes={
-                "old_state": self.state.value,
-                "new_state": new_state.value
-            }):
+            with tracer.start_as_current_span(
+                "talk_mode.transition",
+                attributes={"old_state": self.state.value, "new_state": new_state.value},
+            ):
                 if not self._is_valid_transition(self.state, new_state):
                     logger.warning(
-                        "Invalid state transition",
-                        from_state=self.state,
-                        to_state=new_state
+                        "Invalid state transition", from_state=self.state, to_state=new_state
                     )
                     return False
 
@@ -367,9 +379,7 @@ class TalkModeController:
                 self.state_changed_at = time.time()
 
                 logger.info(
-                    "Talk mode state changed",
-                    old_state=old_state.value,
-                    new_state=new_state.value
+                    "Talk mode state changed", old_state=old_state.value, new_state=new_state.value
                 )
 
                 if new_state == TalkModeState.LISTENING:
@@ -381,10 +391,29 @@ class TalkModeController:
         """Validate state transition per state machine rules"""
         valid_transitions = {
             TalkModeState.IDLE: {TalkModeState.LISTENING, TalkModeState.FAULT},
-            TalkModeState.LISTENING: {TalkModeState.PROCESSING, TalkModeState.IDLE, TalkModeState.INTERRUPTED, TalkModeState.FAULT},
-            TalkModeState.PROCESSING: {TalkModeState.RESPONDING, TalkModeState.IDLE, TalkModeState.INTERRUPTED, TalkModeState.FAULT},
-            TalkModeState.RESPONDING: {TalkModeState.IDLE, TalkModeState.LISTENING, TalkModeState.INTERRUPTED, TalkModeState.FAULT},
-            TalkModeState.INTERRUPTED: {TalkModeState.IDLE, TalkModeState.LISTENING, TalkModeState.FAULT},
+            TalkModeState.LISTENING: {
+                TalkModeState.PROCESSING,
+                TalkModeState.IDLE,
+                TalkModeState.INTERRUPTED,
+                TalkModeState.FAULT,
+            },
+            TalkModeState.PROCESSING: {
+                TalkModeState.RESPONDING,
+                TalkModeState.IDLE,
+                TalkModeState.INTERRUPTED,
+                TalkModeState.FAULT,
+            },
+            TalkModeState.RESPONDING: {
+                TalkModeState.IDLE,
+                TalkModeState.LISTENING,
+                TalkModeState.INTERRUPTED,
+                TalkModeState.FAULT,
+            },
+            TalkModeState.INTERRUPTED: {
+                TalkModeState.IDLE,
+                TalkModeState.LISTENING,
+                TalkModeState.FAULT,
+            },
             TalkModeState.FAULT: {TalkModeState.IDLE},
         }
         return to_state in valid_transitions.get(from_state, set())
@@ -402,7 +431,7 @@ class CanvasSession:
     def __init__(self, session_id: str, max_items: int = 100):
         self.session_id = session_id
         self.max_items = max_items
-        self.items: Deque[dict[str, Any]] = deque(maxlen=max_items)
+        self.items: deque[dict[str, Any]] = deque(maxlen=max_items)
         self.created_at = time.time()
         self.last_updated = time.time()
         self.lock = asyncio.Lock()
@@ -419,7 +448,7 @@ class CanvasSession:
             if len(self.items) >= self.max_items:
                 logger.debug("Canvas session at capacity, evicted oldest item")
 
-    async def get_items(self, limit: Optional[int] = None) -> list[dict[str, Any]]:
+    async def get_items(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Get canvas items, most recent first"""
         items = list(reversed(self.items))
         if limit is not None:
@@ -439,7 +468,7 @@ class AmbientContext:
     def __init__(self, consent_level: ConsentLevel = ConsentLevel.AUDIO_ONLY):
         self.consent_level = consent_level
         self.capturing = False
-        self.capture_start_time: Optional[float] = None
+        self.capture_start_time: float | None = None
         self.lock = asyncio.Lock()
 
         logger.info("AmbientContext initialized", consent_level=consent_level.value)
@@ -475,7 +504,7 @@ class AmbientContext:
             duration = time.time() - self.capture_start_time if self.capture_start_time else 0
             logger.info("Ambient capture stopped", duration_seconds=round(duration, 2))
 
-    async def capture_screen(self) -> Optional[bytes]:
+    async def capture_screen(self) -> bytes | None:
         """Capture screen if consent granted"""
         if not self.has_consent(ConsentLevel.SCREEN) or not self.capturing:
             return None
@@ -485,7 +514,7 @@ class AmbientContext:
             logger.debug("Screen captured")
             return b""
 
-    async def capture_location(self) -> Optional[tuple[float, float]]:
+    async def capture_location(self) -> tuple[float, float] | None:
         """Capture location if consent granted"""
         if not self.has_consent(ConsentLevel.LOCATION) or not self.capturing:
             return None
@@ -528,10 +557,8 @@ class AmbientRuntime:
 
         for task in self.tasks:
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
 
         self.tasks.clear()
         logger.info("Ambient runtime stopped")
@@ -582,5 +609,7 @@ class AmbientRuntime:
     async def get_or_create_canvas_session(self, session_id: str) -> CanvasSession:
         """Get existing canvas session or create new one"""
         if session_id not in self.canvas_sessions:
-            self.canvas_sessions[session_id] = CanvasSession(session_id, self.config.max_canvas_items)
+            self.canvas_sessions[session_id] = CanvasSession(
+                session_id, self.config.max_canvas_items
+            )
         return self.canvas_sessions[session_id]

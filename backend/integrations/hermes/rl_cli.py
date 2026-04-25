@@ -20,7 +20,6 @@ Environment Variables:
 """
 
 import asyncio
-import importlib
 import os
 import sys
 from pathlib import Path
@@ -28,15 +27,12 @@ from pathlib import Path
 import fire
 import yaml
 
-from .hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
-
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 
-env_loader_module = importlib.import_module("backend.integrations.hermes.hermes_cli.env_loader")
-load_hermes_dotenv = getattr(env_loader_module, "load_hermes_dotenv")
+from integrations.hermes.hermes_cli.env_loader import load_hermes_dotenv
 
 _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 for _env_path in _loaded_env_paths:
@@ -50,19 +46,21 @@ if tinker_atropos_dir.exists():
     os.environ['HERMES_QUIET'] = '1'  # Disable temp subdirectory creation
     print(f"📂 Terminal working directory: {tinker_atropos_dir}")
 else:
-    # Fall back to butler-agent directory if submodule not found
+    # Fall back to hermes-agent directory if submodule not found
     os.environ['TERMINAL_CWD'] = str(Path(__file__).parent)
     os.environ['HERMES_QUIET'] = '1'
     print(f"⚠️  tinker-atropos submodule not found, using: {Path(__file__).parent}")
 
 # Import agent and tools
-from .run_agent import AIAgent
-from .tools.rl_training_tool import get_missing_keys
+from run_agent import AIAgent
+from integrations.hermes.tools.rl_training_tool import get_missing_keys
 
 
 # ============================================================================
 # Config Loading
 # ============================================================================
+
+from integrations.hermes.hermes_constants import get_hermes_home, OPENROUTER_BASE_URL
 
 DEFAULT_MODEL = "anthropic/claude-opus-4.5"
 DEFAULT_BASE_URL = OPENROUTER_BASE_URL
@@ -220,7 +218,7 @@ def check_tinker_atropos():
 
 def list_environments_sync():
     """List available environments (synchronous wrapper)."""
-    from integrations.hermes.tools.rl_training_tool import rl_list_environments
+    from tools.rl_training_tool import rl_list_environments
     import json
     
     async def _list():
@@ -235,10 +233,10 @@ def list_environments_sync():
 # ============================================================================
 
 def main(
-    task: str | None = None,
-    model: str | None = None,
-    api_key: str | None = None,
-    base_url: str | None = None,
+    task: str = None,
+    model: str = None,
+    api_key: str = None,
+    base_url: str = None,
     max_iterations: int = RL_MAX_ITERATIONS,
     interactive: bool = False,
     list_environments: bool = False,
@@ -291,10 +289,9 @@ def main(
         print("\n🔍 Checking tinker-atropos setup...")
         ok, result = check_tinker_atropos()
         if ok:
-            result_data = result if isinstance(result, dict) else {}
             print("✅ tinker-atropos submodule found")
-            print(f"   Path: {result_data.get('path')}")
-            print(f"   Environments found: {result_data.get('environments_count', 0)}")
+            print(f"   Path: {result.get('path')}")
+            print(f"   Environments found: {result.get('environments_count', 0)}")
             
             # Also check API keys
             missing = get_missing_keys()
@@ -370,9 +367,9 @@ def main(
     
     # Create agent with RL configuration
     agent = AIAgent(
-        base_url=base_url or DEFAULT_BASE_URL,
-        api_key=api_key or "",
-        model=model or DEFAULT_MODEL,
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
         max_iterations=max_iterations,
         enabled_toolsets=RL_TOOLSETS,
         save_trajectories=save_trajectories,
@@ -401,7 +398,7 @@ def main(
                 
                 if user_input.lower() == 'status':
                     # Quick status check
-                    from integrations.hermes.tools.rl_training_tool import rl_list_runs
+                    from tools.rl_training_tool import rl_list_runs
                     import json
                     result = asyncio.run(rl_list_runs())
                     runs = json.loads(result)
@@ -432,7 +429,7 @@ def main(
         print("-" * 40)
         
         try:
-            response = agent.run_conversation(task or "")
+            response = agent.run_conversation(task)
             print("\n" + "=" * 60)
             print("✅ Task completed")
         except KeyboardInterrupt:

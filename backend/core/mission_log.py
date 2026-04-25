@@ -477,7 +477,7 @@ class MissionLog:
 
         r = _reset(nc)
         d = _dim(nc)
-        bold = _bold(nc)
+        _bold(nc)
         cyan = "" if nc else _C.CYAN
 
         ts_part = f"{d}{timestamp}{r}  " if timestamp else ""

@@ -27,16 +27,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import time
 import logging
-from typing import Optional, TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING
 
 import jsonschema
-from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from domain.tools.models import ToolDefinition
 from domain.tools.contracts import VerificationResult
+from domain.tools.models import ToolDefinition
 
 if TYPE_CHECKING:
     pass
@@ -56,22 +56,22 @@ _RISK_TIER_FLOOR: dict[str, str] = {
     "low": "free",
     "medium": "standard",
     "high": "pro",
-    "critical": "pro",     # + approval token always required
+    "critical": "pro",  # + approval token always required
 }
 
 # ── Side-effect class gates ───────────────────────────────────────────────────
 _SIDE_EFFECT_TIER_FLOOR: dict[str, str] = {
     "read": "free",
-    "write": "free",       # idempotency enforced by executor
+    "write": "free",  # idempotency enforced by executor
     "execute": "pro",
-    "external": "free",    # approval gate applied separately
+    "external": "free",  # approval gate applied separately
 }
 
 _SIDE_EFFECT_NEEDS_APPROVAL: frozenset[str] = frozenset({"external"})
 _APPROVAL_ALWAYS_REQUIRED: frozenset[str] = frozenset({"critical"})
 
 # Cache TTL for account scopes
-_SCOPE_CACHE_TTL_S = 300   # 5-minute hot cache
+_SCOPE_CACHE_TTL_S = 300  # 5-minute hot cache
 
 
 class ToolVerifier:
@@ -82,8 +82,8 @@ class ToolVerifier:
 
     def __init__(
         self,
-        redis: Optional[Redis] = None,
-        db: Optional[AsyncSession] = None,
+        redis: Redis | None = None,
+        db: AsyncSession | None = None,
         approval_secret: str = "",
     ) -> None:
         self._redis = redis
@@ -96,8 +96,8 @@ class ToolVerifier:
         params: dict,
         account_id: str,
         account_tier: str = "free",
-        approval_token: Optional[str] = None,
-        session_scopes: Optional[set[str]] = None,
+        approval_token: str | None = None,
+        session_scopes: set[str] | None = None,
     ) -> VerificationResult:
         """Check all preconditions before tool execution."""
         checks: list[tuple[str, bool]] = []
@@ -129,9 +129,13 @@ class ToolVerifier:
             checks.append(("approval_token", token_ok))
 
         passed = all(ok for _, ok in checks)
-        reason = None if passed else next(
-            (name for name, ok in checks if not ok),
-            "precondition_failed",
+        reason = (
+            None
+            if passed
+            else next(
+                (name for name, ok in checks if not ok),
+                "precondition_failed",
+            )
         )
         return VerificationResult(passed=passed, checks=checks, reason=reason)
 
@@ -201,15 +205,15 @@ class ToolVerifier:
         if (tool.side_effect_class or "read") in _SIDE_EFFECT_NEEDS_APPROVAL:
             return True
         # High-risk tools require approval if below pro tier
-        if tool.risk_tier == "high" and _TIER_RANK.get(account_tier, 0) < _TIER_RANK["pro"]:
-            return True
-        return False
+        return bool(
+            tool.risk_tier == "high" and _TIER_RANK.get(account_tier, 0) < _TIER_RANK["pro"]
+        )
 
     # ── Approval token ────────────────────────────────────────────────────────
 
     def _verify_approval_token(
         self,
-        token: Optional[str],
+        token: str | None,
         account_id: str,
         tool_name: str,
         risk_tier: str,
@@ -239,13 +243,10 @@ class ToolVerifier:
                 return False
             # Decode and validate binding
             import base64
+
             payload = base64.b64decode(payload_str + "==").decode()
             bound_account, bound_tool, bound_risk, expiry_str = payload.split(":")
-            if (
-                bound_account != account_id
-                or bound_tool != tool_name
-                or bound_risk != risk_tier
-            ):
+            if bound_account != account_id or bound_tool != tool_name or bound_risk != risk_tier:
                 logger.warning("tool.approval_token_wrong_binding", tool=tool_name)
                 return False
             if time.time() > float(expiry_str):
@@ -262,7 +263,7 @@ class ToolVerifier:
         self,
         tool: ToolDefinition,
         account_id: str,
-        session_scopes: Optional[set[str]] = None,
+        session_scopes: set[str] | None = None,
     ) -> bool:
         """Check tool required_scopes against account's active scopes.
 
@@ -293,8 +294,10 @@ class ToolVerifier:
         # Tier 3: DB — only for non-trivial tools or cache miss
         if self._db:
             try:
-                from domain.auth.models import AccountScope
                 from sqlalchemy import select
+
+                from domain.auth.models import AccountScope
+
                 stmt = select(AccountScope.scope).where(AccountScope.account_id == account_id)
                 result = await self._db.execute(stmt)
                 scopes = {row.scope for row in result}
@@ -356,12 +359,15 @@ class ToolVerifier:
 # ── Tool-specific side-effect verifiers ───────────────────────────────────────
 # Registered per tool_name. Signature: async (params, result, db) -> bool
 
+
 async def _verify_send_email(params: dict, result: dict, db) -> bool:
     """Verify email was accepted by the SMTP layer."""
     return bool(result.get("message_id") or result.get("queued"))
 
+
 async def _verify_create_calendar_event(params: dict, result: dict, db) -> bool:
     return bool(result.get("event_id") or result.get("id"))
+
 
 _TOOL_VERIFIERS: dict = {
     "send_email": _verify_send_email,

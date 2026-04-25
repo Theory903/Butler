@@ -24,6 +24,7 @@ from typing import Any, Protocol, runtime_checkable
 
 # ── Session Store ─────────────────────────────────────────────────────────────
 
+
 @runtime_checkable
 class ISessionStore(Protocol):
     """Conversation turn persistence — append, retrieve, search, delete."""
@@ -67,6 +68,7 @@ class ISessionStore(Protocol):
 
 # ── Tool Registry ─────────────────────────────────────────────────────────────
 
+
 @runtime_checkable
 class IToolRegistry(Protocol):
     """Tool schema + dispatch surface."""
@@ -92,17 +94,16 @@ class IToolRegistry(Protocol):
 
 # ── Hook Bus ──────────────────────────────────────────────────────────────────
 
+
 @runtime_checkable
 class IHookBus(Protocol):
     """Lifecycle event bus — emit, register, load."""
 
     @abstractmethod
-    def load(self) -> "IHookBus": ...
+    def load(self) -> IHookBus: ...
 
     @abstractmethod
-    async def emit(
-        self, event_type: str, context: dict[str, Any] | None = None
-    ) -> None: ...
+    async def emit(self, event_type: str, context: dict[str, Any] | None = None) -> None: ...
 
     @abstractmethod
     def register(self, event_type: str, handler: Any) -> None: ...
@@ -112,6 +113,7 @@ class IHookBus(Protocol):
 
 
 # ── Plugin ────────────────────────────────────────────────────────────────────
+
 
 @runtime_checkable
 class IPlugin(Protocol):
@@ -142,7 +144,7 @@ class IPluginBus(Protocol):
     """Plugin lifecycle manager."""
 
     @abstractmethod
-    async def load_all(self) -> "IPluginBus": ...
+    async def load_all(self) -> IPluginBus: ...
 
     @abstractmethod
     def get(self, name: str) -> Any | None: ...
@@ -162,6 +164,7 @@ class IPluginBus(Protocol):
 
 # ── Skills Catalog ────────────────────────────────────────────────────────────
 
+
 @runtime_checkable
 class ISkillsCatalog(Protocol):
     """Read-only skill discovery surface."""
@@ -177,6 +180,7 @@ class ISkillsCatalog(Protocol):
 
 
 # ── Platform Adapter ──────────────────────────────────────────────────────────
+
 
 @runtime_checkable
 class IPlatformAdapter(Protocol):
@@ -216,6 +220,7 @@ class IPlatformRegistry(Protocol):
 
 # ── ACP Bridge ────────────────────────────────────────────────────────────────
 
+
 @runtime_checkable
 class IACPBridge(Protocol):
     """Translates an external approval source into Butler ACP decisions."""
@@ -232,6 +237,7 @@ class IACPBridge(Protocol):
 
 # ── Notebook Repository ───────────────────────────────────────────────────────
 
+
 @runtime_checkable
 class INotebookRepository(Protocol):
     """Persistence for research notebooks, sources, and notes."""
@@ -246,13 +252,50 @@ class INotebookRepository(Protocol):
     async def get_notebook(self, account_id: str, notebook_id: str) -> Any | None: ...
 
     @abstractmethod
-    async def add_source(self, notebook_id: str, title: str, source_type: str, asset: dict) -> Any: ...
+    async def add_source(
+        self, notebook_id: str, title: str, source_type: str, asset: dict
+    ) -> Any: ...
 
     @abstractmethod
     async def get_sources(self, notebook_id: str) -> list[Any]: ...
 
     @abstractmethod
-    async def add_note(self, notebook_id: str, title: str, content: str, note_type: str = "human") -> Any: ...
+    async def add_note(
+        self, notebook_id: str, title: str, content: str, note_type: str = "human"
+    ) -> Any: ...
 
     @abstractmethod
     async def get_notes(self, notebook_id: str) -> list[Any]: ...
+
+
+# ── LangChain Adapter Contracts ─────────────────────────────────────────────────
+
+
+@runtime_checkable
+class ILangChainModelAdapter(Protocol):
+    """LangChain model adapter contract for Butler provider routing."""
+
+    @abstractmethod
+    async def ainvoke(self, messages: list, **kwargs) -> Any: ...
+
+    @abstractmethod
+    def with_structured_output(self, schema: type) -> Any: ...
+
+
+@runtime_checkable
+class ILangChainToolAdapter(Protocol):
+    """LangChain tool adapter contract with Butler governance."""
+
+    @abstractmethod
+    async def _arun(self, **kwargs) -> Any: ...
+
+    @abstractmethod
+    def get_risk_tier(self) -> int: ...
+
+
+@runtime_checkable
+class ILangChainRetriever(Protocol):
+    """LangChain retriever contract for Butler search integration."""
+
+    @abstractmethod
+    async def _aget_relevant_documents(self, query: str) -> list[Any]: ...

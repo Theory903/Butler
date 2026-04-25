@@ -7,6 +7,7 @@ for >100k entries — auto-upgraded when the index grows past the threshold.
 
 FAISS is included as an optional dep via faiss-cpu (or faiss-gpu in prod).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,8 +21,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 try:
-    import numpy as np
     import faiss
+    import numpy as np
+
     _HAS_FAISS = True
 except ImportError:
     _HAS_FAISS = False
@@ -119,6 +121,24 @@ class FaissColdStore:
             None, self._search_sync, query_vector, query_text, k, filters
         )
 
+    # ── IColdStore Contract Implementation ────────────────────────────────────
+
+    async def recall(self, account_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        """IColdStore.recall interface."""
+        return await self.search_async(
+            query_text=query, k=top_k, filters={"account_id": account_id}
+        )
+
+    def index(self, entry_id: str, embedding: list[float], payload: dict) -> None:
+        """IColdStore.index interface."""
+        # Map contract interface to internal add_sync
+        self.add_sync(
+            ids=[entry_id],
+            content=payload.get("content", ""),
+            metadata=[payload],
+            vector=embedding,
+        )
+
     def _search_sync(
         self,
         query_vector: list[float] | None,
@@ -140,33 +160,39 @@ class FaissColdStore:
             distances, indices = self._index.search(q, min(k, len(self._ids)))
 
             results = []
-            for score, idx in zip(distances[0].tolist(), indices[0].tolist()):
+            for score, idx in zip(distances[0].tolist(), indices[0].tolist(), strict=False):
                 if not (0 <= idx < len(self._ids)):
                     continue
                 meta = self._meta[idx]
                 if filters and not _matches_filters(meta, filters):
                     continue
-                results.append({
-                    "id": self._ids[idx],
-                    "score": float(score),
-                    "metadata": meta,
-                    "content": self._text_store[idx] if idx < len(self._text_store) else None,
-                })
+                results.append(
+                    {
+                        "id": self._ids[idx],
+                        "score": float(score),
+                        "metadata": meta,
+                        "content": self._text_store[idx] if idx < len(self._text_store) else None,
+                    }
+                )
             return results
 
         # Simulated path
         results = []
-        for i, (item_id, meta, text) in enumerate(zip(self._ids, self._meta, self._text_store)):
+        for i, (item_id, meta, text) in enumerate(
+            zip(self._ids, self._meta, self._text_store, strict=False)
+        ):
             if len(results) >= k:
                 break
             if filters and not _matches_filters(meta, filters):
                 continue
-            results.append({
-                "id": item_id,
-                "score": max(0.0, 0.99 - i * 0.01),
-                "metadata": meta,
-                "content": text,
-            })
+            results.append(
+                {
+                    "id": item_id,
+                    "score": max(0.0, 0.99 - i * 0.01),
+                    "metadata": meta,
+                    "content": text,
+                }
+            )
         return results
 
     # ── Persistence ────────────────────────────────────────────────────────
@@ -180,12 +206,15 @@ class FaissColdStore:
         meta_path = target + ".meta.pkl"
         try:
             with open(meta_path, "wb") as f:
-                pickle.dump({
-                    "ids": self._ids,
-                    "meta": self._meta,
-                    "text_store": self._text_store,
-                    "dim": self.dim,
-                }, f)
+                pickle.dump(
+                    {
+                        "ids": self._ids,
+                        "meta": self._meta,
+                        "text_store": self._text_store,
+                        "dim": self.dim,
+                    },
+                    f,
+                )
             if _HAS_FAISS:
                 faiss.write_index(self._index, target + ".faiss")
             else:
@@ -229,6 +258,7 @@ class FaissColdStore:
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def _hash_to_vector(text: str, dim: int) -> list[float]:
     digest = hashlib.sha256(text.encode()).digest()

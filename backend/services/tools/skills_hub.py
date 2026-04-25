@@ -31,7 +31,7 @@ Built-in skills:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import structlog
@@ -39,19 +39,21 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-class SkillTrigger(str, Enum):
+class SkillTrigger(StrEnum):
     """How a skill is activated."""
-    INTENT_MATCH  = "intent_match"   # Matched by intent label
+
+    INTENT_MATCH = "intent_match"  # Matched by intent label
     EXPLICIT_CALL = "explicit_call"  # Explicitly requested by name
-    AUTO          = "auto"           # Hub decides automatically
+    AUTO = "auto"  # Hub decides automatically
 
 
 @dataclass(frozen=True)
 class ToolStep:
     """A single tool invocation within a skill's execution plan."""
+
     tool_name: str
-    params_template: dict               # Template — {key: "{variable}"} filled at runtime
-    depends_on: list[str] = field(default_factory=list)   # Step IDs this step waits for
+    params_template: dict  # Template — {key: "{variable}"} filled at runtime
+    depends_on: list[str] = field(default_factory=list)  # Step IDs this step waits for
     optional: bool = False
     store_result_as: str | None = None  # Variable name for downstream steps
     timeout_s: int = 30
@@ -60,15 +62,16 @@ class ToolStep:
 @dataclass(frozen=True)
 class SkillDefinition:
     """Immutable skill blueprint."""
+
     id: str
     name: str
     description: str
     version: str
     trigger: SkillTrigger
-    intent_labels: list[str]           # Which intent labels activate this skill
+    intent_labels: list[str]  # Which intent labels activate this skill
     steps: list[ToolStep]
-    requires_tools: list[str]          # Tool names this skill depends on
-    aal_required: str = "aal1"         # Minimum assurance level
+    requires_tools: list[str]  # Tool names this skill depends on
+    aal_required: str = "aal1"  # Minimum assurance level
     requires_approval: bool = False
     category: str = "general"
 
@@ -76,10 +79,11 @@ class SkillDefinition:
 @dataclass
 class SkillExecutionPlan:
     """Produced by SkillsHub.match(). Consumed by PlanEngine."""
+
     skill_id: str
     skill_name: str
     steps: list[ToolStep]
-    resolved_params: dict[str, Any]    # Params resolved from user message + context
+    resolved_params: dict[str, Any]  # Params resolved from user message + context
     requires_approval: bool
     aal_required: str
 
@@ -87,7 +91,6 @@ class SkillExecutionPlan:
 # ── Built-in skill library ─────────────────────────────────────────────────────
 
 _BUILTIN_SKILLS: list[SkillDefinition] = [
-
     SkillDefinition(
         id="research_and_summarize",
         name="Research and Summarize",
@@ -110,7 +113,6 @@ _BUILTIN_SKILLS: list[SkillDefinition] = [
             ),
         ],
     ),
-
     SkillDefinition(
         id="send_message",
         name="Send Message",
@@ -139,7 +141,6 @@ _BUILTIN_SKILLS: list[SkillDefinition] = [
             ),
         ],
     ),
-
     SkillDefinition(
         id="set_reminder",
         name="Set Reminder",
@@ -166,7 +167,6 @@ _BUILTIN_SKILLS: list[SkillDefinition] = [
             ),
         ],
     ),
-
     SkillDefinition(
         id="read_and_analyze",
         name="Read and Analyze",
@@ -200,7 +200,6 @@ _BUILTIN_SKILLS: list[SkillDefinition] = [
             ),
         ],
     ),
-
     SkillDefinition(
         id="check_status",
         name="Check Status",
@@ -223,6 +222,7 @@ _BUILTIN_SKILLS: list[SkillDefinition] = [
 
 # ── ButlerSkillsHub ────────────────────────────────────────────────────────────
 
+
 class ButlerSkillsHub:
     """Skill registry and matcher.
 
@@ -234,9 +234,7 @@ class ButlerSkillsHub:
     """
 
     def __init__(self, extra_skills: list[SkillDefinition] | None = None) -> None:
-        self._skills: dict[str, SkillDefinition] = {
-            s.id: s for s in _BUILTIN_SKILLS
-        }
+        self._skills: dict[str, SkillDefinition] = {s.id: s for s in _BUILTIN_SKILLS}
         if extra_skills:
             for skill in extra_skills:
                 self._skills[skill.id] = skill
@@ -252,10 +250,10 @@ class ButlerSkillsHub:
         """
         ctx = context or {}
         for skill in self._skills.values():
-            if (
-                skill.trigger in (SkillTrigger.INTENT_MATCH, SkillTrigger.AUTO)
-                and intent_label.lower() in [lbl.lower() for lbl in skill.intent_labels]
-            ):
+            if skill.trigger in (
+                SkillTrigger.INTENT_MATCH,
+                SkillTrigger.AUTO,
+            ) and intent_label.lower() in [lbl.lower() for lbl in skill.intent_labels]:
                 logger.info(
                     "skills_hub_match",
                     intent=intent_label,

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
 
 from domain.base import DomainService
 
@@ -28,12 +27,18 @@ class TokenPair:
 @dataclass(frozen=True)
 class AccountContext:
     """Authenticated context — passed through every request.
-    
+
     sub: The stable subject/principal ID (Identity Owner).
     sid: The stable session ID.
     aid: The selected Active Account ID (Context).
+    tid: The Tenant ID owning this account (multi-tenant isolation key).
     amr: Authentication Methods Reference (e.g. ["pwd", "webauthn"]).
     acr: Authentication Assurance Level (e.g. "aal1", "aal2").
+
+    Multi-tenancy invariant:
+        Every authenticated request MUST resolve to a tenant. Until a first-class
+        Tenant model exists (Phase 12), `tid` falls back to `aid` so that
+        downstream services can still enforce tenant-scoped queries today.
     """
 
     sub: str
@@ -41,8 +46,15 @@ class AccountContext:
     aid: str
     amr: list[str]
     acr: str
+    tid: str = ""
     device_id: str | None = None
     client_id: str | None = None
+
+    def __post_init__(self) -> None:
+        # Enforce tenant_id presence. If absent, derive from aid (single-tenant-
+        # per-account fallback). Bypass frozen dataclass via object.__setattr__.
+        if not self.tid:
+            object.__setattr__(self, "tid", self.aid or self.sub)
 
     # ── Gateway-layer aliases ────────────────────────────────────────────────
     # The gateway uses friendly names; these properties bridge to the OIDC
@@ -64,10 +76,14 @@ class AccountContext:
         return self.acr
 
     @property
+    def tenant_id(self) -> str:
+        """Tenant ID owning this account (canonical multi-tenant scope key)."""
+        return self.tid
+
+    @property
     def token_id(self) -> str | None:
         """jti — not stored on domain but referenced in gateway. Returns None."""
         return None
-
 
 
 class AuthServiceContract(DomainService, ABC):
@@ -123,9 +139,7 @@ class AuthServiceContract(DomainService, ABC):
         """Create WebAuthn challenge for new passkey registration."""
 
     @abstractmethod
-    async def verify_registration(
-        self, principal_id: str, challenge: str, response: dict
-    ) -> bool:
+    async def verify_registration(self, principal_id: str, challenge: str, response: dict) -> bool:
         """Verify WebAuthn attestation and store credential."""
 
     @abstractmethod
@@ -134,8 +148,8 @@ class AuthServiceContract(DomainService, ABC):
 
     @abstractmethod
     async def verify_authentication(
-        self, 
-        challenge: str, 
+        self,
+        challenge: str,
         response: dict,
         ip_address: str | None = None,
         user_agent: str | None = None,

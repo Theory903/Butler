@@ -1,8 +1,9 @@
 """Tools service - tool registry and execution."""
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional, Any, Dict
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -10,24 +11,44 @@ router = APIRouter(prefix="/tools", tags=["tools"])
 class Tool(BaseModel):
     name: str
     description: str
-    parameters: Dict[str, Any]
+    parameters: dict[str, Any]
     category: str
 
 
 class ToolExecute(BaseModel):
     tool_name: str
-    parameters: Dict[str, Any]
+    parameters: dict[str, Any]
 
 
 TOOLS = [
-    Tool(name="search_web", description="Search the web for information", parameters={"query": "string"}, category="search"),
-    Tool(name="send_email", description="Send an email", parameters={"to": "string", "subject": "string", "body": "string"}, category="communication"),
-    Tool(name="create_reminder", description="Create a reminder", parameters={"title": "string", "datetime": "string"}, category="productivity"),
-    Tool(name="get_weather", description="Get weather for a location", parameters={"location": "string"}, category="information"),
+    Tool(
+        name="search_web",
+        description="Search the web for information",
+        parameters={"query": "string"},
+        category="search",
+    ),
+    Tool(
+        name="send_email",
+        description="Send an email",
+        parameters={"to": "string", "subject": "string", "body": "string"},
+        category="communication",
+    ),
+    Tool(
+        name="create_reminder",
+        description="Create a reminder",
+        parameters={"title": "string", "datetime": "string"},
+        category="productivity",
+    ),
+    Tool(
+        name="get_weather",
+        description="Get weather for a location",
+        parameters={"location": "string"},
+        category="information",
+    ),
 ]
 
 
-@router.get("/", response_model=List[Tool])
+@router.get("/", response_model=list[Tool])
 async def list_tools():
     return TOOLS
 

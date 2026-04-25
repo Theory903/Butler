@@ -1,24 +1,24 @@
-import uuid
-from typing import Dict, Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.schemas.communication import (
-    SendRequest,
     DeliveryState,
     PolicyResultResponse,
-    CanonicalInbound
+    SendRequest,
 )
-from services.communication.policy import CommunicationPolicy
+from core.deps import get_cache, get_db
 from services.communication.delivery import DeliveryService
+from services.communication.policy import CommunicationPolicy
 from services.communication.webhooks import WebhookValidator
-from core.deps import get_db, get_cache
 
 router = APIRouter(prefix="/communication", tags=["communication"])
 
 
 # ── Dependency factories ───────────────────────────────────────────────────────
+
 
 async def get_communication_policy(
     db: AsyncSession = Depends(get_db),
@@ -37,6 +37,7 @@ async def get_delivery_service(
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+
 @router.post("/prepare", response_model=PolicyResultResponse)
 async def prepare_message(
     request: SendRequest,
@@ -48,16 +49,15 @@ async def prepare_message(
     """
     result = await policy.pre_send_check(request)
     return PolicyResultResponse(
-        allowed=result.allowed,
-        reason=result.reason,
-        suppressed=result.suppressed
+        allowed=result.allowed, reason=result.reason, suppressed=result.suppressed
     )
+
 
 @router.post("/send")
 async def send_message(
     request: SendRequest,
     delivery_service: DeliveryService = Depends(get_delivery_service),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Enqueue a message for delivery via the Communication Control Plane.
     Returns tracking info.
@@ -68,8 +68,9 @@ async def send_message(
         "message_id": message_id,
         "status": "queued",
         "status_url": f"/api/v1/comm/status/{message_id}",
-        "phase": "accepted"
+        "phase": "accepted",
     }
+
 
 @router.get("/status/{message_id}", response_model=DeliveryState)
 async def get_message_status(
@@ -83,6 +84,7 @@ async def get_message_status(
     if not state:
         raise HTTPException(status_code=404, detail="Message not found")
     return state
+
 
 @router.post("/webhooks/{provider}")
 async def provider_webhook(
@@ -119,10 +121,6 @@ async def provider_webhook(
     else:
         payload = dict(await request.form())
 
-    background_tasks.add_task(
-        delivery_service.process_webhook_event,
-        provider,
-        payload
-    )
+    background_tasks.add_task(delivery_service.process_webhook_event, provider, payload)
 
     return Response(content="Accepted", status_code=202)

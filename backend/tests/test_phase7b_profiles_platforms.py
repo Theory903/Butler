@@ -50,36 +50,30 @@ Verifies:
 
 from __future__ import annotations
 
-import pytest
-
-from domain.policy.industry_profiles import (
-    IndustryProfile,
-    ProfileConfig,
-    PROFILE_CONFIGS,
-    resolve_capabilities,
-    check_profile_capability,
-    profile_meets_min_tier,
-)
-from domain.policy.product_tiers import (
-    ProductTier,
-    CapabilityFlag,
-)
-from services.gateway.platform_registry import (
-    PlatformRegistry,
-    PlatformAdapter,
-    PlatformId,
+from domain.gateway.platform_registry import (
     AuthMechanism,
-    MessageFormat,
+    PlatformId,
+    PlatformRegistry,
     get_platform_registry,
 )
 
+from domain.policy.industry_profiles import (
+    IndustryProfile,
+    check_profile_capability,
+    profile_meets_min_tier,
+    resolve_capabilities,
+)
+from domain.policy.product_tiers import (
+    CapabilityFlag,
+    ProductTier,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 28: Industry Profiles
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestIndustryProfiles:
 
+class TestIndustryProfiles:
     # ── Default profile ───────────────────────────────────────────────────────
 
     def test_default_adds_nothing(self):
@@ -161,6 +155,7 @@ class TestIndustryProfiles:
             eff = resolve_capabilities(ProductTier.PERSONAL, profile)
             # No addition should exist that goes beyond Enterprise
             from domain.policy.product_tiers import TIER_CONFIGS
+
             enterprise_caps = TIER_CONFIGS[ProductTier.ENTERPRISE].capabilities
             assert eff.added.issubset(enterprise_caps)
 
@@ -216,8 +211,8 @@ class TestIndustryProfiles:
 # Test 29: PlatformRegistry
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestPlatformRegistry:
 
+class TestPlatformRegistry:
     def _reg(self) -> PlatformRegistry:
         return PlatformRegistry()
 

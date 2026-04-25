@@ -1,4 +1,28 @@
-import importlib
+"""Centralized logging setup for Hermes Agent.
+
+Provides a single ``setup_logging()`` entry point that both the CLI and
+gateway call early in their startup path.  All log files live under
+``~/.hermes/logs/`` (profile-aware via ``get_hermes_home()``).
+
+Log files produced:
+    agent.log   — INFO+, all agent/tool/session activity (the main log)
+    errors.log  — WARNING+, errors and warnings only (quick triage)
+    gateway.log — INFO+, gateway-only events (created when mode="gateway")
+
+All files use ``RotatingFileHandler`` with ``RedactingFormatter`` so
+secrets are never written to disk.
+
+Component separation:
+    gateway.log only receives records from ``gateway.*`` loggers —
+    platform adapters, session management, slash commands, delivery.
+    agent.log remains the catch-all (everything goes there).
+
+Session context:
+    Call ``set_session_context(session_id)`` at the start of a conversation
+    and ``clear_session_context()`` when done.  All log lines emitted on
+    that thread will include ``[session_id]`` for filtering/correlation.
+"""
+
 import logging
 import os
 import threading
@@ -188,7 +212,7 @@ def setup_logging(
     backups = backup_count or cfg_backup or 3
 
     # Lazy import to avoid circular dependency at module load time.
-    from integrations.hermes.agent.redact import RedactingFormatter
+    from agent.redact import RedactingFormatter
 
     root = logging.getLogger()
 
@@ -241,7 +265,7 @@ def setup_verbose_logging() -> None:
 
     Called by ``AIAgent.__init__()`` when ``verbose_logging=True``.
     """
-    from integrations.hermes.agent.redact import RedactingFormatter
+    from agent.redact import RedactingFormatter
 
     root = logging.getLogger()
 
@@ -283,12 +307,8 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     """
 
     def __init__(self, *args, **kwargs):
-        try:
-            config_module = importlib.import_module("backend.integrations.hermes.hermes_cli.config")
-            is_managed = getattr(config_module, "is_managed")
-            self._managed = bool(is_managed())
-        except Exception:
-            self._managed = False
+        from hermes_cli.config import is_managed
+        self._managed = is_managed()
         super().__init__(*args, **kwargs)
 
     def _chmod_if_managed(self):

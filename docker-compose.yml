@@ -1,25 +1,5 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# Butler — Docker Compose
-#
-# Profiles:
-#   (default)    core services: api, db, cache, neo4j, qdrant, searxng
-#   frontend     + app (Expo)
-#   prod         hardened runtime image, minimal logs, non-root
-#   ship         prod + Vector log shipper → Loki / Elasticsearch
-#
-# Usage:
-#   docker compose up                            # dev (all core services)
-#   docker compose --profile frontend up         # dev + Expo app
-#   docker compose --profile prod up             # production
-#   docker compose --profile ship up             # production + log shipper
-#
-# Required env vars (copy .env.example → .env):
-#   GROQ_API_KEY, DEFAULT_MODEL, SECRET_KEY, POSTGRES_PASSWORD
-# ──────────────────────────────────────────────────────────────────────────────
-
 name: butler
 
-# ── Shared fragments ───────────────────────────────────────────────────────────
 x-logging-dev: &logging-dev
   driver: json-file
   options:
@@ -42,7 +22,6 @@ x-healthcheck-defaults: &hc-defaults
   retries: 10
   start_period: 20s
 
-# ── Common env for API (dev) ───────────────────────────────────────────────────
 x-api-env: &api-env
   DATABASE_URL: postgresql+asyncpg://butler:${POSTGRES_PASSWORD:-butler}@db:5432/butler
   REDIS_URL: redis://cache:6379
@@ -51,24 +30,33 @@ x-api-env: &api-env
   NEO4J_PASSWORD: ${NEO4J_PASSWORD:-butler-dev}
   QDRANT_URL: http://qdrant:6333
   SEARXNG_URL: http://searxng:8080
+  REDPANDA_URL: PLAINTEXT://redpanda:9092
   SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-prod}
   ORT_LOGGING_LEVEL: "3"
-  GROQ_API_KEY: ${GROQ_API_KEY}
-  DEFAULT_MODEL: ${DEFAULT_MODEL}
-  # Butler Mission Log
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  DEFAULT_MODEL: ${DEFAULT_MODEL:-gemma-4-26b-a4b-it}
+  LONG_CONTEXT_MODEL: ${LONG_CONTEXT_MODEL:-gemma-4-26b-a4b-it}
+  LONG_CONTEXT_TOKEN_THRESHOLD: ${LONG_CONTEXT_TOKEN_THRESHOLD:-8192}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+  RERANKER_MODEL: ${RERANKER_MODEL:-bge-reranker-v2-m3}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   BUTLER_LOG_MODE: verbose
   BUTLER_LOG_COLOR: "true"
-  LOG_LEVEL: DEBUG
+  LOG_LEVEL: debug
   APP_ENV: development
+  HOST: 0.0.0.0
+  PORT: 8000
+  WEB_CONCURRENCY: 2
   NODE_ID: api-dev-1
 
 services:
-  # ── API (dev) ────────────────────────────────────────────────────────────────
   api:
     build:
       context: .
       dockerfile: backend/Dockerfile
-      target: builder # hot-reload stage in dev
+      target: dev
       cache_from:
         - type=local,src=/tmp/.buildx-cache
     image: butler-api:dev
@@ -84,25 +72,30 @@ services:
       neo4j:
         condition: service_healthy
       qdrant:
+        condition: service_started
+      searxng:
+        condition: service_started
+      redpanda:
         condition: service_healthy
     volumes:
-      - ./backend:/app/backend # live-reload
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./backend:/app/backend
     command: /app/scripts/start-api.sh
     healthcheck:
       test:
-        ["CMD-SHELL", "curl -sf http://localhost:8000/health/live || exit 1"]
+        [
+          "CMD-SHELL",
+          "curl -sf http://localhost:8000/api/v1/health/live || exit 1",
+        ]
       <<: *hc-defaults
     logging: *logging-dev
     <<: *restart
 
-  # ── API (prod) ───────────────────────────────────────────────────────────────
   api-prod:
     profiles: [prod, ship]
     build:
       context: .
       dockerfile: backend/Dockerfile
-      target: runtime # hardened, non-root
+      target: runtime
     image: butler-api:prod
     environment:
       <<: *api-env
@@ -111,6 +104,7 @@ services:
       NO_COLOR: "1"
       LOG_LEVEL: INFO
       APP_ENV: production
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
       NODE_ID: ${HOSTNAME:-prod-api-1}
     ports:
       - "8000:8000"
@@ -123,23 +117,27 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      searxng:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
     command: /app/scripts/start-api.sh
-    user: "1001:1001"
     read_only: true
     tmpfs:
       - /tmp
+      - /app/backend/scratch
     security_opt:
       - no-new-privileges:true
     healthcheck:
       test:
-        ["CMD-SHELL", "curl -sf http://localhost:8000/health/live || exit 1"]
+        [
+          "CMD-SHELL",
+          "curl -sf http://localhost:8000/api/v1/health/live || exit 1",
+        ]
       <<: *hc-defaults
     logging: *logging-prod
     <<: *restart
 
-  # ── API (JSON logs → Vector shipper) ─────────────────────────────────────────
   api-json:
     profiles: [ship]
     build:
@@ -149,39 +147,45 @@ services:
     image: butler-api:prod
     environment:
       <<: *api-env
-      BUTLER_LOG_MODE: json # ECS newline-delimited JSON
+      BUTLER_LOG_MODE: json
       BUTLER_LOG_COLOR: "false"
       NO_COLOR: "1"
       LOG_LEVEL: INFO
       APP_ENV: production
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
       NODE_ID: ${HOSTNAME:-prod-api-1}
     depends_on:
       db:
         condition: service_healthy
       cache:
         condition: service_healthy
+      searxng:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
     command: /app/scripts/start-api.sh
-    user: "1001:1001"
     read_only: true
     tmpfs:
       - /tmp
+      - /app/backend/scratch
     security_opt:
       - no-new-privileges:true
     healthcheck:
       test:
-        ["CMD-SHELL", "curl -sf http://localhost:8000/health/live || exit 1"]
+        [
+          "CMD-SHELL",
+          "curl -sf http://localhost:8000/api/v1/health/live || exit 1",
+        ]
       <<: *hc-defaults
     logging: *logging-prod
     <<: *restart
 
-  # ── PostgreSQL + pgvector ─────────────────────────────────────────────────────
   db:
     image: pgvector/pgvector:pg15
     environment:
       POSTGRES_USER: butler
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-butler}
       POSTGRES_DB: butler
-      # Tuning — adjust to available RAM
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
     command:
       - postgres
@@ -201,14 +205,13 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/db/init:/docker-entrypoint-initdb.d:ro # init SQL scripts
+      - ./backend/db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U butler -d butler"]
       <<: *hc-defaults
     logging: *logging-dev
     <<: *restart
 
-  # ── Redis ─────────────────────────────────────────────────────────────────────
   cache:
     image: redis:7-alpine
     command: >
@@ -229,7 +232,6 @@ services:
     logging: *logging-dev
     <<: *restart
 
-  # ── Neo4j ─────────────────────────────────────────────────────────────────────
   neo4j:
     image: neo4j:5.12-community
     environment:
@@ -237,16 +239,12 @@ services:
       NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*,gds.*,graph_data_science.*"
       NEO4J_dbms_security_procedures_allowlist: "apoc.*,gds.*"
-      # Memory tuning
       NEO4J_server_memory_heap_initial__size: "512m"
       NEO4J_server_memory_heap_max__size: "1G"
       NEO4J_server_memory_pagecache_size: "512m"
-      # Logging
-      NEO4J_server_logs_query_enabled: "INFO"
-      NEO4J_server_logs_query_threshold: "1000ms"
     ports:
-      - "7474:7474" # Browser / HTTP
-      - "7687:7687" # Bolt
+      - "7474:7474"
+      - "7687:7687"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -255,28 +253,26 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 40s # Neo4j is slow to start
+      start_period: 40s
     logging: *logging-dev
     <<: *restart
 
-  # ── Qdrant vector store ───────────────────────────────────────────────────────
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.13.4
     environment:
       QDRANT__LOG_LEVEL: WARN
       QDRANT__TELEMETRY_DISABLED: "true"
     ports:
-      - "6333:6333" # HTTP / REST
-      - "6334:6334" # gRPC
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/health || exit 1"]
       <<: *hc-defaults
     logging: *logging-dev
     <<: *restart
 
-  # ── SearXNG ───────────────────────────────────────────────────────────────────
   searxng:
     image: searxng/searxng:latest
     container_name: butler-searxng
@@ -290,12 +286,55 @@ services:
     volumes:
       - ./searxng:/etc/searxng:rw
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/healthz || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ || exit 1"]
       <<: *hc-defaults
     logging: *logging-dev
     <<: *restart
 
-  # ── Expo frontend app ─────────────────────────────────────────────────────────
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.2
+    command:
+      - redpanda
+      - start
+      - --smp
+      - "1"
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - "0"
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9644/v1/status/ready || exit 1"]
+      <<: *hc-defaults
+    logging: *logging-dev
+    <<: *restart
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      <<: *hc-defaults
+    logging: *logging-dev
+    <<: *restart
+
   app:
     profiles: [frontend]
     build:
@@ -306,9 +345,9 @@ services:
       NODE_ENV: development
       EXPO_DEVTOOLS_LISTEN_ADDRESS: "0.0.0.0"
     ports:
-      - "8081:8081" # Expo dev server
-      - "19000:19000" # Expo tunnel
-      - "19001:19001" # Expo inspector
+      - "8081:8081"
+      - "19000:19000"
+      - "19001:19001"
     volumes:
       - ./app:/app
       - app_node_modules:/app/node_modules
@@ -320,7 +359,6 @@ services:
     logging: *logging-dev
     <<: *restart
 
-  # ── Vector log shipper ────────────────────────────────────────────────────────
   vector:
     profiles: [ship]
     image: timberio/vector:0.38-debian
@@ -328,13 +366,12 @@ services:
       - ./deploy/vector/vector.toml:/etc/vector/vector.toml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
-      - "8686:8686" # Vector API / metrics
+      - "8686:8686"
     depends_on:
       - api-json
     logging: *logging-dev
     <<: *restart
 
-# ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   postgres_data:
     driver: local
@@ -350,10 +387,11 @@ volumes:
     driver: local
   app_expo_modules:
     driver: local
+  redpanda_data:
+    driver: local
+  minio_data:
+    driver: local
 
-# ── Networks ──────────────────────────────────────────────────────────────────
-# Docker Compose creates a default network. Declaring it explicitly
-# lets you set driver options and gives a stable name for external tools.
 networks:
   default:
     name: butler-net

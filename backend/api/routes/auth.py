@@ -7,6 +7,7 @@ Errors flow up as Problem exceptions and are handled by the global handler.
 from __future__ import annotations
 
 from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +32,7 @@ from api.schemas.auth import (
     WebAuthnRegistrationVerifyRequest,
 )
 from core.deps import get_cache, get_db
-from core.errors import Problem, NotFoundProblem
+from core.errors import Problem
 from services.auth.jwt import get_jwks_manager
 from services.auth.password import PasswordService
 from services.auth.service import AuthService
@@ -65,6 +66,7 @@ async def get_current_sid(request: Request) -> str:
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
 
 @router.post("/register", response_model=TokenResponse, status_code=201)
 async def register(
@@ -140,17 +142,18 @@ async def me(
     ctx = await auth.get_context(sid)
     if not ctx:
         raise Problem(type="session-invalid", title="Session Invalid", status=401)
-    
+
     principal = await auth.get_principal(ctx.sub)
     account = await auth.get_account(ctx.aid) if ctx.aid else None
-    
+
     return IdentityContextResponse(
         principal=PrincipalResponse(**principal),
-        active_account=AccountResponse(**account) if account else None
+        active_account=AccountResponse(**account) if account else None,
     )
 
 
 # ── WebAuthn (Passkeys) ───────────────────────────────────────────────────
+
 
 @router.post("/passkey/register/options")
 async def register_passkey_options(
@@ -174,7 +177,7 @@ async def register_passkey_verify(
     ctx = await auth.get_context(sid)
     if not ctx:
         raise Problem(type="session-invalid", title="Session Invalid", status=401)
-    
+
     success = await auth.verify_registration(ctx.sub, req.challenge, req.response)
     if not success:
         raise Problem(type="webauthn-failed", title="Passkey Registration Failed", status=400)
@@ -208,11 +211,13 @@ async def login_passkey_verify(
 
 # ── OIDC / OAuth 2.1 ───────────────────────────────────────────────────────
 
+
 @router.get("/.well-known/openid-configuration", include_in_schema=True)
 async def oidc_discovery():
     """OIDC Discovery endpoint."""
-    from services.auth.oidc import get_oidc_discovery
     from infrastructure.config import settings
+    from services.auth.oidc import get_oidc_discovery
+
     return get_oidc_discovery(settings.JWT_ISSUER)
 
 
@@ -225,9 +230,10 @@ async def authorize(
 ):
     """Handle OIDC authorization request."""
     from services.auth.oidc import create_oidc_server
+
     server = create_oidc_server(db, auth._jwks)
-    
-    # This is a stub for the consent screen. 
+
+    # This is a stub for the consent screen.
     # In a real app, we'd render a page here if logged in, or redirect to login.
     # For now, we assume Butler's single-tenant or auto-consent for demo.
     return await server.create_authorization_response(request, grant_user=None)
@@ -241,6 +247,7 @@ async def token_endpoint(
 ):
     """Handle OAuth token exchange."""
     from services.auth.oidc import create_oidc_server
+
     server = create_oidc_server(db, auth._jwks)
     return await server.create_token_response(request)
 
@@ -254,7 +261,7 @@ async def userinfo(
     ctx = await auth.get_context(sid)
     if not ctx:
         raise Problem(type="session-invalid", title="Session Invalid", status=401)
-    
+
     principal = await auth.get_principal(ctx.sub)
     return {
         "sub": str(principal["id"]),
@@ -265,6 +272,7 @@ async def userinfo(
 
 
 # ── Phase 4: Multi-Account & Session Management ───────────────────────────────
+
 
 @router.get("/accounts", response_model=list[AccountResponse])
 async def list_accounts(
@@ -322,6 +330,7 @@ async def revoke_session(
 
 
 # ── Phase 5: Recovery & Lifecycle ─────────────────────────────────────────────
+
 
 @router.post("/reauth", response_model=ReauthResponse)
 async def reauth(

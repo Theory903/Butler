@@ -1,247 +1,359 @@
-"""AnsweringEngine — v3.1 production classifier + answer pipeline.
+"""AnsweringEngine — AI-first multilingual search-answer pipeline.
 
-Classifier uses a pure keyword-heuristic approach (zero LLM deps, sub-ms).
-
-Classification rules:
-  - Buckets are NOT mutually exclusive.
-  - Widget flags (weather, stock, calculator) are orthogonal to search type.
-  - Ambiguous queries that match no bucket fall into ambiguousSearch.
-  - Single-word inputs and pure greetings are skipSearch.
-  - Standalone follow-up: append last user turn from history if present.
-
-Classification taxonomy:
-  skipSearch           — greetings, single-word
-  personalSearch       — user's own data ("my", "mine", "I have")
-  transactionalSearch  — order, buy, book, schedule, send
-  researchSearch       — paper, arxiv, study, doi, research
-  discussionSearch     — reddit, forum, opinion, people think
-  ambiguousSearch      — non-trivial query, no other bucket fired
-  widgetIntent.*       — orthogonal flags: weather, stock, calculate
+Design goals:
+- model-first classification and follow-up rewriting
+- schema-validated structured outputs
+- multilingual / code-mixed query support
+- minimal deterministic fallback rails
+- grounded answer synthesis over normalized search results
 """
 
 from __future__ import annotations
 
-import re
-import json
-import structlog
+from collections.abc import Sequence
 from typing import Any
 
+import structlog
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from domain.ml.contracts import (
+    IReasoningRuntime,
+    ReasoningRequest,
+    ReasoningTier,
+    ResponseFormat,
+)
 from domain.search.contracts import (
-    SearchClassification,
-    ClassifierResult,
-    SearchResult,
     AnsweringEngineResult,
-    ISearchService,
+    ClassifierResult,
     ISearchAdapter,
+    SearchClassification,
+    SearchResult,
+    SearchWidget,
 )
 
 logger = structlog.get_logger(__name__)
 
-# ── Keyword buckets ────────────────────────────────────────────────────────────
 
-_GREETINGS = frozenset({"hi", "hello", "hey", "yo", "sup", "thanks", "ok", "okay", "bye", "good"})
+class _ClassificationPayload(BaseModel):
+    """Structured model output for search classification."""
 
-_PERSONAL_PATTERNS = re.compile(
-    r"\b(my|mine|i have|i've|my own|for me|show me my|i want my|"
-    r"my account|my order|my calendar|my email|my file|my photo|my data)\b",
-    re.I,
-)
-_TRANSACTIONAL_PATTERNS = re.compile(
-    r"\b(order|buy|purchase|book|reserve|schedule|send|pay|sign up|subscribe|"
-    r"cancel|refund|return|checkout|add to cart)\b",
-    re.I,
-)
-_RESEARCH_PATTERNS = re.compile(
-    r"\b(paper|arxiv|doi|pubmed|academic|journal|study|studies|research|"
-    r"literature|preprint|citation|peer.?reviewed|systematic review)\b",
-    re.I,
-)
-_DISCUSSION_PATTERNS = re.compile(
-    r"\b(reddit|forum|hacker news|hn|discussion|community|what do people|"
-    r"opinion|opinions|thoughts on|subreddit|thread|comments about)\b",
-    re.I,
-)
+    model_config = ConfigDict(extra="forbid")
 
-# Widget: orthogonal flags
-_WEATHER_PATTERNS = re.compile(
-    r"\b(weather|temperature|forecast|rain|humidity|wind|snow|sunny|cloudy|"
-    r"hot|cold today|feels like)\b",
-    re.I,
-)
-_STOCK_PATTERNS = re.compile(
-    r"(\$[A-Z]{1,5}|\b(stock|share price|market cap|p/e ratio|ticker|"
-    r"nasdaq|nyse|s&p|dow jones|crypto|bitcoin|ethereum|btc|eth)\b)",
-    re.I,
-)
-_CALC_PATTERNS = re.compile(
-    r"(\b(calculate|compute|convert|how much is|what is \d|percentage of|"
-    r"square root|logarithm|integral|derivative)\b|"
-    r"[\d\s]+[\+\-\*/^%][\d\s]+)",
-    re.I,
-)
+    skip_search: bool = False
+    personal_search: bool = False
+    transactional_search: bool = False
+    research_search: bool = False
+    discussion_search: bool = False
+    ambiguous_search: bool = False
+
+    show_weather_widget: bool = False
+    show_stock_widget: bool = False
+    show_calculation_widget: bool = False
+
+    standalone_follow_up: str = Field(default="")
+    rationale: str = Field(default="")
 
 
-# ── Classifier ────────────────────────────────────────────────────────────────
+class _AnswerPayload(BaseModel):
+    """Structured answer-generation payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str = Field(min_length=1)
+
+
+class _JsonModelParser:
+    """Robust JSON-to-model parser for LLM outputs."""
+
+    @staticmethod
+    def parse(raw: str, model_type: type[BaseModel]) -> BaseModel:
+        candidates = _JsonModelParser._candidate_json_strings(raw)
+        last_error: Exception | None = None
+
+        for candidate in candidates:
+            try:
+                return model_type.model_validate_json(candidate)
+            except (ValidationError, ValueError) as exc:
+                last_error = exc
+                continue
+
+        raise ValueError(f"Could not parse structured model output: {last_error}") from last_error
+
+    @staticmethod
+    def _candidate_json_strings(raw: str) -> list[str]:
+        content = (raw or "").strip()
+        candidates: list[str] = []
+
+        if content:
+            candidates.append(content)
+
+        if content.startswith("```"):
+            lines = content.splitlines()
+            if len(lines) >= 3:
+                unfenced = "\n".join(lines[1:-1]).strip()
+                if unfenced:
+                    candidates.append(unfenced)
+
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            extracted = content[start : end + 1].strip()
+            if extracted:
+                candidates.append(extracted)
+
+        unique: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if candidate not in seen:
+                seen.add(candidate)
+                unique.append(candidate)
+
+        return unique
+
 
 class QueryClassifier:
-    """Pure-heuristic, zero-dependency query intent classifier."""
+    """AI-first multilingual query classifier.
 
-    def classify(self, query: str, chat_history: list[dict[str, str]] | None = None) -> ClassifierResult:
-        q = query.strip()
-        tokens = q.lower().split()
+    Falls back to a tiny deterministic rail only when no runtime is available
+    or structured output parsing fails.
+    """
 
-        # 1. Skip: empty, single-word greeting, trivially short
-        is_skip = (
-            not q
-            or (len(tokens) == 1 and tokens[0] in _GREETINGS)
-            or (len(tokens) <= 2 and all(t in _GREETINGS for t in tokens))
+    def __init__(self, llm: IReasoningRuntime | None = None) -> None:
+        self._llm = llm
+
+    async def classify(
+        self,
+        query: str,
+        chat_history: Sequence[dict[str, str]] | None = None,
+    ) -> ClassifierResult:
+        normalized_query = query.strip()
+        history = list(chat_history or [])
+
+        if not normalized_query:
+            return ClassifierResult(
+                classification=SearchClassification(
+                    skip_search=True,
+                    ambiguous_search=False,
+                ),
+                standalone_follow_up="",
+            )
+
+        if self._llm is not None:
+            try:
+                return await self._llm_classify(normalized_query, history)
+            except Exception:
+                logger.exception("query_classifier_llm_failed")
+
+        return self._fallback_classify(normalized_query, history)
+
+    async def _llm_classify(
+        self,
+        query: str,
+        chat_history: Sequence[dict[str, str]],
+    ) -> ClassifierResult:
+        history_block = self._format_history(chat_history)
+
+        request = ReasoningRequest(
+            prompt=(
+                "Classify the user query for Butler's search-answer pipeline.\n\n"
+                f"Query:\n{query}\n\n"
+                f"Recent chat history:\n{history_block}\n\n"
+                "Return JSON only with fields:\n"
+                "{\n"
+                '  "skip_search": false,\n'
+                '  "personal_search": false,\n'
+                '  "transactional_search": false,\n'
+                '  "research_search": false,\n'
+                '  "discussion_search": false,\n'
+                '  "ambiguous_search": false,\n'
+                '  "show_weather_widget": false,\n'
+                '  "show_stock_widget": false,\n'
+                '  "show_calculation_widget": false,\n'
+                '  "standalone_follow_up": "rewritten standalone query",\n'
+                '  "rationale": "brief explanation"\n'
+                "}\n"
+            ),
+            system_prompt=(
+                "You are Butler's multilingual search-intent classifier.\n"
+                "Handle any language, mixed language, transliteration, or code-mixed input.\n"
+                "Do not assume English.\n"
+                "Set skip_search=true only for trivial conversational turns or requests that clearly do not need web search.\n"
+                "Set personal_search=true when the request is primarily about the user's own private data/history.\n"
+                "Set transactional_search=true when the user is trying to perform an action.\n"
+                "Set research_search=true for academic, technical, literature, or deep factual research.\n"
+                "Set discussion_search=true for opinion/community/forum style requests.\n"
+                "Set ambiguous_search=true only when intent remains unclear after reading the query and history.\n"
+                "Set widget flags only when strongly indicated.\n"
+                "Produce a standalone_follow_up that can be searched directly."
+            ),
+            max_tokens=600,
+            temperature=0.1,
+            response_format=ResponseFormat.JSON,
+            metadata={"task": "search_query_classification"},
         )
 
-        # 2. Orthogonal widget flags
-        show_weather = bool(_WEATHER_PATTERNS.search(q))
-        show_stock = bool(_STOCK_PATTERNS.search(q))
-        show_calc = bool(_CALC_PATTERNS.search(q))
-
-        # 3. Search-type classification
-        is_personal = bool(_PERSONAL_PATTERNS.search(q))
-        is_transactional = bool(_TRANSACTIONAL_PATTERNS.search(q))
-        is_research = bool(_RESEARCH_PATTERNS.search(q))
-        is_discussion = bool(_DISCUSSION_PATTERNS.search(q))
-
-        # 4. Ambiguous: non-trivial but nothing fired
-        any_search_type = is_personal or is_transactional or is_research or is_discussion
-        is_ambiguous = not is_skip and not any_search_type and not show_weather and not show_stock and not show_calc
-
-        # 5. Standalone follow-up: splice in last user message from history if available
-        standalone = q
-        if chat_history:
-            last_user = next(
-                (m["content"] for m in reversed(chat_history) if m.get("role") == "user"),
-                None,
-            )
-            if last_user and last_user.strip().lower() != q.lower():
-                # Re-contextualise short follow-up queries
-                if len(tokens) <= 4:
-                    standalone = f"{last_user}. {q}"
+        response = await self._llm.generate(
+            request,
+            tenant_id="default",  # P0: Search answering uses default tenant_id
+            preferred_tier=ReasoningTier.T2,
+        )
+        payload = _JsonModelParser.parse(response.content, _ClassificationPayload)
 
         classification = SearchClassification(
-            skipSearch=is_skip,
-            personalSearch=is_personal,
-            transactionalSearch=is_transactional,
-            researchSearch=is_research,
-            discussionSearch=is_discussion,
-            ambiguousSearch=is_ambiguous,
-            showWeatherWidget=show_weather,
-            showStockWidget=show_stock,
-            showCalculationWidget=show_calc,
+            skip_search=payload.skip_search,
+            personal_search=payload.personal_search,
+            transactional_search=payload.transactional_search,
+            research_search=payload.research_search,
+            discussion_search=payload.discussion_search,
+            ambiguous_search=payload.ambiguous_search,
+            show_weather_widget=payload.show_weather_widget,
+            show_stock_widget=payload.show_stock_widget,
+            show_calculation_widget=payload.show_calculation_widget,
+            academic_search=payload.research_search,
         )
+
+        standalone = payload.standalone_follow_up.strip() or query
 
         logger.debug(
             "query_classified",
-            query=q[:80],
-            skip=is_skip,
-            personal=is_personal,
-            transactional=is_transactional,
-            research=is_research,
-            discussion=is_discussion,
-            ambiguous=is_ambiguous,
-            weather=show_weather,
-            stock=show_stock,
-            calc=show_calc,
+            query=query[:80],
+            skip_search=classification.skip_search,
+            personal_search=classification.personal_search,
+            transactional_search=classification.transactional_search,
+            research_search=classification.research_search,
+            discussion_search=classification.discussion_search,
+            ambiguous_search=classification.ambiguous_search,
+            show_weather_widget=classification.show_weather_widget,
+            show_stock_widget=classification.show_stock_widget,
+            show_calculation_widget=classification.show_calculation_widget,
         )
 
-        return ClassifierResult(classification=classification, standaloneFollowUp=standalone)
+        return ClassifierResult(
+            classification=classification,
+            standalone_follow_up=standalone,
+        )
 
+    def _fallback_classify(
+        self,
+        query: str,
+        chat_history: Sequence[dict[str, str]],
+    ) -> ClassifierResult:
+        """Minimal deterministic fallback rail.
 
-# ── AnsweringEngine ───────────────────────────────────────────────────────────
+        Keep this intentionally small and language-light.
+        """
+        tokens = query.split()
+        standalone = query
 
-WRITER_PROMPT = """Answer the user query based on the provided search results.
-Maintain a helpful, objective tone. Cite sources by index [1], [2], etc.
-"""
+        if chat_history and len(tokens) <= 4:
+            last_user = next(
+                (
+                    item.get("content", "")
+                    for item in reversed(chat_history)
+                    if item.get("role") == "user" and item.get("content", "").strip()
+                ),
+                "",
+            )
+            if last_user and last_user.strip().lower() != query.lower():
+                standalone = f"{last_user}. {query}"
+
+        classification = SearchClassification(
+            skip_search=len(tokens) <= 1,
+            ambiguous_search=len(tokens) > 1,
+        )
+
+        return ClassifierResult(
+            classification=classification,
+            standalone_follow_up=standalone,
+        )
+
+    def _format_history(self, chat_history: Sequence[dict[str, str]]) -> str:
+        if not chat_history:
+            return "(none)"
+
+        lines: list[str] = []
+        for item in chat_history[-6:]:
+            role = item.get("role", "user")
+            content = item.get("content", "").strip()
+            if content:
+                lines.append(f"{role}: {content}")
+        return "\n".join(lines) if lines else "(none)"
 
 
 class AnsweringEngine:
-    """Butler's query-classification and web-answering pipeline.
-
-    Depends on ISearchAdapter — any adapter (SearxNG, Brave, mock) can be injected.
-    """
+    """Butler's AI-first query classification and answer synthesis pipeline."""
 
     def __init__(
         self,
         search_adapter: ISearchAdapter,
-        llm: Any = None,
+        llm: IReasoningRuntime | None = None,
         breakers: Any | None = None,
+        max_sources: int = 8,
+        max_writer_sources: int = 5,
+        max_source_chars: int = 1200,
     ) -> None:
+        if max_sources <= 0:
+            raise ValueError("max_sources must be greater than 0")
+        if max_writer_sources <= 0:
+            raise ValueError("max_writer_sources must be greater than 0")
+        if max_source_chars <= 0:
+            raise ValueError("max_source_chars must be greater than 0")
+
         self._search = search_adapter
         self._llm = llm
         self._breakers = breakers
-        self._classifier = QueryClassifier()
-
+        self._classifier = QueryClassifier(llm=llm)
+        self._max_sources = max_sources
+        self._max_writer_sources = max_writer_sources
+        self._max_source_chars = max_source_chars
 
     async def classify(
-        self, query: str, chat_history: list[dict[str, str]] | None = None
+        self,
+        query: str,
+        chat_history: Sequence[dict[str, str]] | None = None,
     ) -> ClassifierResult:
-        """Classify the search intent using the keyword heuristic classifier."""
-        return self._classifier.classify(query, chat_history or [])
+        return await self._classifier.classify(query, chat_history or [])
 
     async def answer(
-        self, query: str, chat_history: list[dict[str, str]] | None = None
+        self,
+        query: str,
+        chat_history: Sequence[dict[str, str]] | None = None,
     ) -> AnsweringEngineResult:
-        """Execute the full answering pipeline: classify → search → generate."""
-        history = chat_history or []
+        history = list(chat_history or [])
 
-        # 1. Classify
         classification_result = await self.classify(query, history)
-        standalone_query = classification_result.standaloneFollowUp
+        standalone_query = classification_result.standalone_follow_up
         prefs = classification_result.classification
 
-        # 2. Search (if not skipping)
         sources: list[SearchResult] = []
-        if not prefs.skipSearch:
-            categories: list[str] = ["general"]
-            if getattr(prefs, "researchSearch", False):
-                categories.append("science")
-            if getattr(prefs, "discussionSearch", False):
-                categories.append("social media")
-
+        if not prefs.skip_search:
+            categories = self._build_categories(prefs)
             try:
-                raw_results = await self._search.search(standalone_query, categories=categories)
-                sources = [SearchResult(**r) for r in raw_results[:8]]
-            except Exception as exc:
-                logger.warning("answering_engine.search_failed", query=standalone_query[:80], error=str(exc))
+                raw_results = await self._search.search(
+                    standalone_query,
+                    categories=categories,
+                    num_results=self._max_sources,
+                )
+                sources = self._normalize_sources(raw_results[: self._max_sources])
+            except Exception:
+                logger.exception(
+                    "answering_engine_search_failed",
+                    query=standalone_query[:80],
+                )
 
-        # 3. Generate answer
-        if sources:
-            source_blocks = "\n\n".join(
-                f"[{i + 1}] {s.url}\nTitle: {getattr(s, 'title', '')}\n{s.content}"
-                for i, s in enumerate(sources[:5])
-            )
-            answer_text = (
-                f"Based on my research about '{standalone_query}':\n\n"
-                f"Sources reviewed: {len(sources)}\n\n"
-                f"{source_blocks[:2000]}"
-            )
-        else:
-            answer_text = (
-                f"I couldn't find specific current information about '{standalone_query}'. "
-                "Based on my general knowledge: I can help with this topic if you "
-                "provide more context or ask a more specific question."
-            )
-
-        # 4. Widget signals
-        widgets: list[dict] = []
-        if getattr(prefs, "showWeatherWidget", False):
-            widgets.append({"type": "weather", "query": standalone_query})
-        if getattr(prefs, "showStockWidget", False):
-            widgets.append({"type": "stock", "query": standalone_query})
-        if getattr(prefs, "showCalculationWidget", False):
-            widgets.append({"type": "calculator", "query": standalone_query})
+        answer_text = await self._generate_answer(
+            original_query=query,
+            standalone_query=standalone_query,
+            sources=sources,
+            classification=prefs,
+        )
+        widgets = self._build_widgets(prefs, standalone_query)
 
         logger.info(
-            "answering_engine.complete",
+            "answering_engine_complete",
             query=query[:80],
             source_count=len(sources),
-            widgets=len(widgets),
+            widget_count=len(widgets),
         )
 
         return AnsweringEngineResult(
@@ -249,4 +361,126 @@ class AnsweringEngine:
             sources=sources,
             classification=prefs,
             widgets=widgets,
+            metadata={
+                "standalone_query": standalone_query,
+            },
         )
+
+    def _build_categories(self, prefs: SearchClassification) -> list[str]:
+        categories = ["general"]
+        if prefs.research_search:
+            categories.append("science")
+        if prefs.discussion_search:
+            categories.append("social media")
+        return categories
+
+    def _normalize_sources(self, raw_results: Sequence[dict[str, Any]]) -> list[SearchResult]:
+        sources: list[SearchResult] = []
+        for item in raw_results:
+            try:
+                sources.append(SearchResult.model_validate(item))
+            except Exception:
+                logger.debug("answering_engine_invalid_source_ignored")
+        return sources
+
+    async def _generate_answer(
+        self,
+        *,
+        original_query: str,
+        standalone_query: str,
+        sources: Sequence[SearchResult],
+        classification: SearchClassification,
+    ) -> str:
+        if self._llm is None:
+            return self._fallback_answer(standalone_query, sources)
+
+        source_block = self._format_sources_for_writer(sources)
+        request = ReasoningRequest(
+            prompt=(
+                f"User query:\n{original_query}\n\n"
+                f"Standalone query:\n{standalone_query}\n\n"
+                f"Classification:\n{classification.model_dump_json()}\n\n"
+                f"Sources:\n{source_block}\n\n"
+                "Return JSON only with this schema:\n"
+                "{\n"
+                '  "answer": "grounded answer text"\n'
+                "}\n\n"
+                "Write a helpful, grounded answer.\n"
+                "Use citations like [1], [2], [3] when supported by the sources.\n"
+                "If sources are weak or absent, say so clearly.\n"
+                "Do not invent facts not grounded in the provided material."
+            ),
+            system_prompt=(
+                "You are Butler's answering engine.\n"
+                "Be concise, grounded, and multilingual-friendly.\n"
+                "Answer in the same language as the user query when reasonable.\n"
+                "Prefer directness over fluff.\n"
+                "Return only valid JSON."
+            ),
+            max_tokens=1200,
+            temperature=0.2,
+            response_format=ResponseFormat.JSON,
+            metadata={"task": "answer_generation"},
+        )
+
+        try:
+            response = await self._llm.generate(
+                request,
+                tenant_id="default",  # P0: Search answering uses default tenant_id
+                preferred_tier=ReasoningTier.T3 if sources else ReasoningTier.T2,
+            )
+            payload = _JsonModelParser.parse(response.content, _AnswerPayload)
+            answer = payload.answer.strip()
+            if answer:
+                return answer
+        except Exception:
+            logger.exception("answer_generation_failed", query=standalone_query[:80])
+
+        return self._fallback_answer(standalone_query, sources)
+
+    def _fallback_answer(
+        self,
+        standalone_query: str,
+        sources: Sequence[SearchResult],
+    ) -> str:
+        if sources:
+            lines = [f"I found {len(sources)} relevant sources for '{standalone_query}'."]
+            for index, source in enumerate(sources[:3], start=1):
+                lines.append(f"[{index}] {source.title} — {source.url}")
+            return "\n".join(lines)
+
+        return (
+            f"I couldn't find strong current results for '{standalone_query}'. "
+            "Try a more specific query or provide more context."
+        )
+
+    def _format_sources_for_writer(self, sources: Sequence[SearchResult]) -> str:
+        if not sources:
+            return "(no sources)"
+
+        blocks: list[str] = []
+        for index, source in enumerate(sources[: self._max_writer_sources], start=1):
+            content = (source.content or source.snippet or "")[: self._max_source_chars]
+            blocks.append(
+                f"[{index}] {source.url}\n"
+                f"Title: {source.title}\n"
+                f"Snippet: {source.snippet}\n"
+                f"Content: {content}"
+            )
+        return "\n\n".join(blocks)
+
+    def _build_widgets(
+        self,
+        prefs: SearchClassification,
+        standalone_query: str,
+    ) -> list[SearchWidget]:
+        widgets: list[SearchWidget] = []
+
+        if prefs.show_weather_widget:
+            widgets.append(SearchWidget(kind="weather", payload={"query": standalone_query}))
+        if prefs.show_stock_widget:
+            widgets.append(SearchWidget(kind="stock", payload={"query": standalone_query}))
+        if prefs.show_calculation_widget:
+            widgets.append(SearchWidget(kind="calculator", payload={"query": standalone_query}))
+
+        return widgets

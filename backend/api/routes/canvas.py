@@ -1,16 +1,17 @@
 import logging
+
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import HTMLResponse
+
 from core.deps import get_a2ui_bridge
 from services.gateway.a2ui_bridge import A2UIBridgeService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["canvas"])
 
+
 @router.get("/canvas", response_class=HTMLResponse)
-async def get_canvas(
-    service: A2UIBridgeService = Depends(get_a2ui_bridge)
-):
+async def get_canvas(service: A2UIBridgeService = Depends(get_a2ui_bridge)):
     """Serve the A2UI Canvas with the bridge injected."""
     # In a real implementation, this would load a template or static file.
     # For now, we'll serve a basic HTML shell with the bridge.

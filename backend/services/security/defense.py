@@ -1,9 +1,11 @@
 from domain.security.models import ContentSource, DefenseDecision, TrustLevel
+
 from .trust import ChannelSeparator
+
 
 class ContentDefense:
     """Multi-signal injection detection — pattern matching is ONE weak signal, not religion."""
-    
+
     DETECTION_SIGNALS = {
         "ignore_instructions": ["ignore previous", "disregard", "forget instructions"],
         "role_confusion": ["you are now", "pretend to be", "roleplay as"],
@@ -12,7 +14,7 @@ class ContentDefense:
         "tool_injection": ["execute", "run command", "shell", "bash"],
         "obfuscation": ["base64", "hex encoding", "url encoding"],
     }
-    
+
     RESPONSE_ACTIONS = {
         "tag_suspicious": "Content marked untrusted",
         "lower_trust": "Trust score reduced",
@@ -21,18 +23,18 @@ class ContentDefense:
         "quarantine": "Security event logged, content isolated",
         "block": "High-confidence attack blocked",
     }
-    
+
     async def evaluate(self, content: str, source: ContentSource) -> DefenseDecision:
         # 1. Base trust from source
         trust = self._get_base_trust(source)
-        
+
         # 2. Pattern detection (weak signal)
         signals = self._detect_injection_patterns(content)
-        
+
         # 3. Adjust trust
         if signals:
             trust *= 0.5
-        
+
         # 4. Decide channel assignment
         if trust < 0.3:
             channel = "quarantine"
@@ -43,7 +45,7 @@ class ContentDefense:
         else:
             channel = ChannelSeparator().route_to_channel(source)
             block = False
-        
+
         return DefenseDecision(
             trust_score=trust,
             channel_assignment=channel,
@@ -51,7 +53,7 @@ class ContentDefense:
             suspicious_signals=signals,
             block=block,
         )
-    
+
     def _detect_injection_patterns(self, content: str) -> list[str]:
         content_lower = content.lower()
         found = []
@@ -59,7 +61,7 @@ class ContentDefense:
             if any(p in content_lower for p in patterns):
                 found.append(signal_type)
         return found
-    
+
     def _get_base_trust(self, source: ContentSource) -> float:
         trust_scores = {
             TrustLevel.TRUSTED: 1.0,

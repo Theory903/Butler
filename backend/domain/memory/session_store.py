@@ -28,12 +28,11 @@ Design note:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Literal
 
 import structlog
-from sqlalchemy import select, delete, func, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, func, select, text
 
 from domain.memory.models import ConversationTurn
 from infrastructure.database import get_session as get_db_session
@@ -77,8 +76,7 @@ class ButlerSessionStore:
         async with get_db_session() as session:
             # Compute next turn_index atomically
             result = await session.execute(
-                select(func.coalesce(func.max(ConversationTurn.turn_index), -1))
-                .where(
+                select(func.coalesce(func.max(ConversationTurn.turn_index), -1)).where(
                     ConversationTurn.account_id == _account_id,
                     ConversationTurn.session_id == session_id,
                 )
@@ -147,9 +145,7 @@ class ButlerSessionStore:
                 .limit(limit)
             )
             result = await session.execute(q)
-            turns = list(result.scalars().all())
-
-        return turns
+            return list(result.scalars().all())
 
     async def search(
         self,
@@ -233,7 +229,9 @@ class ButlerSessionStore:
             await session.commit()
             deleted = result.rowcount
 
-        logger.info("session_deleted", account_id=str(account_id), session_id=session_id, rows=deleted)
+        logger.info(
+            "session_deleted", account_id=str(account_id), session_id=session_id, rows=deleted
+        )
         return deleted
 
     async def session_count(

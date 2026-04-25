@@ -1,16 +1,18 @@
 import asyncio
 import logging
-import numpy as np
-import noisereduce as nr
-import ffmpeg
-import onnxruntime as ort
-from typing import Optional, List
+import os
 from dataclasses import dataclass
 from pathlib import Path
+
+import ffmpeg
+import noisereduce as nr
+import numpy as np
+import onnxruntime as ort
 
 from infrastructure.config import settings
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ProcessedAudio:
@@ -19,12 +21,13 @@ class ProcessedAudio:
     channels: int
     duration_ms: int
 
+
 class AudioPreprocessor:
     """
     Butler Audio Layer 1: Preprocessing
     Handles format conversion, resampling, normalization, and noise reduction.
     """
-    
+
     def __init__(self, target_sample_rate: int = 16000):
         self.target_sample_rate = target_sample_rate
 
@@ -35,14 +38,21 @@ class AudioPreprocessor:
         try:
             # 1. Format conversion & Resampling via FFmpeg
             out, err = (
-                ffmpeg
-                .input('pipe:0')
-                .output('pipe:1', format='f32le', acodec='pcm_f32le', ac=1, ar=str(self.target_sample_rate))
+                ffmpeg.input("pipe:0")
+                .output(
+                    "pipe:1",
+                    format="f32le",
+                    acodec="pcm_f32le",
+                    ac=1,
+                    ar=str(self.target_sample_rate),
+                )
                 .run(input=audio_bytes, capture_stdout=True, capture_stderr=True)
             )
             audio_np = np.frombuffer(out, dtype=np.float32)
         except ffmpeg.Error as e:
-            logger.error("audio_preprocessing_ffmpeg_failed", error=e.stderr.decode() if e.stderr else str(e))
+            logger.error(
+                "audio_preprocessing_ffmpeg_failed", error=e.stderr.decode() if e.stderr else str(e)
+            )
             raise ValueError("Invalid audio format or ffmpeg processing failed")
 
         if len(audio_np) == 0:
@@ -56,8 +66,7 @@ class AudioPreprocessor:
         # 3. Noise Reduction (Offloaded to thread pool)
         loop = asyncio.get_running_loop()
         audio_denoised = await loop.run_in_executor(
-            None, 
-            lambda: nr.reduce_noise(y=audio_np, sr=self.target_sample_rate, stationary=False)
+            None, lambda: nr.reduce_noise(y=audio_np, sr=self.target_sample_rate, stationary=False)
         )
 
         # Convert back to 16-bit PCM
@@ -68,27 +77,32 @@ class AudioPreprocessor:
             data=output_bytes,
             sample_rate=self.target_sample_rate,
             channels=1,
-            duration_ms=int(len(audio_int16) / (self.target_sample_rate / 1000))
+            duration_ms=int(len(audio_int16) / (self.target_sample_rate / 1000)),
         )
+
 
 class VoiceActivityDetector:
     """
     Butler Audio Layer 1: Production VAD
     Uses Silero VAD (ONNX) for accurate human speech detection.
     """
-    
-    def __init__(self, model_path: Optional[str] = None):
+
+    def __init__(self, model_path: str | None = None):
         # Default to a models directory in the butler data root
-        self.model_path = model_path or str(Path(settings.BUTLER_DATA_DIR) / "models/silero_vad.onnx")
+        self.model_path = model_path or str(
+            Path(settings.BUTLER_DATA_DIR) / "models/silero_vad.onnx"
+        )
         self._session = None
-        self._state = np.zeros((2, 1, 64), dtype=np.float32) # Silero VAD state
+        self._state = np.zeros((2, 1, 64), dtype=np.float32)  # Silero VAD state
         self._sr = np.array([16000], dtype=np.int64)
 
     def _ensure_session(self):
         """Lazy load the ONNX session"""
         if self._session is None:
             if not os.path.exists(self.model_path):
-                logger.warning(f"VAD model not found at {self.model_path}. Falling back to energy detection.")
+                logger.warning(
+                    f"VAD model not found at {self.model_path}. Falling back to energy detection."
+                )
                 return None
             try:
                 self._session = ort.InferenceSession(self.model_path)
@@ -111,21 +125,19 @@ class VoiceActivityDetector:
         # Process via ONNX (Offloaded to thread pool)
         # Silero VAD expects [batch, samples]
         audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        if len(audio_np) < 512: # Min chunk size for Silero
+        if len(audio_np) < 512:  # Min chunk size for Silero
             return False
-            
+
         input_tensor = audio_np[np.newaxis, :]
-        
+
         loop = asyncio.get_running_loop()
         outputs = await loop.run_in_executor(
             None,
-            lambda: session.run(None, {
-                'input': input_tensor,
-                'sr': self._sr,
-                'state': self._state
-            })
+            lambda: session.run(
+                None, {"input": input_tensor, "sr": self._sr, "state": self._state}
+            ),
         )
-        
+
         prob, self._state = outputs
         return prob > threshold
 

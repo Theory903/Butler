@@ -1,7 +1,7 @@
 """Device adapters — v3.1 production transport.
 
 Changes from v3.0:
-  - APIAdapter: shared httpx.AsyncClient (injected, not per-call)
+  - APIAdapter: shared SafeRequestClient (injected, not per-call) for SSRF protection
   - Auth strategy support: none | bearer | basic | hmac
   - Configurable retry budget (2 retries, exponential back-off)
   - Retryable vs non-retryable error classification
@@ -14,6 +14,7 @@ Auth strategy is read from device.metadata:
   {"auth_type": "hmac", "secret": "..."} → HMAC-SHA256 body signature
   {} or missing → no auth
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,15 +22,13 @@ import base64
 import hashlib
 import hmac
 import json
-import logging
-import time
 from abc import ABC, abstractmethod
 from typing import Any
 
-import httpx
 import structlog
 
 from core.circuit_breaker import get_circuit_breaker_registry
+from services.security.safe_request import SafeRequestClient
 
 logger = structlog.get_logger(__name__)
 
@@ -38,7 +37,6 @@ _MAX_RETRIES = 2
 _BACKOFF_BASE_S = 0.5
 _CONNECT_TIMEOUT_S = 5.0
 _READ_TIMEOUT_S = 10.0
-_DEVICE_TIMEOUT = httpx.Timeout(connect=_CONNECT_TIMEOUT_S, read=_READ_TIMEOUT_S, write=5.0, pool=2.0)
 
 # Non-retryable HTTP status codes (client errors, auth failures)
 _NON_RETRYABLE_STATUSES = frozenset({400, 401, 403, 404, 405, 409, 422, 451})
@@ -46,8 +44,10 @@ _NON_RETRYABLE_STATUSES = frozenset({400, 401, 403, 404, 405, 409, 422, 451})
 
 # ── Base ──────────────────────────────────────────────────────────────────────
 
+
 class DeviceRegistry:
     """Minimal shim — the real model is in domain/device/models.py."""
+
     id: Any
     protocol: str
     metadata: dict
@@ -69,6 +69,7 @@ class DeviceAdapterBase(ABC):
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
+
 def _build_auth_headers(metadata: dict) -> dict[str, str]:
     auth_type = (metadata.get("auth_type") or "").lower()
     if auth_type == "bearer":
@@ -79,7 +80,7 @@ def _build_auth_headers(metadata: dict) -> dict[str, str]:
         password = metadata.get("password", "")
         encoded = base64.b64encode(f"{user}:{password}".encode()).decode()
         return {"Authorization": f"Basic {encoded}"}
-    return {}   # hmac applied per-request body; no auth → empty
+    return {}  # hmac applied per-request body; no auth → empty
 
 
 def _sign_hmac(body: bytes, secret: str) -> str:
@@ -88,11 +89,20 @@ def _sign_hmac(body: bytes, secret: str) -> str:
 
 # ── Retry logic ───────────────────────────────────────────────────────────────
 
+
 def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
+    # P0 hardening: Check for retryable exceptions without httpx dependency
+    if isinstance(exc, (ConnectionError, TimeoutError)):
         return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code not in _NON_RETRYABLE_STATUSES
+    # Check for HTTP status errors if exception has response attribute
+    try:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            status_code = getattr(response, "status_code", None)
+            if status_code is not None:
+                return status_code not in _NON_RETRYABLE_STATUSES
+    except Exception:
+        pass
     return False
 
 
@@ -113,13 +123,14 @@ async def _with_retry(coro_factory, *, breaker=None, max_retries: int = _MAX_RET
                 breaker.record_failure()
             if not _is_retryable(exc) or attempt == max_retries:
                 raise
-            backoff = _BACKOFF_BASE_S * (2 ** attempt)
+            backoff = _BACKOFF_BASE_S * (2**attempt)
             logger.debug("device.retry", attempt=attempt + 1, backoff_s=backoff, error=str(exc))
             await asyncio.sleep(backoff)
     raise last_exc  # type: ignore[misc]
 
 
 # ── MockAdapter ───────────────────────────────────────────────────────────────
+
 
 class MockAdapter(DeviceAdapterBase):
     """Fallback dummy adapter used for simulation and unknown protocols."""
@@ -141,11 +152,12 @@ class MockAdapter(DeviceAdapterBase):
 
 # ── APIAdapter ────────────────────────────────────────────────────────────────
 
+
 class APIAdapter(DeviceAdapterBase):
     """Production HTTP adapter for LAN/cloud device endpoints.
 
     Supports:
-      - Shared httpx.AsyncClient (connection pool, not per-call)
+      - Shared SafeRequestClient (connection pool, not per-call) for SSRF protection
       - Authentication: none | bearer | basic | hmac
       - Retry budget (2 retries, exponential back-off)
       - Circuit breaker per-instance
@@ -154,14 +166,13 @@ class APIAdapter(DeviceAdapterBase):
 
     def __init__(
         self,
-        client: httpx.AsyncClient | None = None,
+        client: SafeRequestClient | None = None,
         breaker_name: str = "device_api",
     ) -> None:
-        self._client = client or httpx.AsyncClient(timeout=_DEVICE_TIMEOUT)
+        self._client = client or SafeRequestClient()
+        self._tenant_id = "default"  # P0 hardening: Use default tenant for device operations
         registry = get_circuit_breaker_registry()
-        self._breaker = registry.register(
-            breaker_name, threshold=4, window_s=60, recovery_s=30
-        )
+        self._breaker = registry.register(breaker_name, threshold=4, window_s=60, recovery_s=30)
         self._mock = MockAdapter()
 
     async def fetch_state(self, device: Any) -> dict[str, Any]:
@@ -174,7 +185,8 @@ class APIAdapter(DeviceAdapterBase):
         auth_headers = _build_auth_headers(meta)
 
         async def _call():
-            resp = await self._client.get(endpoint_url, headers=auth_headers)
+            # P0 hardening: Use SafeRequestClient for SSRF protection
+            resp = await self._client.get(endpoint_url, self._tenant_id, headers=auth_headers)
             resp.raise_for_status()
             return resp.json()
 
@@ -215,8 +227,9 @@ class APIAdapter(DeviceAdapterBase):
         auth_headers["Content-Type"] = "application/json"
 
         async def _call():
+            # P0 hardening: Use SafeRequestClient for SSRF protection
             resp = await self._client.post(
-                endpoint_url, content=body_bytes, headers=auth_headers
+                endpoint_url, self._tenant_id, json=body, headers=auth_headers
             )
             resp.raise_for_status()
             return resp.json()
@@ -240,12 +253,13 @@ class APIAdapter(DeviceAdapterBase):
 
 # ── AdapterRegistry ───────────────────────────────────────────────────────────
 
+
 class AdapterRegistry:
     """Intelligently resolves device protocol names to adapters."""
 
     def __init__(self) -> None:
-        # Shared client across all APIAdapter instances
-        _shared_client = httpx.AsyncClient(timeout=_DEVICE_TIMEOUT)
+        # Shared SafeRequestClient across all APIAdapter instances
+        _shared_client = SafeRequestClient()
         self._providers: dict[str, DeviceAdapterBase] = {
             "mock": MockAdapter(),
             "api": APIAdapter(client=_shared_client, breaker_name="device_api_default"),
@@ -257,7 +271,9 @@ class AdapterRegistry:
         # Fallback to Mock if the driver is not yet compiled into Butler
         adapter = self._providers.get(protocol_name, self._providers["mock"])
         if protocol_name not in self._providers:
-            logger.warning("device.registry.unknown_protocol", protocol=protocol_name, fallback="mock")
+            logger.warning(
+                "device.registry.unknown_protocol", protocol=protocol_name, fallback="mock"
+            )
         return adapter
 
     def register(self, protocol_name: str, adapter: DeviceAdapterBase) -> None:

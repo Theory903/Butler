@@ -16,59 +16,60 @@ Butler sovereignty rule: EnvironmentService never calls the LLM directly.
 It produces a plain dict that the Orchestrator/IntakeProcessor can attach
 to the system prompt context block.
 """
+
 from __future__ import annotations
 
 import json
-import logging
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import structlog
 from redis.asyncio import Redis
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
-_SNAPSHOT_TTL_S = 60   # 1-minute freshness
+_SNAPSHOT_TTL_S = 60  # 1-minute freshness
 
 
 # ── Data models ────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class TemporalContext:
-    utc_iso: str                  # 2026-04-19T13:00:00Z
-    local_iso: str                # 2026-04-19T18:30:00+05:30
-    timezone: str                 # Asia/Kolkata
-    weekday: str                  # Sunday
-    period_of_day: str            # evening  (morning/afternoon/evening/night)
-    day_of_week_index: int        # 0=Monday … 6=Sunday
+    utc_iso: str  # 2026-04-19T13:00:00Z
+    local_iso: str  # 2026-04-19T18:30:00+05:30
+    timezone: str  # Asia/Kolkata
+    weekday: str  # Sunday
+    period_of_day: str  # evening  (morning/afternoon/evening/night)
+    day_of_week_index: int  # 0=Monday … 6=Sunday
     week_of_year: int
 
 
 @dataclass
 class LocationContext:
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    city: Optional[str] = None
-    country: Optional[str] = None
-    accuracy_m: Optional[float] = None
+    latitude: float | None = None
+    longitude: float | None = None
+    city: str | None = None
+    country: str | None = None
+    accuracy_m: float | None = None
 
 
 @dataclass
 class PlatformContext:
-    os: str = "unknown"           # ios | android | macos | web
+    os: str = "unknown"  # ios | android | macos | web
     app_version: str = "unknown"
     locale: str = "en-US"
-    device_model: Optional[str] = None
+    device_model: str | None = None
 
 
 @dataclass
 class SystemState:
-    battery_pct: Optional[int] = None         # 0–100
-    charging: Optional[bool] = None
-    connectivity: Optional[str] = None        # wifi | cellular | offline
-    is_silent_mode: Optional[bool] = None
+    battery_pct: int | None = None  # 0–100
+    charging: bool | None = None
+    connectivity: str | None = None  # wifi | cellular | offline
+    is_silent_mode: bool | None = None
 
 
 @dataclass
@@ -85,7 +86,7 @@ class EnvironmentSnapshot:
         """Render as a compact context block for system prompt injection."""
         t = self.temporal
         lines = [
-            f"[Environment]",
+            "[Environment]",
             f"Time: {t.local_iso} ({t.timezone}, {t.weekday}, {t.period_of_day})",
         ]
         if self.location.city:
@@ -105,6 +106,7 @@ class EnvironmentSnapshot:
 
 # ── Service ────────────────────────────────────────────────────────────────────
 
+
 class EnvironmentService:
     """Ambient context provider for Butler's grounding layer."""
 
@@ -123,11 +125,11 @@ class EnvironmentService:
             account_id: Authenticated Butler account.
             device_id:  Client device identifier.
             client_push: Optional dict pushed by mobile/web client containing
-                         keys: timezone, latitude, longitude, city, country,
+                    s lf.kcsnhetkgy(), city, country,
                                os, app_version, locale, device_model,
                                battery_pct, charging, connectivity, is_silent_mode
         """
-        cache_key = f"env_snapshot:{account_id}:{device_id}"
+        cache_key = self._cache_key(account_id, device_id)
 
         # 1. Cache hit (60 s freshness window)
         if not client_push:
@@ -190,11 +192,11 @@ class EnvironmentService:
 
     @staticmethod
     def _build_temporal(tz_str: str) -> TemporalContext:
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         try:
             local_tz = ZoneInfo(tz_str)
         except (ZoneInfoNotFoundError, KeyError):
-            local_tz = timezone.utc
+            local_tz = UTC
             tz_str = "UTC"
 
         now_local = now_utc.astimezone(local_tz)

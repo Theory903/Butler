@@ -20,14 +20,21 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
+import webauthn
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from webauthn.helpers import options_to_json
+from webauthn.helpers.structs import (
+    AuthenticatorAttachment,
+    AuthenticatorSelectionCriteria,
+    UserVerificationRequirement,
+)
 
-from domain.auth.contracts import AuthServiceContract, AccountContext, TokenPair
+from domain.auth.contracts import AccountContext, AuthServiceContract, TokenPair
 from domain.auth.exceptions import AuthErrors
 from domain.auth.models import (
     Account,
@@ -42,14 +49,7 @@ from domain.auth.models import (
 from infrastructure.config import settings
 from services.auth.jwt import JWKSManager
 from services.auth.password import PasswordService
-
-import webauthn
-from webauthn.helpers.structs import (
-    AuthenticatorSelectionCriteria,
-    UserVerificationRequirement,
-    AuthenticatorAttachment,
-)
-from webauthn.helpers import options_to_json, base64url_to_bytes
+from services.tenant.namespace import get_tenant_namespace
 
 logger = structlog.get_logger(__name__)
 
@@ -63,11 +63,45 @@ class AuthService(AuthServiceContract):
         redis: Redis,
         jwks: JWKSManager,
         passwords: PasswordService,
+        tenant_id: str | None = None,
     ) -> None:
         self._db = db
         self._redis = redis
         self._jwks = jwks
         self._passwords = passwords
+        self._tenant_id = tenant_id
+
+    def _session_revoke_key(self, session_id: str) -> str:
+        """Generate tenant-scoped session revocation key."""
+        if self._tenant_id:
+            namespace = get_tenant_namespace(self._tenant_id)
+            return f"{namespace.prefix}:token:revoked:session:{session_id}"
+        # Fallback to legacy format for non-tenant contexts
+        return f"session_revoked:{session_id}"
+
+    def _reauth_verified_key(self, session_id: str) -> str:
+        """Generate tenant-scoped reauth verification key."""
+        if self._tenant_id:
+            namespace = get_tenant_namespace(self._tenant_id)
+            return f"{namespace.prefix}:reauth_verified:{session_id}"
+        # Fallback to legacy format for non-tenant contexts
+        return f"reauth_verified:{session_id}"
+
+    def _webauthn_challenge_key(self, challenge: str) -> str:
+        """Generate tenant-scoped webauthn challenge key."""
+        if self._tenant_id:
+            namespace = get_tenant_namespace(self._tenant_id)
+            return f"{namespace.prefix}:webauthn_challenge:{challenge}"
+        # Fallback to legacy format for non-tenant contexts
+        return f"webauthn_challenge:{challenge}"
+
+    def _webauthn_blob_key(self, challenge: str) -> str:
+        """Generate tenant-scoped webauthn blob key."""
+        if self._tenant_id:
+            namespace = get_tenant_namespace(self._tenant_id)
+            return f"{namespace.prefix}:webauthn_challenge:blob:{challenge}"
+        # Fallback to legacy format for non-tenant contexts
+        return f"webauthn_challenge:blob:{challenge}"
 
     # ── Registration ──────────────────────────────────────────────────────────
 
@@ -105,7 +139,7 @@ class AuthService(AuthServiceContract):
             identity_type="password",
             identifier=email,
             password_hash=self._passwords.hash(password),
-            verified_at=datetime.now(timezone.utc),
+            verified_at=datetime.now(UTC),
         )
         self._db.add(identity)
 
@@ -115,7 +149,7 @@ class AuthService(AuthServiceContract):
             active_account_id=account.id,
             auth_method="password",
             assurance_level="aal1",
-            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS),
+            expires_at=datetime.now(UTC) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS),
         )
         self._db.add(session)
         await self._db.flush()
@@ -157,8 +191,7 @@ class AuthService(AuthServiceContract):
         # 2. Verify Principal
         principal = await self._db.scalar(
             select(Principal).where(
-                Principal.id == identity.principal_id,
-                Principal.deleted_at.is_(None)
+                Principal.id == identity.principal_id, Principal.deleted_at.is_(None)
             )
         )
         if not principal or principal.status != "active":
@@ -170,7 +203,9 @@ class AuthService(AuthServiceContract):
 
         # 4. Get Primary Account
         account = await self._db.scalar(
-            select(Account).where(Account.principal_id == principal.id).order_by(Account.created_at.asc())
+            select(Account)
+            .where(Account.principal_id == principal.id)
+            .order_by(Account.created_at.asc())
         )
         if not account:
             # Emergency fix: create an account if missing
@@ -187,7 +222,7 @@ class AuthService(AuthServiceContract):
             ip_address=ip_address,
             user_agent=user_agent,
             device_id=device_id,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS),
+            expires_at=datetime.now(UTC) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS),
         )
         self._db.add(session)
         await self._db.flush()
@@ -231,7 +266,7 @@ class AuthService(AuthServiceContract):
         used_key = f"refresh_used:{jti}"
         if await self._redis.get(used_key):
             # REUSE DETECTED
-            family.invalidated_at = datetime.now(timezone.utc)
+            family.invalidated_at = datetime.now(UTC)
             family.invalidation_reason = "reuse_detected"
             await self._db.commit()
             logger.error("refresh_reuse_detected", jti=jti, family_id=family_id)
@@ -243,10 +278,10 @@ class AuthService(AuthServiceContract):
         # 4. Fetch context
         principal = await self._db.get(Principal, uuid.UUID(principal_id))
         session = await self._db.get(Session, uuid.UUID(session_id))
-        
+
         if not principal or not session or not session.is_active:
             raise AuthErrors.SESSION_REVOKED
-            
+
         account = await self._db.get(Account, session.active_account_id)
         if not account:
             raise AuthErrors.INVALID_CREDENTIALS
@@ -254,8 +289,8 @@ class AuthService(AuthServiceContract):
         # 5. Lineage tracking
         family.rotation_counter += 1
         # Update session last_seen
-        session.last_seen_at = datetime.now(timezone.utc)
-        
+        session.last_seen_at = datetime.now(UTC)
+
         tokens = self._issue_tokens(principal, account, session, family, parent_jti=jti)
         await self._db.commit()
 
@@ -273,7 +308,7 @@ class AuthService(AuthServiceContract):
         account = await self._db.scalar(
             select(Account).where(
                 Account.id == uuid.UUID(target_account_id),
-                Account.principal_id == session.principal_id
+                Account.principal_id == session.principal_id,
             )
         )
         if not account:
@@ -281,8 +316,8 @@ class AuthService(AuthServiceContract):
 
         # Update session context
         session.active_account_id = account.id
-        session.last_seen_at = datetime.now(timezone.utc)
-        
+        session.last_seen_at = datetime.now(UTC)
+
         # Invalidate old families and start fresh for the new context
         # (This is a security best practice: context switch = family reset)
         new_family = TokenFamily(session_id=session.id)
@@ -291,7 +326,7 @@ class AuthService(AuthServiceContract):
 
         principal = await self._db.get(Principal, session.principal_id)
         tokens = self._issue_tokens(principal, account, session, new_family)
-        
+
         await self._db.commit()
         logger.info("account_switched", session_id=session_id, new_aid=target_account_id)
         return tokens
@@ -306,8 +341,7 @@ class AuthService(AuthServiceContract):
 
         identity = await self._db.scalar(
             select(Identity).where(
-                Identity.principal_id == session.principal_id,
-                Identity.identity_type == "password"
+                Identity.principal_id == session.principal_id, Identity.identity_type == "password"
             )
         )
         if not identity or not identity.password_hash:
@@ -325,19 +359,18 @@ class AuthService(AuthServiceContract):
     async def logout(self, session_id: str) -> None:
         session = await self._db.get(Session, uuid.UUID(session_id))
         if session:
-            session.revoked_at = datetime.now(timezone.utc)
+            session.revoked_at = datetime.now(UTC)
             await self._db.commit()
-        await self._redis.setex(f"session_revoked:{session_id}", 86400 * 7, "1")
+        await self._redis.setex(self._session_revoke_key(session_id), 86400 * 7, "1")
 
     async def logout_all(self, principal_id: str) -> int:
         result = await self._db.scalars(
             select(Session).where(
-                Session.principal_id == uuid.UUID(principal_id),
-                Session.revoked_at.is_(None)
+                Session.principal_id == uuid.UUID(principal_id), Session.revoked_at.is_(None)
             )
         )
         sessions = result.all()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for s in sessions:
             s.revoked_at = now
             await self._redis.setex(f"session_revoked:{s.id}", 86400 * 7, "1")
@@ -350,9 +383,9 @@ class AuthService(AuthServiceContract):
         session = await self._db.get(Session, uuid.UUID(session_id))
         if not session or not session.is_active:
             return None
-        
+
         # Check Redis revocation blacklist
-        if await self._redis.get(f"session_revoked:{session_id}"):
+        if await self._redis.get(self._session_revoke_key(session_id)):
             return None
 
         principal = await self._db.get(Principal, session.principal_id)
@@ -361,11 +394,13 @@ class AuthService(AuthServiceContract):
 
         # Reauth check
         reauth_valid = await self._redis.get(f"reauth_verified:{session_id}")
-        
+
+        aid = str(session.active_account_id) if session.active_account_id else ""
         return AccountContext(
             sub=str(principal.id),
             sid=str(session.id),
-            aid=str(session.active_account_id) if session.active_account_id else "",
+            aid=aid,
+            tid=aid,  # Single-tenant-per-account fallback (see AccountContext docstring)
             amr=[session.auth_method],
             acr=session.assurance_level if not reauth_valid else "aal2",
         )
@@ -396,32 +431,35 @@ class AuthService(AuthServiceContract):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _issue_tokens(
-        self, 
-        principal: Principal, 
-        account: Account, 
-        session: Session, 
+        self,
+        principal: Principal,
+        account: Account,
+        session: Session,
         family: TokenFamily,
-        parent_jti: str | None = None
+        parent_jti: str | None = None,
     ) -> TokenPair:
+        # tenant_id: until a first-class Tenant model exists (Phase 12), the
+        # account.id IS the tenant scope. Downstream services treat tid as the
+        # canonical multi-tenant isolation key, so we always emit it.
         claims = {
             "sub": str(principal.id),
             "sid": str(session.id),
             "aid": str(account.id),
+            "tenant_id": str(account.id),
             "amr": [session.auth_method],
             "acr": session.assurance_level,
             "device_id": session.device_id,
         }
-        
+
         access = self._jwks.sign_access_token(
-            claims, 
-            timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+            claims, timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
         )
         refresh = self._jwks.sign_refresh_token(
             claims,
             family_id=str(family.id),
-            ttl=timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+            ttl=timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS),
         )
-        
+
         # Track lineage if rotating
         if parent_jti:
             family.parent_token_id = parent_jti
@@ -473,9 +511,7 @@ class AuthService(AuthServiceContract):
 
         return options_to_json(options)
 
-    async def verify_registration(
-        self, principal_id: str, challenge: str, response: dict
-    ) -> bool:
+    async def verify_registration(self, principal_id: str, challenge: str, response: dict) -> bool:
         # 1. Verify stored challenge
         challenge_key = f"webauthn_challenge:reg:{principal_id}"
         stored_challenge = await self._redis.get(challenge_key)
@@ -505,12 +541,12 @@ class AuthService(AuthServiceContract):
             backup_state=verification.backup_state,
         )
         self._db.add(new_cred)
-        
+
         # Also ensure a 'passkey' identity exists for the principal
         identity = await self._db.scalar(
             select(Identity).where(
                 Identity.principal_id == uuid.UUID(principal_id),
-                Identity.identity_type == "passkey"
+                Identity.identity_type == "passkey",
             )
         )
         if not identity:
@@ -519,14 +555,16 @@ class AuthService(AuthServiceContract):
                 principal_id=principal.id,
                 identity_type="passkey",
                 identifier=principal.email,
-                verified_at=datetime.now(timezone.utc),
+                verified_at=datetime.now(UTC),
             )
             self._db.add(identity)
 
         await self._db.commit()
         await self._redis.delete(challenge_key)
-        
-        logger.info("passkey_registered", principal_id=principal_id, cred_id=verification.credential_id)
+
+        logger.info(
+            "passkey_registered", principal_id=principal_id, cred_id=verification.credential_id
+        )
         return True
 
     async def generate_authentication_options(self, email: str | None = None) -> dict:
@@ -538,7 +576,9 @@ class AuthService(AuthServiceContract):
             )
             for identity in identities.all():
                 creds = await self._db.scalars(
-                    select(PasskeyCredential).where(PasskeyCredential.principal_id == identity.principal_id)
+                    select(PasskeyCredential).where(
+                        PasskeyCredential.principal_id == identity.principal_id
+                    )
                 )
                 for c in creds.all():
                     allow_credentials.append({"id": c.credential_id, "type": "public-key"})
@@ -560,19 +600,19 @@ class AuthService(AuthServiceContract):
         # Standard webauthn doesn't return the challenge ID, we'll need to pass it back or use the challenge itself as key
         # Better: use the challenge itself as the key in Redis (it's unique)
         await self._redis.setex(f"webauthn_challenge:blob:{options.challenge}", 600, "1")
-        
+
         return data
 
     async def verify_authentication(
-        self, 
-        challenge: str, 
+        self,
+        challenge: str,
         response: dict,
         ip_address: str | None = None,
         user_agent: str | None = None,
         device_id: str | None = None,
     ) -> TokenPair:
         # 1. Verify challenge exists
-        blob_key = f"webauthn_challenge:blob:{challenge}"
+        blob_key = self._webauthn_blob_key(challenge)
         if not await self._redis.get(blob_key):
             raise AuthErrors.INVALID_TOKEN
 
@@ -600,23 +640,25 @@ class AuthService(AuthServiceContract):
 
         # 4. Update sign count
         credential.sign_count = verification.new_sign_count
-        credential.last_used_at = datetime.now(timezone.utc)
-        
+        credential.last_used_at = datetime.now(UTC)
+
         # 5. Issue session
         principal = await self._db.get(Principal, credential.principal_id)
         account = await self._db.scalar(
-            select(Account).where(Account.principal_id == principal.id).order_by(Account.created_at.asc())
+            select(Account)
+            .where(Account.principal_id == principal.id)
+            .order_by(Account.created_at.asc())
         )
-        
+
         session = Session(
             principal_id=principal.id,
             active_account_id=account.id if account else None,
             auth_method="webauthn",
-            assurance_level="aal2", # Passkeys are AAL2 by nature if user verification occurred
+            assurance_level="aal2",  # Passkeys are AAL2 by nature if user verification occurred
             ip_address=ip_address,
             user_agent=user_agent,
             device_id=device_id,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS),
+            expires_at=datetime.now(UTC) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS),
         )
         self._db.add(session)
         await self._db.flush()
@@ -662,7 +704,9 @@ class AuthService(AuthServiceContract):
         await self._db.commit()
         await self._db.refresh(account)
 
-        logger.info("account_created", principal_id=principal_id, account_id=str(account.id), name=name)
+        logger.info(
+            "account_created", principal_id=principal_id, account_id=str(account.id), name=name
+        )
         return {
             "id": str(account.id),
             "principal_id": str(account.principal_id),
@@ -679,21 +723,23 @@ class AuthService(AuthServiceContract):
                 Session.revoked_at.is_(None),
             )
         )
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         sessions = []
         for s in result.all():
             if s.expires_at > now:
-                sessions.append({
-                    "id": str(s.id),
-                    "auth_method": s.auth_method,
-                    "assurance_level": s.assurance_level,
-                    "ip_address": s.ip_address,
-                    "user_agent": s.user_agent,
-                    "device_id": s.device_id,
-                    "created_at": s.created_at,
-                    "last_seen_at": s.last_seen_at,
-                    "expires_at": s.expires_at,
-                })
+                sessions.append(
+                    {
+                        "id": str(s.id),
+                        "auth_method": s.auth_method,
+                        "assurance_level": s.assurance_level,
+                        "ip_address": s.ip_address,
+                        "user_agent": s.user_agent,
+                        "device_id": s.device_id,
+                        "created_at": s.created_at,
+                        "last_seen_at": s.last_seen_at,
+                        "expires_at": s.expires_at,
+                    }
+                )
         return sessions
 
     async def revoke_session(self, principal_id: str, session_id: str) -> bool:
@@ -702,7 +748,7 @@ class AuthService(AuthServiceContract):
         if not session or str(session.principal_id) != principal_id:
             return False
 
-        session.revoked_at = datetime.now(timezone.utc)
+        session.revoked_at = datetime.now(UTC)
         await self._db.commit()
         await self._redis.setex(f"session_revoked:{session_id}", 86400 * 7, "1")
 
@@ -729,7 +775,7 @@ class AuthService(AuthServiceContract):
 
         raw_token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+        expires_at = datetime.now(UTC) + timedelta(minutes=15)
 
         reset = PasswordResetToken(
             principal_id=identity.principal_id,
@@ -763,10 +809,10 @@ class AuthService(AuthServiceContract):
             return False
 
         identity.password_hash = self._passwords.hash(new_password)
-        identity.updated_at = datetime.now(timezone.utc)
+        identity.updated_at = datetime.now(UTC)
 
         # 2. Mark token as used
-        reset_record.used_at = datetime.now(timezone.utc)
+        reset_record.used_at = datetime.now(UTC)
 
         # 3. Revoke ALL active sessions (security invariant: password change = full logout)
         await self.logout_all(str(reset_record.principal_id))
@@ -775,15 +821,13 @@ class AuthService(AuthServiceContract):
         logger.info("password_reset_confirmed", principal_id=str(reset_record.principal_id))
         return True
 
-    async def generate_recovery_codes(
-        self, principal_id: str, session_id: str
-    ) -> list[str]:
+    async def generate_recovery_codes(self, principal_id: str, session_id: str) -> list[str]:
         """Generate 10 Argon2id-hashed recovery codes. Invalidates prior codes.
 
         Requires step-up (reauth grant) to protect against unauthorized regeneration.
         """
         # Verify step-up grant exists
-        reauth_key = f"reauth_verified:{session_id}"
+        reauth_key = self._reauth_verified_key(session_id)
         if not await self._redis.get(reauth_key):
             raise AuthErrors.SESSION_REVOKED
 
@@ -795,7 +839,7 @@ class AuthService(AuthServiceContract):
                 RecoveryCode.used_at.is_(None),
             )
         )
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for code in old_codes.all():
             code.invalidated_at = now
 
@@ -807,18 +851,18 @@ class AuthService(AuthServiceContract):
             raw_codes.append(formatted)
 
             hashed = self._passwords.hash(formatted)  # Argon2id via PasswordService
-            self._db.add(RecoveryCode(
-                principal_id=uuid.UUID(principal_id),
-                code_hash=hashed,
-            ))
+            self._db.add(
+                RecoveryCode(
+                    principal_id=uuid.UUID(principal_id),
+                    code_hash=hashed,
+                )
+            )
 
         await self._db.commit()
         logger.info("recovery_codes_generated", principal_id=principal_id)
         return raw_codes
 
-    async def redeem_recovery_code(
-        self, email: str, code: str
-    ) -> TokenPair:
+    async def redeem_recovery_code(self, email: str, code: str) -> TokenPair:
         """Exchange a valid recovery code for an AAL2 session (single-use)."""
         # Find principal via email
         identity = await self._db.scalar(
@@ -849,7 +893,7 @@ class AuthService(AuthServiceContract):
         if not matched:
             raise AuthErrors.INVALID_CREDENTIALS
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Mark matched code as used, invalidate all others
         matched.used_at = now

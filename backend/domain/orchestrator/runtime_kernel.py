@@ -3,7 +3,8 @@
 The single authority that chooses how a task is executed.
 
 Hermes agent loop is one execution strategy among several. Butler owns
-checkpoint boundaries, state progression, and execution strategy selection.
+checkpoint boundaries, state progression, approval pause/resume boundaries,
+and execution strategy selection.
 
 Execution strategies:
     DETERMINISTIC  - Butler-native tool dispatch, no LLM loop
@@ -14,9 +15,10 @@ Execution strategies:
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import TYPE_CHECKING, AsyncGenerator, Callable, Mapping, Protocol, Sequence
+from enum import StrEnum
+from typing import TYPE_CHECKING, Protocol
 
 import structlog
 
@@ -29,13 +31,23 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-class ExecutionStrategy(str, Enum):
+class ExecutionStrategy(StrEnum):
     """Execution strategy selected by the runtime kernel."""
 
     DETERMINISTIC = "deterministic"
     HERMES_AGENT = "hermes_agent"
     WORKFLOW_DAG = "workflow_dag"
     SUBAGENT = "subagent"
+
+
+class StopReason(StrEnum):
+    """Canonical execution stop reasons across all backends."""
+
+    END_TURN = "end_turn"
+    APPROVAL_REQUIRED = "approval_required"
+    MAX_ITERATIONS = "max_iterations"
+    ERROR = "error"
+    CANCELLED = "cancelled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,18 +61,34 @@ class ExecutionMessage:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionContext:
-    """Immutable runtime context passed to execution backends."""
+    """Immutable runtime context passed to execution backends.
+
+    This must be the single canonical runtime contract. Backends should not
+    spelunk workflow/task internals for routine fields if they can be surfaced here.
+    """
 
     task: Task
     workflow: Workflow
     strategy: ExecutionStrategy
+
     model: str
     toolset: Sequence[ButlerToolSpec]
     system_prompt: str
     messages: Sequence[ExecutionMessage]
+
     trace_id: str
     account_id: str
+    tenant_id: str
     session_id: str
+
+    # First-class runtime policy/context surface
+    account_tier: str = "free"
+    channel: str = "api"
+    assurance_level: str = "AAL1"
+    product_tier: object | None = None
+    industry_profile: object | None = None
+
+    # Optional runtime hooks
     on_event: Callable[[ButlerEvent], None] | None = None
 
 
@@ -82,6 +110,8 @@ class ExecutionResult:
     actions: Sequence[Mapping[str, object]] = field(default_factory=tuple)
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     duration_ms: int = 0
+    tool_calls_made: int = 0
+    stopped_reason: StopReason = StopReason.END_TURN
 
     def to_legacy_dict(self) -> dict[str, object]:
         """Convert to legacy dict shape for compatibility with existing callers."""
@@ -93,14 +123,28 @@ class ExecutionResult:
             "cache_read_tokens": self.token_usage.cache_read_tokens,
             "estimated_cost_usd": self.token_usage.estimated_cost_usd,
             "duration_ms": self.duration_ms,
+            "tool_calls_made": self.tool_calls_made,
+            "stopped_reason": self.stopped_reason.value,
         }
 
     @classmethod
     def from_backend_payload(cls, payload: Mapping[str, object]) -> ExecutionResult:
         """Normalize a backend payload into the canonical execution result."""
+        raw_stopped_reason = str(
+            payload.get("stopped_reason", StopReason.END_TURN.value) or StopReason.END_TURN.value
+        )
+        stopped_reason = _normalize_stop_reason(raw_stopped_reason)
+
+        raw_actions = payload.get("actions", []) or []
+        normalized_actions: tuple[Mapping[str, object], ...]
+        if isinstance(raw_actions, Sequence) and not isinstance(raw_actions, (str, bytes)):
+            normalized_actions = tuple(item for item in raw_actions if isinstance(item, Mapping))
+        else:
+            normalized_actions = ()
+
         return cls(
-            content=str(payload.get("content", "")),
-            actions=tuple(payload.get("actions", []) or []),
+            content=str(payload.get("content", "") or ""),
+            actions=normalized_actions,
             token_usage=TokenUsage(
                 input_tokens=int(payload.get("input_tokens", 0) or 0),
                 output_tokens=int(payload.get("output_tokens", 0) or 0),
@@ -108,6 +152,8 @@ class ExecutionResult:
                 estimated_cost_usd=float(payload.get("estimated_cost_usd", 0.0) or 0.0),
             ),
             duration_ms=int(payload.get("duration_ms", 0) or 0),
+            tool_calls_made=int(payload.get("tool_calls_made", 0) or 0),
+            stopped_reason=stopped_reason,
         )
 
 
@@ -127,7 +173,7 @@ class HermesExecutionBackend(Protocol):
     async def run_streaming(
         self,
         ctx: ExecutionContext,
-    ) -> AsyncGenerator[ButlerEvent, None]:
+    ) -> AsyncGenerator[ButlerEvent]:
         """Stream canonical Butler events for the Hermes execution."""
 
 
@@ -152,9 +198,9 @@ class RuntimeKernelConfigurationError(RuntimeError):
 class RuntimeKernel:
     """Strategy-selection authority for Butler task execution.
 
-    The runtime kernel decides *how* a task runs. It does not own persistence,
+    The runtime kernel decides how a task runs. It does not own persistence,
     transport, or checkpoint storage. Backends are injected through explicit
-    contracts and may be bound at assembly time.
+    contracts and bound at composition time.
     """
 
     def __init__(
@@ -238,7 +284,7 @@ class RuntimeKernel:
         """Execute a task with the strategy already selected in the context."""
         logger.info(
             "runtime_kernel_execute_started",
-            strategy=ctx.strategy,
+            strategy=ctx.strategy.value,
             task_type=getattr(ctx.task, "task_type", None),
             task_id=str(getattr(ctx.task, "id", "")),
             trace_id=ctx.trace_id,
@@ -252,7 +298,7 @@ class RuntimeKernel:
         """Execute a task and return the canonical typed result."""
         logger.info(
             "runtime_kernel_execute_result_started",
-            strategy=ctx.strategy,
+            strategy=ctx.strategy.value,
             task_type=getattr(ctx.task, "task_type", None),
             task_id=str(getattr(ctx.task, "id", "")),
             trace_id=ctx.trace_id,
@@ -263,11 +309,16 @@ class RuntimeKernel:
     async def execute_streaming(
         self,
         ctx: ExecutionContext,
-    ) -> AsyncGenerator[ButlerEvent, None]:
-        """Execute a task and stream canonical Butler events."""
+    ) -> AsyncGenerator[ButlerEvent]:
+        """Execute a task and stream canonical Butler events.
+
+        Hermes owns its own streaming contract.
+        Non-streaming strategies are adapted into a token + final event pair.
+        """
         if ctx.strategy == ExecutionStrategy.HERMES_AGENT:
             hermes_backend = self._require_hermes_backend()
             async for event in hermes_backend.run_streaming(ctx):
+                self._emit_hook(ctx, event)
                 yield event
             return
 
@@ -276,15 +327,17 @@ class RuntimeKernel:
         from domain.events.schemas import StreamFinalEvent, StreamTokenEvent
 
         if result.content:
-            yield StreamTokenEvent(
+            token_event = StreamTokenEvent(
                 account_id=ctx.account_id,
                 session_id=ctx.session_id,
                 task_id=str(ctx.task.id),
                 trace_id=ctx.trace_id,
-                payload={"content": result.content},
+                payload={"content": result.content, "index": 0},
             )
+            self._emit_hook(ctx, token_event)
+            yield token_event
 
-        yield StreamFinalEvent(
+        final_event = StreamFinalEvent(
             account_id=ctx.account_id,
             session_id=ctx.session_id,
             task_id=str(ctx.task.id),
@@ -296,8 +349,12 @@ class RuntimeKernel:
                 "cache_read_tokens": result.token_usage.cache_read_tokens,
                 "estimated_cost_usd": result.token_usage.estimated_cost_usd,
                 "duration_ms": result.duration_ms,
+                "tool_calls_made": result.tool_calls_made,
+                "stopped_reason": result.stopped_reason.value,
             },
         )
+        self._emit_hook(ctx, final_event)
+        yield final_event
 
     async def _dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
         """Dispatch execution to the configured backend for the selected strategy."""
@@ -333,6 +390,37 @@ class RuntimeKernel:
         """Normalize a backend return value into the canonical execution result."""
         if isinstance(payload, ExecutionResult):
             return payload
+        if isinstance(payload, Mapping):
+            return ExecutionResult.from_backend_payload(payload)
+
+        if hasattr(payload, "content"):
+            raw_actions = getattr(payload, "actions", ()) or ()
+            normalized_actions: tuple[Mapping[str, object], ...]
+            if isinstance(raw_actions, Sequence) and not isinstance(raw_actions, (str, bytes)):
+                normalized_actions = tuple(
+                    item for item in raw_actions if isinstance(item, Mapping)
+                )
+            else:
+                normalized_actions = ()
+
+            token_usage = TokenUsage(
+                input_tokens=int(getattr(payload, "input_tokens", 0) or 0),
+                output_tokens=int(getattr(payload, "output_tokens", 0) or 0),
+                cache_read_tokens=int(getattr(payload, "cache_read_tokens", 0) or 0),
+                estimated_cost_usd=float(getattr(payload, "estimated_cost_usd", 0.0) or 0.0),
+            )
+
+            return ExecutionResult(
+                content=str(getattr(payload, "content", "") or ""),
+                actions=normalized_actions,
+                token_usage=token_usage,
+                duration_ms=int(getattr(payload, "duration_ms", 0) or 0),
+                tool_calls_made=int(getattr(payload, "tool_calls_made", 0) or 0),
+                stopped_reason=_normalize_stop_reason(
+                    str(getattr(payload, "stopped_reason", StopReason.END_TURN.value) or "")
+                ),
+            )
+
         return ExecutionResult.from_backend_payload(payload)
 
     def _require_deterministic_backend(self) -> DeterministicExecutionBackend:
@@ -362,6 +450,19 @@ class RuntimeKernel:
                 "Subagent strategy selected but no subagent backend is wired."
             )
         return self._subagent
+
+    def _emit_hook(self, ctx: ExecutionContext, event: ButlerEvent) -> None:
+        """Best-effort event hook for callers that want inline event observation."""
+        if ctx.on_event is None:
+            return
+        try:
+            ctx.on_event(event)
+        except Exception:
+            logger.warning(
+                "runtime_kernel_on_event_failed",
+                task_id=str(getattr(ctx.task, "id", "")),
+                trace_id=ctx.trace_id,
+            )
 
     def _is_subagent_task(self, *, task_type: str, has_acp_target: bool) -> bool:
         return task_type == "delegate" or has_acp_target
@@ -412,3 +513,11 @@ class RuntimeKernel:
             reason=reason,
             task_id=str(getattr(task, "id", "")),
         )
+
+
+def _normalize_stop_reason(value: str) -> StopReason:
+    normalized = (value or "").strip().lower()
+    for item in StopReason:
+        if item.value == normalized:
+            return item
+    return StopReason.ERROR

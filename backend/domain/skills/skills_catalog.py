@@ -38,9 +38,7 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-_HERMES_SKILLS_DIR = (
-    Path(__file__).parent.parent.parent / "integrations" / "hermes" / "skills"
-)
+_HERMES_SKILLS_DIR = Path(__file__).parent.parent.parent / "integrations" / "hermes" / "skills"
 _HERMES_OPTIONAL_SKILLS_DIR = (
     Path(__file__).parent.parent.parent / "integrations" / "hermes" / "optional-skills"
 )
@@ -48,11 +46,12 @@ _HERMES_OPTIONAL_SKILLS_DIR = (
 
 # ── Skill value object ────────────────────────────────────────────────────────
 
+
 @dataclass
 class Skill:
     name: str
     domain: str
-    source: str          # "hermes" | "hermes-optional" | "user"
+    source: str  # "hermes" | "hermes-optional" | "user"
     description: str = ""
     version: str = "1.0"
     path: str = ""
@@ -62,6 +61,7 @@ class Skill:
 
 # ── ISkillsSource (small interface — I) ──────────────────────────────────────
 
+
 class ISkillsSource:
     """Single responsibility: scan one skills directory and return Skill objects."""
 
@@ -70,6 +70,7 @@ class ISkillsSource:
 
 
 # ── Concrete sources (S, O) ───────────────────────────────────────────────────
+
 
 class HermesSkillsSource(ISkillsSource):
     """Scans integrations/hermes/skills/ — the standard Hermes skill domains."""
@@ -121,23 +122,24 @@ def _load_skill(skill_dir: Path, domain: str, source: str) -> Skill | None:
 
     # Try skill.yaml first
     yaml_path = skill_dir / "skill.yaml"
-    md_path   = skill_dir / "SKILL.md"
+    md_path = skill_dir / "SKILL.md"
     json_path = skill_dir / "skill.json"
 
     try:
         if yaml_path.exists():
             import yaml
+
             data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
-            name        = data.get("name", name)
+            name = data.get("name", name)
             description = data.get("description", "")
-            version     = str(data.get("version", "1.0"))
-            tags        = data.get("tags", [])
-            metadata    = data
+            version = str(data.get("version", "1.0"))
+            tags = data.get("tags", [])
+            metadata = data
         elif json_path.exists():
             data = json.loads(json_path.read_text(encoding="utf-8"))
-            name        = data.get("name", name)
+            name = data.get("name", name)
             description = data.get("description", "")
-            metadata    = data
+            metadata = data
         elif md_path.exists():
             # Parse front-matter from SKILL.md (--- ... ---)
             content = md_path.read_text(encoding="utf-8")
@@ -146,12 +148,13 @@ def _load_skill(skill_dir: Path, domain: str, source: str) -> Skill | None:
                 if end != -1:
                     try:
                         import yaml
+
                         fm = yaml.safe_load(content[3:end]) or {}
-                        name        = fm.get("name", name)
+                        name = fm.get("name", name)
                         description = fm.get("description", "")
-                        version     = str(fm.get("version", "1.0"))
-                        tags        = fm.get("tags", [])
-                        metadata    = fm
+                        version = str(fm.get("version", "1.0"))
+                        tags = fm.get("tags", [])
+                        metadata = fm
                     except Exception:
                         pass
     except Exception as exc:
@@ -171,6 +174,7 @@ def _load_skill(skill_dir: Path, domain: str, source: str) -> Skill | None:
 
 # ── ButlerSkillsCatalog (ISkillsCatalog, DI-friendly) ─────────────────────────
 
+
 class ButlerSkillsCatalog:
     """Butler Skills Catalog.
 
@@ -181,10 +185,10 @@ class ButlerSkillsCatalog:
 
     def __init__(self, sources: list[ISkillsSource]) -> None:
         self._sources = sources
-        self._skills:  dict[str, Skill] = {}   # name → Skill
-        self._scanned  = False
+        self._skills: dict[str, Skill] = {}  # name → Skill
+        self._scanned = False
 
-    def scan(self) -> list[dict]:               # ISkillsCatalog — idempotent
+    def scan(self) -> list[dict]:  # ISkillsCatalog — idempotent
         if self._scanned:
             return [self._to_dict(s) for s in self._skills.values()]
         self._scanned = True
@@ -230,21 +234,24 @@ class ButlerSkillsCatalog:
     @staticmethod
     def _to_dict(skill: Skill) -> dict:
         return {
-            "name":         skill.name,
-            "domain":       skill.domain,
-            "source":       skill.source,
-            "description":  skill.description,
-            "version":      skill.version,
-            "path":         skill.path,
-            "tags":         skill.tags,
+            "name": skill.name,
+            "domain": skill.domain,
+            "source": skill.source,
+            "description": skill.description,
+            "version": skill.version,
+            "path": skill.path,
+            "tags": skill.tags,
         }
 
 
 # ── Default factory ───────────────────────────────────────────────────────────
 
+
 def make_default_skills_catalog() -> ButlerSkillsCatalog:
     """Production: scans both Hermes skill libraries."""
-    return ButlerSkillsCatalog(sources=[
-        HermesSkillsSource(),
-        HermesOptionalSkillsSource(),
-    ])
+    return ButlerSkillsCatalog(
+        sources=[
+            HermesSkillsSource(),
+            HermesOptionalSkillsSource(),
+        ]
+    )

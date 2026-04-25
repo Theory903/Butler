@@ -35,28 +35,23 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
-from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from domain.ml.contracts import IntentResult
+from services.auth.credential_pool import ButlerCredentialPool, _token_fingerprint
+from services.ml.registry import ModelRegistry
+from services.ml.runtime import MLRuntimeManager
 from services.ml.smart_router import (
     ButlerSmartRouter,
-    RouterRequest,
-    RoutingDecision,
     ModelTier,
+    RouterRequest,
 )
-from services.ml.runtime import MLRuntimeManager
-from services.ml.registry import ModelRegistry
-from services.auth.credential_pool import ButlerCredentialPool, _token_fingerprint
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_runtime() -> MLRuntimeManager:
     return MLRuntimeManager()
@@ -109,16 +104,19 @@ def _make_jwks(claims: dict | None = None, error: Exception | None = None):
     if error:
         jwks.verify_token = MagicMock(side_effect=error)
     else:
-        jwks.verify_token = MagicMock(return_value=claims or {
-            "sub": "acct_test",
-            "sid": "ses_test",
-            "jti": "jti_test",
-            "aal": "aal2",
-            "exp": int(time.time()) + 900,
-            "iat": int(time.time()),
-            "iss": "https://butler.lasmoid.ai",
-            "aud": "butler-api",
-        })
+        jwks.verify_token = MagicMock(
+            return_value=claims
+            or {
+                "sub": "acct_test",
+                "sid": "ses_test",
+                "jti": "jti_test",
+                "aal": "aal2",
+                "exp": int(time.time()) + 900,
+                "iat": int(time.time()),
+                "iss": "https://butler.lasmoid.ai",
+                "aud": "butler-api",
+            }
+        )
     return jwks
 
 
@@ -126,44 +124,52 @@ def _make_jwks(claims: dict | None = None, error: Exception | None = None):
 # Test 17: ButlerSmartRouter
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerSmartRouter:
 
+class TestButlerSmartRouter:
     def test_t0_high_confidence_simple_no_tools(self):
         """High-confidence simple intent with no tools/memory → T0."""
         router = _make_router()
-        decision = router.route(_req(
-            intent=_intent(
-                label="greeting",
-                confidence=0.95,
-                complexity="simple",
-                requires_tools=False,
-                requires_memory=False,
+        decision = router.route(
+            _req(
+                intent=_intent(
+                    label="greeting",
+                    confidence=0.95,
+                    complexity="simple",
+                    requires_tools=False,
+                    requires_memory=False,
+                )
             )
-        ))
+        )
         assert decision.tier == ModelTier.T0
         assert decision.provider == "pattern"
 
     def test_t1_keyword_simple_no_tools(self):
         """Keyword-classified simple intent (≥0.75), no tools → T1."""
         router = _make_router()
-        decision = router.route(_req(
-            intent=_intent(
-                label="greeting",
-                confidence=0.80,
-                complexity="simple",
-                requires_tools=False,
-                requires_memory=True,
+        decision = router.route(
+            _req(
+                intent=_intent(
+                    label="greeting",
+                    confidence=0.80,
+                    complexity="simple",
+                    requires_tools=False,
+                    requires_memory=True,
+                )
             )
-        ))
+        )
         assert decision.tier == ModelTier.T1
         assert decision.provider == "keyword"
 
     def test_t2_complex_intent_local_available(self):
         """Complex intent with T2 local vLLM available → T2."""
         router = _make_router()
-        decision = router.route(_req(
-            intent=_intent(label="search", confidence=0.7, complexity="complex", requires_tools=True)
-        ))
+        decision = router.route(
+            _req(
+                intent=_intent(
+                    label="search", confidence=0.7, complexity="complex", requires_tools=True
+                )
+            )
+        )
         assert decision.tier == ModelTier.T2
         assert decision.provider == "vllm"
         assert decision.runtime_profile == "local-reasoning-qwen3"
@@ -174,95 +180,118 @@ class TestButlerSmartRouter:
         # Stub out the registry to simulate missing profile
         with patch.dict(runtime._registry.MODELS, {}, clear=True):
             router = ButlerSmartRouter(runtime=runtime)
-            decision = router.route(_req(
-                intent=_intent(complexity="complex", requires_tools=True)
-            ))
+            decision = router.route(_req(intent=_intent(complexity="complex", requires_tools=True)))
             assert decision.tier == ModelTier.T3
             assert decision.provider == "external_api"
 
     def test_t3_kv_overflow(self):
         """Context > 10k tokens → T3 regardless of intent complexity."""
         router = _make_router()
-        decision = router.route(_req(
-            intent=_intent(complexity="simple"),
-            context_token_count=12_000,
-        ))
+        decision = router.route(
+            _req(
+                intent=_intent(complexity="simple"),
+                context_token_count=12_000,
+            )
+        )
         assert decision.tier == ModelTier.T3
-        assert "KV budget" in decision.reason or "kv" in decision.reason.lower() or "10" in decision.reason
+        assert (
+            "KV budget" in decision.reason
+            or "kv" in decision.reason.lower()
+            or "10" in decision.reason
+        )
 
     def test_force_tier_t0(self):
         """force_tier=T0 overrides routing for complex intent."""
         router = _make_router()
-        decision = router.route(_req(
-            intent=_intent(complexity="complex", requires_tools=True),
-            force_tier=ModelTier.T0,
-        ))
+        decision = router.route(
+            _req(
+                intent=_intent(complexity="complex", requires_tools=True),
+                force_tier=ModelTier.T0,
+            )
+        )
         assert decision.tier == ModelTier.T0
         assert decision.override_by_user is True
 
     def test_force_tier_t3(self):
         """force_tier=T3 routes to cloud even for simple intent."""
         router = _make_router()
-        decision = router.route(_req(
-            intent=_intent(complexity="simple", confidence=0.99, requires_tools=False, requires_memory=False),
-            force_tier=ModelTier.T3,
-        ))
+        decision = router.route(
+            _req(
+                intent=_intent(
+                    complexity="simple",
+                    confidence=0.99,
+                    requires_tools=False,
+                    requires_memory=False,
+                ),
+                force_tier=ModelTier.T3,
+            )
+        )
         assert decision.tier == ModelTier.T3
         assert decision.override_by_user is True
 
     def test_tri_attention_enabled_on_t2(self):
         """With tri_attention_enabled=True and T2 route → tri_attention=True."""
         router = _make_router(tri=True)
-        decision = router.route(_req(
-            intent=_intent(complexity="complex", requires_tools=True)
-        ))
+        decision = router.route(_req(intent=_intent(complexity="complex", requires_tools=True)))
         assert decision.tier == ModelTier.T2
         assert decision.tri_attention is True
 
     def test_tri_attention_disabled_on_t2(self):
         """With tri_attention_enabled=False → tri_attention=False even on T2."""
         router = _make_router(tri=False)
-        decision = router.route(_req(
-            intent=_intent(complexity="complex", requires_tools=True)
-        ))
+        decision = router.route(_req(intent=_intent(complexity="complex", requires_tools=True)))
         assert decision.tier == ModelTier.T2
         assert decision.tri_attention is False
 
     def test_tri_attention_always_false_on_t3(self):
         """T3 cloud always tri_attention=False (no local GPU)."""
         router = _make_router(tri=True)
-        decision = router.route(_req(
-            intent=_intent(complexity="complex", requires_tools=True),
-            context_token_count=15_000,  # force T3 via KV overflow
-        ))
+        decision = router.route(
+            _req(
+                intent=_intent(complexity="complex", requires_tools=True),
+                context_token_count=15_000,  # force T3 via KV overflow
+            )
+        )
         assert decision.tier == ModelTier.T3
         assert decision.tri_attention is False
 
     def test_decision_metadata_includes_intent(self):
         """RoutingDecision.metadata must carry intent label and confidence."""
         router = _make_router()
-        decision = router.route(_req(
-            intent=_intent(label="search", confidence=0.72, requires_tools=True)
-        ))
+        decision = router.route(
+            _req(intent=_intent(label="search", confidence=0.72, requires_tools=True))
+        )
         assert decision.metadata["intent_label"] == "search"
         assert decision.metadata["intent_confidence"] == 0.72
 
     def test_t3_default_for_unclassified(self):
         """Unclassified general intent below keyword threshold → T3 default."""
         router = _make_router()
-        decision = router.route(_req(
-            intent=_intent(label="general", confidence=0.5, complexity="simple", requires_tools=False, requires_memory=True)
-        ))
+        decision = router.route(
+            _req(
+                intent=_intent(
+                    label="general",
+                    confidence=0.5,
+                    complexity="simple",
+                    requires_tools=False,
+                    requires_memory=True,
+                )
+            )
+        )
         # confidence < 0.75 and requires_memory=True → falls to T2 or T3
         assert decision.tier in (ModelTier.T2, ModelTier.T3)
 
     def test_latency_budget_tight_routes_t2(self):
         """Tight latency budget (≤400ms) with T2 available → T2 selected."""
         router = _make_router()
-        decision = router.route(_req(
-            intent=_intent(confidence=0.6, complexity="simple", requires_tools=False, requires_memory=True),
-            latency_budget_ms=300,
-        ))
+        decision = router.route(
+            _req(
+                intent=_intent(
+                    confidence=0.6, complexity="simple", requires_tools=False, requires_memory=True
+                ),
+                latency_budget_ms=300,
+            )
+        )
         assert decision.tier == ModelTier.T2
 
 
@@ -270,8 +299,8 @@ class TestButlerSmartRouter:
 # Test 18: ModelRegistry
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestModelRegistry:
 
+class TestModelRegistry:
     def test_get_active_model_returns_entry(self):
         reg = ModelRegistry()
         m = reg.get_active_model("local-reasoning-qwen3")
@@ -323,8 +352,8 @@ class TestModelRegistry:
 # Test 19: ButlerCredentialPool
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerCredentialPool:
 
+class TestButlerCredentialPool:
     def _make_pool(self, redis=None, jwks=None) -> ButlerCredentialPool:
         return ButlerCredentialPool(
             redis=redis or _make_redis(),
@@ -344,12 +373,14 @@ class TestButlerCredentialPool:
     def test_introspect_cache_hit_skips_jwks(self):
         """Cache hit → JWKSManager.verify_token() NOT called."""
         redis = _make_redis()
-        cached = json.dumps({
-            "account_id": "acct_cached",
-            "session_id": "ses_cached",
-            "assurance_level": "aal2",
-            "token_id": "jti_cached",
-        }).encode()
+        cached = json.dumps(
+            {
+                "account_id": "acct_cached",
+                "session_id": "ses_cached",
+                "assurance_level": "aal2",
+                "token_id": "jti_cached",
+            }
+        ).encode()
         # Call order: (1) cache lookup = hit, (2) session revoke = None, (3) jti revoke = None
         redis.get = AsyncMock(side_effect=[cached, None, None])
         jwks = _make_jwks()
@@ -370,12 +401,14 @@ class TestButlerCredentialPool:
     def test_introspect_revoked_session_cache_hit(self):
         """Cache hit for revoked session → valid=False."""
         redis = _make_redis()
-        cached = json.dumps({
-            "account_id": "acct_r",
-            "session_id": "ses_revoked",
-            "assurance_level": "aal1",
-            "token_id": "jti_r",
-        }).encode()
+        cached = json.dumps(
+            {
+                "account_id": "acct_r",
+                "session_id": "ses_revoked",
+                "assurance_level": "aal1",
+                "token_id": "jti_r",
+            }
+        ).encode()
         redis.get = AsyncMock(side_effect=[cached, b"1", None])
         pool = self._make_pool(redis=redis)
         result = asyncio.run(pool.introspect("revoked.token"))
@@ -408,10 +441,12 @@ class TestButlerCredentialPool:
         """revoke_all_sessions() calls Redis pipeline once."""
         redis = _make_redis()
         pool = self._make_pool(redis=redis)
-        count = asyncio.run(pool.revoke_all_sessions(
-            account_id="acct_all",
-            session_ids=["ses_a", "ses_b", "ses_c"],
-        ))
+        count = asyncio.run(
+            pool.revoke_all_sessions(
+                account_id="acct_all",
+                session_ids=["ses_a", "ses_b", "ses_c"],
+            )
+        )
         assert count == 3
         redis.pipeline.assert_called()
 

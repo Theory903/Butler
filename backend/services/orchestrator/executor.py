@@ -18,9 +18,10 @@ import contextlib
 import json
 import time
 import uuid
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Protocol, Sequence
+from datetime import UTC, datetime
+from typing import Any, Protocol
 
 import structlog
 from redis.asyncio import Redis
@@ -41,13 +42,13 @@ from domain.orchestrator.runtime_kernel import (
     ExecutionMessage,
     RuntimeKernel,
 )
+from domain.orchestration.router import OperationRequest, OperationRouter, OperationType
 from domain.orchestrator.state import TaskStateMachine
 from domain.orchestrator.workflow_dag import PlanLowerer, WorkflowDAG
 from domain.tools.contracts import ToolsServiceContract
 from services.orchestrator.planner import Plan, Step
 from services.workflow.engine import WorkflowEngine
 
-UTC = timezone.utc
 logger = structlog.get_logger(__name__)
 
 
@@ -63,11 +64,11 @@ class ApprovalServiceContract(Protocol):
         task_id: str,
         workflow_id: str,
         approval_type: str,
-    ):
+    ) -> Any:
         """Create an approval request."""
 
 
-class ApprovalRequired(Exception):
+class ApprovalRequired(Exception):  # noqa: N818
     """Raised when a workflow node requires explicit human approval."""
 
     def __init__(
@@ -115,6 +116,7 @@ class DurableExecutor:
         lock_manager: LockManager | None = None,
         blender: object | None = None,
         smart_router: object | None = None,
+        operation_router: OperationRouter | None = None,
         feature_service: object | None = None,
         redaction_service: object | None = None,
         safety_service: object | None = None,
@@ -131,6 +133,7 @@ class DurableExecutor:
         self._locks = lock_manager
         self._blender = blender
         self._router = smart_router
+        self._operation_router = operation_router
         self._features = feature_service
         self._redactor = redaction_service
         self._safety = safety_service
@@ -144,9 +147,11 @@ class DurableExecutor:
             dag = PlanLowerer.lower(plan)
             workflow.plan_schema = dag.model_dump()
             await self._db.flush()
+            await self._db.commit()
 
         engine = WorkflowEngine(self._db, self._redis, self._sm)
         await engine.step_workflow(str(workflow.id))
+        await self._db.commit()
 
         last_content = ""
         max_iterations = 50
@@ -162,6 +167,8 @@ class DurableExecutor:
             state_snapshot = workflow.state_snapshot or {}
             running_nodes = state_snapshot.get("running_nodes", {}) or {}
             progressed = False
+            retry_scheduled = False
+            terminal_failure = False
 
             for node_id, node_data in list(running_nodes.items()):
                 node_task_id = (
@@ -220,6 +227,7 @@ class DurableExecutor:
                         str(task.id),
                         task.output_data,
                     )
+                    await self._db.commit()
 
                 except ApprovalRequired as exc:
                     await self._handle_approval_required(
@@ -233,7 +241,11 @@ class DurableExecutor:
                         content=last_content,
                         actions=(),
                         duration_ms=int(time.monotonic() * 1000) - workflow_start_ms,
-                        metadata={"status": "awaiting_approval"},
+                        metadata={
+                            "status": "awaiting_approval",
+                            "suspended": True,
+                            "suspension_reason": "awaiting_approval",
+                        },
                     )
 
                 except Exception as exc:
@@ -243,21 +255,31 @@ class DurableExecutor:
                         task_id=str(task.id),
                         node_id=node_id,
                     )
-                    await self._handle_task_failure(
+                    terminal_failure = await self._handle_task_failure(
                         task=task,
                         workflow=workflow,
                         exc=exc,
                     )
                     await self._db.commit()
+
+                    if terminal_failure:
+                        break
+
+                    retry_scheduled = True
                     break
 
             await self._db.refresh(workflow)
 
-            if workflow.status != "active":
+            if terminal_failure or workflow.status != "active":
                 break
+
+            if retry_scheduled:
+                continue
 
             if not progressed:
                 stepped = await engine.step_workflow(str(workflow.id))
+                await self._db.commit()
+
                 if not stepped:
                     state_snapshot = workflow.state_snapshot or {}
                     running_nodes = state_snapshot.get("running_nodes", {}) or {}
@@ -307,7 +329,7 @@ class DurableExecutor:
         workflow: Workflow,
         task: Task,
         messages: Sequence[ExecutionMessage],
-    ) -> AsyncGenerator[ButlerEvent, None]:
+    ) -> AsyncGenerator[ButlerEvent]:
         """Stream execution events for a single task through RuntimeKernel."""
         await self._cache_task_state(task)
 
@@ -374,11 +396,15 @@ class DurableExecutor:
             )
 
         finally:
-            final_status = "failed" if failed else "completed"
-            task.completed_at = datetime.now(UTC)
-            transition = self._sm.transition(task, final_status, "auto")
-            self._db.add(transition)
-            await self._db.commit()
+            if task.status == "executing":
+                final_status = "failed" if failed else "completed"
+                task.completed_at = datetime.now(UTC)
+                transition = self._sm.transition(task, final_status, "auto")
+                self._db.add(transition)
+                await self._db.commit()
+            else:
+                await self._db.commit()
+
             await self._cache_task_state(task)
 
     async def _load_node_task(self, *, node_task_id: object) -> Task | None:
@@ -403,11 +429,13 @@ class DurableExecutor:
     ) -> WorkflowResult:
         """Replay a memoized node result or execute the node through the kernel."""
         history = await self._db.execute(
-            select(WorkflowEvent).where(
+            select(WorkflowEvent)
+            .where(
                 WorkflowEvent.workflow_id == workflow.id,
                 WorkflowEvent.node_id == node_id,
                 WorkflowEvent.event_type == "node_end",
             )
+            .order_by(WorkflowEvent.created_at.desc())
         )
         memoized_event = history.scalars().first()
         if memoized_event is not None:
@@ -448,15 +476,20 @@ class DurableExecutor:
         task: Task,
         workflow: Workflow,
         error: ApprovalRequired,
-    ) -> None:
+    ) -> Any:
         """Suspend a task and create an approval request."""
+        if task.status != "executing":
+            transition = self._sm.transition(task, "executing", "approval_guard")
+            self._db.add(transition)
+            await self._db.flush()
+
         transition = self._sm.transition(task, "awaiting_approval", "approval_needed")
         self._db.add(transition)
 
         if self._approval_service is None:
             raise RuntimeError("Approval is required but no approval service is configured.")
 
-        await self._approval_service.create(
+        request = await self._approval_service.create(
             self._db,
             str(workflow.account_id),
             error.tool_name or task.tool_name or "unknown",
@@ -466,6 +499,24 @@ class DurableExecutor:
             approval_type=error.approval_type,
         )
         await self._db.flush()
+        return request
+
+    async def suspend_for_approval(
+        self,
+        *,
+        task: Task,
+        workflow: Workflow,
+        error: ApprovalRequired,
+    ) -> Any:
+        """Public boundary for direct graph paths that need durable approval."""
+        request = await self._handle_approval_required(
+            task=task,
+            workflow=workflow,
+            error=error,
+        )
+        await self._db.commit()
+        await self._cache_task_state(task)
+        return request
 
     async def _handle_task_failure(
         self,
@@ -473,8 +524,11 @@ class DurableExecutor:
         task: Task,
         workflow: Workflow,
         exc: Exception,
-    ) -> None:
-        """Move a task through failure and retry handling."""
+    ) -> bool:
+        """Move a task through failure and retry handling.
+
+        Returns True when the workflow should be treated as terminally failed.
+        """
         task.error_data = {
             "error": str(exc),
             "type": type(exc).__name__,
@@ -493,15 +547,17 @@ class DurableExecutor:
                 task_id=str(task.id),
                 retries=task.retries,
             )
-        else:
-            workflow.status = "failed"
-            logger.error(
-                "durable_executor_task_failed_max_retries",
-                task_id=str(task.id),
-                workflow_id=str(workflow.id),
-            )
+            await self._db.flush()
+            return False
 
+        workflow.status = "failed"
+        logger.error(
+            "durable_executor_task_failed_max_retries",
+            task_id=str(task.id),
+            workflow_id=str(workflow.id),
+        )
         await self._db.flush()
+        return True
 
     async def _handle_streaming_approval(
         self,
@@ -527,9 +583,10 @@ class DurableExecutor:
         )
         event.payload["approval_id"] = str(request.id)
 
-        transition = self._sm.transition(task, "awaiting_approval", "approval_needed")
-        self._db.add(transition)
-        await self._db.flush()
+        if task.status == "executing":
+            transition = self._sm.transition(task, "awaiting_approval", "approval_needed")
+            self._db.add(transition)
+            await self._db.flush()
 
     async def _execute_step_via_kernel(
         self,
@@ -539,7 +596,30 @@ class DurableExecutor:
         workflow: Workflow,
         node_id: str,
     ) -> dict[str, object]:
-        """Execute one workflow node through the RuntimeKernel."""
+        """Execute one workflow node through the RuntimeKernel with router admission check."""
+        # Check tool operation admission through router
+        if self._operation_router is not None and step.action != "respond":
+            from domain.orchestration.router import AdmissionDecision
+
+            tenant_id = getattr(workflow, 'tenant_id', None) or str(workflow.account_id)
+            operation_request = OperationRequest(
+                operation_type=OperationType.TOOL_CALL,
+                tenant_id=tenant_id,
+                account_id=str(workflow.account_id),
+                user_id=None,
+                tool_name=step.action,
+                risk_tier=None,
+                estimated_cost=None,
+            )
+
+            _, admission = self._operation_router.route(operation_request)
+            if admission.decision != AdmissionDecision.ALLOW:
+                raise ApprovalRequired(
+                    approval_type="router_denied",
+                    description=admission.reason,
+                    tool_name=step.action,
+                )
+
         strategy = self._kernel.choose_strategy(task, workflow)
         trace_id = self._tracer.get_current_trace_id() or f"trc_{uuid.uuid4().hex[:12]}"
         idempotency_key = f"{workflow.session_id}:{workflow.id}:{node_id}"
@@ -554,6 +634,7 @@ class DurableExecutor:
             )
         ]
 
+        tenant_id = getattr(workflow, 'tenant_id', None) or str(workflow.account_id)
         context = ExecutionContext(
             task=task,
             workflow=workflow,
@@ -565,6 +646,7 @@ class DurableExecutor:
             trace_id=trace_id,
             account_id=str(workflow.account_id),
             session_id=workflow.session_id,
+            tenant_id=tenant_id,
         )
 
         with self._tracer.span(
@@ -592,6 +674,9 @@ class DurableExecutor:
             task_id=str(task.id),
         )
 
+        transition = self._sm.transition(task, "executing", "approval_granted")
+        self._db.add(transition)
+
         engine = WorkflowEngine(self._db, self._redis, self._sm)
         await engine.resolve_signal(
             str(workflow.id),
@@ -606,8 +691,17 @@ class DurableExecutor:
 
     async def _cache_task_state(self, task: Task) -> None:
         """Cache hot task state in Redis for fast reads."""
+        # Use tenant-scoped key if task has tenant_id, otherwise fallback to legacy format
+        tenant_id = getattr(task, 'tenant_id', None)
+        if tenant_id:
+            from services.tenant.namespace import get_tenant_namespace
+            namespace = get_tenant_namespace(tenant_id)
+            key = f"{namespace.prefix}:task:{task.id}:state"
+        else:
+            # Fallback to legacy format for tasks without tenant_id
+            key = f"butler:task:{task.id}:state"
         await self._redis.setex(
-            f"butler:task:{task.id}:state",
+            key,
             3600,
             json.dumps(
                 {
@@ -647,12 +741,22 @@ class DurableExecutor:
         workflow_id: str,
         payload: dict[str, object],
     ) -> WorkflowResult:
+        raw_actions = payload.get("actions", [])
+        actions: tuple[dict[str, object], ...]
+        if isinstance(raw_actions, list):
+            actions = tuple(item for item in raw_actions if isinstance(item, dict))
+        else:
+            actions = ()
+
+        raw_metadata = payload.get("metadata", {})
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+
         return WorkflowResult(
             workflow_id=workflow_id,
             content=str(payload.get("content", "") or ""),
-            actions=tuple(payload.get("actions", []) or []),
+            actions=actions,
             input_tokens=int(payload.get("input_tokens", 0) or 0),
             output_tokens=int(payload.get("output_tokens", 0) or 0),
             duration_ms=int(payload.get("duration_ms", 0) or 0),
-            metadata=dict(payload.get("metadata", {}) or {}),
+            metadata=metadata,
         )

@@ -8,33 +8,48 @@ This service enforces the guarantees detailed in the Digital Twin architecture:
 """
 
 import logging
-from typing import List, Dict, Any, Optional
 import uuid
-from datetime import datetime, UTC
+from datetime import UTC, datetime
+from typing import Any
 
 from core.observability import get_metrics
 from core.tracing import tracer
-from services.memory.models import EpisodicMemoryTier, StructuralMemoryTier
 
 logger = logging.getLogger(__name__)
 
+
 class ConsentManager:
     """Enforces strict bounds on data retention and processing for Digital Twin memory pools."""
-    
+
+    # Basic PII regex patterns
+    PII_PATTERNS = {
+        "email": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+        "ipv4": r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
+        "ssn": r"\b\d{3}-\d{2}-\d{4}\b",
+        "credit_card": r"\b(?:\d{4}[-\s]?){3}\d{4}\b",
+        "phone": r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b",
+    }
+
     def __init__(self):
         # In a real deployed environment, this would pull from a centralized Compliance DB
-        self._tenant_policies: Dict[uuid.UUID, Dict[str, Any]] = {}
+        self._tenant_policies: dict[uuid.UUID, dict[str, Any]] = {}
+        import re
 
-    def get_policy(self, tenant_id: uuid.UUID) -> Dict[str, Any]:
+        self._compiled_patterns = {k: re.compile(v) for k, v in self.PII_PATTERNS.items()}
+
+    def get_policy(self, tenant_id: uuid.UUID) -> dict[str, Any]:
         """Fetch the current retention and scrubbing policy for the tenant."""
-        return self._tenant_policies.get(tenant_id, {
-            "episodic_ttl_days": 30,
-            "allow_structural_graph_commit": True,
-            "scrub_pii": True,
-            "forbidden_topics": ["financial_credentials", "medical_history", "passwords"]
-        })
+        return self._tenant_policies.get(
+            tenant_id,
+            {
+                "episodic_ttl_days": 30,
+                "allow_structural_graph_commit": True,
+                "scrub_pii": True,
+                "forbidden_topics": ["financial_credentials", "medical_history", "passwords"],
+            },
+        )
 
-    def update_policy(self, tenant_id: uuid.UUID, policy_updates: Dict[str, Any]) -> None:
+    def update_policy(self, tenant_id: uuid.UUID, policy_updates: dict[str, Any]) -> None:
         """Update consent policies dynamically via operator or user override."""
         current = self.get_policy(tenant_id)
         current.update(policy_updates)
@@ -42,46 +57,63 @@ class ConsentManager:
         logger.info(f"Updated consent policy for tenant {tenant_id}")
         get_metrics().inc_counter("memory.consent.policy_updated", tags={"tenant": str(tenant_id)})
 
-    async def scrub_episodic_stream(self, tenant_id: uuid.UUID, content: str) -> str:
-        """Analyze and scrub PII or forbidden topics from episodic buffers.
-        
-        Currently a placeholder for what would be a local ML invocation or regex scanner
-        to replace sensitive entities with `<REDACTED>` tags.
+    async def scrub_text(self, tenant_id: uuid.UUID, content: str) -> str:
+        """Analyze and scrub PII or forbidden topics from text streams.
+
+        Uses regex patterns to replace sensitive entities with `<REDACTED>` tags.
         """
         policy = self.get_policy(tenant_id)
-        if not policy.get("scrub_pii", True):
+        if not policy.get("scrub_pii", True) or not content:
             return content
-            
+
         with tracer.start_as_current_span("consent.scrub_pii"):
-            # TODO: Implement robust zero-trust local scrubbing using Microsoft Presidio or similar.
-            # For now, simply verify the step functions correctly.
+            scrubbed = content
+            found_pii = False
+
+            for pii_type, pattern in self._compiled_patterns.items():
+                if pattern.search(scrubbed):
+                    scrubbed = pattern.sub(f"<REDACTED_{pii_type.upper()}>", scrubbed)
+                    found_pii = True
+
+            if found_pii:
+                logger.info(f"Scrubbed PII for tenant {tenant_id}")
+                get_metrics().inc_counter(
+                    "memory.consent.pii_redacted", tags={"tenant": str(tenant_id)}
+                )
+
             get_metrics().inc_counter("memory.consent.scrubbed_bytes", value=len(content))
-            return content
+            return scrubbed
+
+    async def scrub_episodic_stream(self, tenant_id: uuid.UUID, content: str) -> str:
+        """Deprecated: Use scrub_text instead."""
+        return await self.scrub_text(tenant_id, content)
 
     def can_commit_to_graph(self, tenant_id: uuid.UUID) -> bool:
         """Check if the user has explicitly consented to structural knowledge gathering."""
         policy = self.get_policy(tenant_id)
         allowed = policy.get("allow_structural_graph_commit", False)
-        
+
         if not allowed:
-            get_metrics().inc_counter("memory.consent.graph_commit_denied", tags={"tenant": str(tenant_id)})
+            get_metrics().inc_counter(
+                "memory.consent.graph_commit_denied", tags={"tenant": str(tenant_id)}
+            )
             logger.warning(f"Tenant {tenant_id} denied structural graph commits via policy.")
-            
+
         return allowed
 
     async def enforce_ttl_scrubbing(self, episodic_store) -> int:
         """Trigger a background job that seeks and destroys expired Episodic memories.
-        
+
         Args:
             episodic_store: The Qdrant client or abstraction to execute the wipe.
-            
+
         Returns:
             The number of records scrubbed.
         """
         with tracer.start_as_current_span("consent.enforce_ttl"):
-            now = datetime.now(UTC)
+            datetime.now(UTC)
             # Typically delegates a hard-delete command to the vector store filtering < now
             # returning 0 for this stub.
-            
+
             get_metrics().inc_counter("memory.consent.ttl_scrub_run")
             return 0

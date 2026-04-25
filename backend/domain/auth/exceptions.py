@@ -149,4 +149,3 @@ class GatewayErrors:
         status=404,
         detail="The MCP session has expired or does not exist. Send an initialize request to start a new session.",
     )
-

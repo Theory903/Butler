@@ -31,20 +31,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 import uuid
-import structlog
 
+import structlog
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from redis.asyncio import Redis
 
 from core.deps import get_cache
 from domain.auth.contracts import AccountContext
-from domain.auth.exceptions import GatewayErrors
+from services.auth.jwt import get_jwks_manager
 from services.gateway.auth_middleware import JWTAuthMiddleware
 from services.gateway.stream_bridge import SSE_HEADERS
-from services.auth.jwt import get_jwks_manager
 
 logger = structlog.get_logger(__name__)
 
@@ -94,6 +92,7 @@ async def _validate_session(cache: Redis, session_id: str, account_id: str) -> b
 
 # ── JSON-RPC helpers ──────────────────────────────────────────────────────────
 
+
 def _ok(req_id, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
@@ -122,6 +121,7 @@ def _session_error(req_id):
 
 
 # ── POST /mcp — JSON-RPC dispatcher ──────────────────────────────────────────
+
 
 @mcp_router.post("/mcp")
 async def mcp_post(request: Request, cache: Redis = Depends(get_cache)):
@@ -152,9 +152,7 @@ async def mcp_post(request: Request, cache: Redis = Depends(get_cache)):
                 status_code=413,
                 content={"error": "Batch size exceeds maximum of 10 requests"},
             )
-        results = await asyncio.gather(
-            *[_dispatch(req, account, cache, request) for req in body]
-        )
+        results = await asyncio.gather(*[_dispatch(req, account, cache, request) for req in body])
         return JSONResponse(content=list(results), media_type="application/json")
 
     result = await _dispatch(body, account, cache, request)
@@ -202,6 +200,7 @@ async def _dispatch(payload: dict, account: AccountContext, cache: Redis, reques
     if method == "tools/list":
         try:
             from services.tools.mcp_bridge import get_mcp_bridge
+
             bridge = get_mcp_bridge()
             tools = bridge.list_registered_tools()
             return _ok(req_id, {"tools": tools})
@@ -217,12 +216,10 @@ async def _dispatch(payload: dict, account: AccountContext, cache: Redis, reques
             return _err(req_id, -32602, "Missing required param: name")
         try:
             from services.tools.mcp_bridge import get_mcp_bridge
+
             bridge = get_mcp_bridge()
             call_result = await bridge.call_tool(
-                "butler_native",
-                tool_name,
-                tool_args,
-                account_id=account.account_id
+                "butler_native", tool_name, tool_args, account_id=account.account_id
             )
             if not call_result.success:
                 return _err(req_id, -32000, call_result.error or "Tool execution failed")
@@ -234,16 +231,22 @@ async def _dispatch(payload: dict, account: AccountContext, cache: Redis, reques
     # ── resources/list ────────────────────────────────────────────────────────
     if method == "resources/list":
         try:
-            from integrations.hermes.tools.registry import registry
-            toolsets = registry.get_available_toolsets()
+            # Use Butler's tool registry instead of direct Hermes import
+            from domain.tools.butler_tool_registry import make_default_tool_registry
+
+            registry = make_default_tool_registry()
+            # Get toolsets via Butler's adapter (isolates Hermes dependency)
+            toolsets = registry._adapter.get_available_toolsets() if registry._adapter else {}
             resources = []
             for name, meta in toolsets.items():
-                resources.append({
-                    "uri": f"butler://toolsets/{name}",
-                    "name": name,
-                    "description": meta.get("description", f"Butler toolset: {name}"),
-                    "mimeType": "application/json",
-                })
+                resources.append(
+                    {
+                        "uri": f"butler://toolsets/{name}",
+                        "name": name,
+                        "description": meta.get("description", f"Butler toolset: {name}"),
+                        "mimeType": "application/json",
+                    }
+                )
             return _ok(req_id, {"resources": resources})
         except Exception as exc:
             return _err(req_id, -32000, "Failed to list resources", str(exc))
@@ -251,24 +254,32 @@ async def _dispatch(payload: dict, account: AccountContext, cache: Redis, reques
     # ── prompts/list ──────────────────────────────────────────────────────────
     if method == "prompts/list":
         try:
-            from integrations.hermes.tools.registry import registry
-            entries = registry._snapshot_entries()
+            # Use Butler's tool registry instead of direct Hermes import
+            from domain.tools.butler_tool_registry import make_default_tool_registry
+
+            registry = make_default_tool_registry()
+            # Get tool schemas via Butler's registry (isolates Hermes dependency)
+            schemas = registry.get_schemas()
             prompts = []
-            for entry in entries:
+            for entry in schemas:
                 # Map OpenAI schema properties to MCP prompt arguments
-                props = entry.schema.get("parameters", {}).get("properties", {})
+                props = entry.get("parameters", {}).get("properties", {})
                 args = []
                 for p_name, p_meta in props.items():
-                    args.append({
-                        "name": p_name,
-                        "description": p_meta.get("description", ""),
-                        "required": p_name in entry.schema.get("parameters", {}).get("required", []),
-                    })
-                prompts.append({
-                    "name": entry.name,
-                    "description": entry.description,
-                    "arguments": args,
-                })
+                    args.append(
+                        {
+                            "name": p_name,
+                            "description": p_meta.get("description", ""),
+                            "required": p_name in entry.get("parameters", {}).get("required", []),
+                        }
+                    )
+                prompts.append(
+                    {
+                        "name": entry.get("name", ""),
+                        "description": entry.get("description", ""),
+                        "arguments": args,
+                    }
+                )
             return _ok(req_id, {"prompts": prompts})
         except Exception as exc:
             return _err(req_id, -32000, "Failed to list prompts", str(exc))
@@ -277,24 +288,33 @@ async def _dispatch(payload: dict, account: AccountContext, cache: Redis, reques
     if method == "prompts/get":
         prompt_name = params.get("name")
         if not prompt_name:
-            return _err(req_id, -32602, "Missing required param: name")
+            return _err(req_id, -32602, "Invalid params", "name is required")
         try:
-            from integrations.hermes.tools.registry import registry
-            entry = registry.get_entry(prompt_name)
-            if not entry:
-                return _err(req_id, -32601, f"Prompt not found: {prompt_name}")
-            
+            # Use Butler's tool registry instead of direct Hermes import
+            from domain.tools.butler_tool_registry import make_default_tool_registry
+
+            registry = make_default_tool_registry()
+            schemas = registry.get_schemas()
+            # Find the tool schema
+            tool_schema = None
+            for schema in schemas:
+                if schema.get("name") == prompt_name:
+                    tool_schema = schema
+                    break
+            if not tool_schema:
+                return _err(req_id, -32602, "Prompt not found", prompt_name)
+
             # Surface tool schema as a structured prompt instruction
-            instruction = f"Tool: {entry.name}\nDescription: {entry.description}\nSchema:\n{json.dumps(entry.schema, indent=2)}"
-            return _ok(req_id, {
-                "description": entry.description,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": {"type": "text", "text": instruction}
-                    }
-                ]
-            })
+            instruction = f"Tool: {tool_schema.get('name', '')}\nDescription: {tool_schema.get('description', '')}\nSchema:\n{json.dumps(tool_schema.get('schema', {}), indent=2)}"
+            return _ok(
+                req_id,
+                {
+                    "description": tool_schema.get("description", ""),
+                    "messages": [
+                        {"role": "user", "content": {"type": "text", "text": instruction}}
+                    ],
+                },
+            )
         except Exception as exc:
             return _err(req_id, -32000, "Failed to get prompt", str(exc))
 
@@ -302,6 +322,7 @@ async def _dispatch(payload: dict, account: AccountContext, cache: Redis, reques
 
 
 # ── GET /mcp — SSE server-push channel ───────────────────────────────────────
+
 
 @mcp_router.get("/mcp")
 async def mcp_get(request: Request, cache: Redis = Depends(get_cache)):
@@ -339,7 +360,7 @@ async def mcp_get(request: Request, cache: Redis = Depends(get_cache)):
         # Opening endpoint event (MCP spec requires this for SSE channels)
         yield _mcp_sse_event(
             "endpoint",
-            f"/api/v1/mcp",
+            "/api/v1/mcp",
         )
 
         try:
@@ -352,7 +373,7 @@ async def mcp_get(request: Request, cache: Redis = Depends(get_cache)):
                     )
                     if notification:
                         yield _mcp_sse_event("message", json.dumps(notification))
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Send MCP ping
                     yield _mcp_sse_event(
                         "message",

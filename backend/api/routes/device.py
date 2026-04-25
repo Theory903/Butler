@@ -5,46 +5,50 @@ Re-mapped away from raw registration into semantic 'pairing' flows per IoT trust
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import List
-
-from domain.auth.contracts import AccountContext
-from api.routes.gateway import get_current_account
-from services.device.service import DeviceService
-from core.deps import get_db, get_redis
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.routes.gateway import get_current_account
+from core.deps import get_db, get_redis
+from domain.auth.contracts import AccountContext
+from services.device.service import DeviceService
+
+
 def get_device_service(
-    redis: Redis = Depends(get_redis),
-    db: AsyncSession = Depends(get_db)
+    redis: Redis = Depends(get_redis), db: AsyncSession = Depends(get_db)
 ) -> DeviceService:
     return DeviceService(redis=redis, db=db)
 
+
 router = APIRouter(prefix="/devices", tags=["device"])
+
 
 class PairDeviceRequest(BaseModel):
     protocol: str = "api"
     vendor: str = "butler_generic"
     model: str = "unknown_model"
-    capabilities: List[str] = []
+    capabilities: list[str] = []
+
 
 class DeviceActionRequest(BaseModel):
     action: str
     params: dict = {}
+
 
 class DeviceResponse(BaseModel):
     id: str
     protocol: str
     vendor: str
     model: str
-    capabilities: List[str]
+    capabilities: list[str]
     trust_state: str
     online_state: str
 
-@router.get("/", response_model=List[DeviceResponse])
+
+@router.get("/", response_model=list[DeviceResponse])
 async def list_devices(
-    account: AccountContext = Depends(get_current_account), 
-    svc: DeviceService = Depends(get_device_service)
+    account: AccountContext = Depends(get_current_account),
+    svc: DeviceService = Depends(get_device_service),
 ):
     devices = await svc.list_devices(str(account.account_id))
     return [
@@ -55,15 +59,17 @@ async def list_devices(
             model=d.model,
             capabilities=d.capabilities,
             trust_state=d.trust_state,
-            online_state=d.online_state
-        ) for d in devices
+            online_state=d.online_state,
+        )
+        for d in devices
     ]
+
 
 @router.post("/pair", response_model=DeviceResponse)
 async def pair_device(
-    req: PairDeviceRequest, 
-    account: AccountContext = Depends(get_current_account), 
-    svc: DeviceService = Depends(get_device_service)
+    req: PairDeviceRequest,
+    account: AccountContext = Depends(get_current_account),
+    svc: DeviceService = Depends(get_device_service),
 ):
     device = await svc.pair_device(str(account.account_id), req.model_dump())
     return DeviceResponse(
@@ -73,30 +79,29 @@ async def pair_device(
         model=device.model,
         capabilities=device.capabilities,
         trust_state=device.trust_state,
-        online_state=device.online_state
+        online_state=device.online_state,
     )
 
+
 @router.get("/{device_id}/state")
-async def get_device_state(
-    device_id: str, 
-    svc: DeviceService = Depends(get_device_service)
-):
+async def get_device_state(device_id: str, svc: DeviceService = Depends(get_device_service)):
     # Depending on adapter load, this may block until Zigbee/MQTT returns.
     return await svc.get_state(device_id)
 
+
 @router.post("/{device_id}/action")
 async def dispatch_device_action(
-    device_id: str, 
-    req: DeviceActionRequest, 
+    device_id: str,
+    req: DeviceActionRequest,
     account: AccountContext = Depends(get_current_account),
-    svc: DeviceService = Depends(get_device_service)
+    svc: DeviceService = Depends(get_device_service),
 ):
     try:
         return await svc.dispatch_command(
             requester_account_id=str(account.account_id),
-            device_id=device_id, 
-            action=req.action, 
-            params=req.params
+            device_id=device_id,
+            action=req.action,
+            params=req.params,
         )
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))

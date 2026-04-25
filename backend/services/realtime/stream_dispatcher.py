@@ -28,29 +28,22 @@ Redis Stream design:
 from __future__ import annotations
 
 import json
-import time
-from datetime import datetime, UTC
-from typing import AsyncGenerator, Literal
+from collections.abc import AsyncGenerator
 
 import structlog
 from redis.asyncio import Redis
 
 from domain.events.schemas import (
     ButlerEvent,
-    StreamTokenEvent,
-    StreamFinalEvent,
-    StreamToolCallEvent,
-    StreamApprovalRequiredEvent,
-    StreamErrorEvent,
 )
-from services.realtime.events import RealtimeEvent, Events
+from services.realtime.events import Events, RealtimeEvent
 from services.realtime.manager import ConnectionManager
 
 logger = structlog.get_logger(__name__)
 
 _STREAM_PREFIX = "butler:events:"
 _STREAM_MAXLEN = 1000
-_STREAM_TTL_S = 172_800   # 48h
+_STREAM_TTL_S = 172_800  # 48h
 _REPLAY_DEFAULT_COUNT = 50
 
 
@@ -89,9 +82,7 @@ class ButlerStreamDispatcher:
         if rt_event.durable:
             await self._persist_to_stream(account_id, rt_event)
 
-    async def dispatch_batch(
-        self, events: list[ButlerEvent], account_id: str
-    ) -> None:
+    async def dispatch_batch(self, events: list[ButlerEvent], account_id: str) -> None:
         for ev in events:
             await self.dispatch(ev, account_id)
 
@@ -139,7 +130,7 @@ class ButlerStreamDispatcher:
         account_id: str,
         cursor: str = "0",
         count: int = _REPLAY_DEFAULT_COUNT,
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[str]:
         """Async generator of SSE-formatted replayed events.
 
         Usage in FastAPI route:
@@ -154,12 +145,7 @@ class ButlerStreamDispatcher:
             event_type = entry.get("type", "butler.event")
             payload = entry.get("payload", "{}")
             ts = entry.get("timestamp", "")
-            yield (
-                f"id: {eid}\n"
-                f"event: {event_type}\n"
-                f"data: {payload}\n"
-                f"X-Ts: {ts}\n\n"
-            )
+            yield (f"id: {eid}\nevent: {event_type}\ndata: {payload}\nX-Ts: {ts}\n\n")
         # Signal end of replay
         yield "event: replay.complete\ndata: {}\n\n"
 
@@ -229,9 +215,7 @@ class ButlerStreamDispatcher:
 
     # ── Private ───────────────────────────────────────────────────────────────
 
-    async def _persist_to_stream(
-        self, account_id: str, event: RealtimeEvent
-    ) -> None:
+    async def _persist_to_stream(self, account_id: str, event: RealtimeEvent) -> None:
         """Write a durable event to the account's Redis Stream."""
         stream_key = _STREAM_PREFIX + account_id
         try:

@@ -32,22 +32,23 @@ import json
 import os
 import time
 import uuid
-import structlog
 from dataclasses import dataclass, field
-from typing import Any
 
-from domain.tools.hermes_compiler import ButlerToolSpec, RiskTier
+import structlog
+
 from domain.orchestrator.hermes_agent_backend import (
-    ButlerToolPolicyGate,
-    ToolPolicyViolation,
     ApprovalRequired,
     AssuranceInsufficient,
+    ButlerToolPolicyGate,
+    ToolPolicyViolation,
 )
+from domain.tools.hermes_compiler import ButlerToolSpec, RiskTier
 
 logger = structlog.get_logger(__name__)
 
 
 # ── Result ────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class ButlerToolResult:
@@ -56,13 +57,14 @@ class ButlerToolResult:
     This is what ToolExecutor.execute() returns after ButlerToolDispatch.
     Hermes's raw string output never leaves this class.
     """
+
     success: bool
     tool_name: str
     execution_id: str
     risk_tier: str
     duration_ms: int
-    output: dict | None = None            # Parsed output (None if suppressed by tier)
-    raw_output_size: int = 0              # Always recorded; used for audit
+    output: dict | None = None  # Parsed output (None if suppressed by tier)
+    raw_output_size: int = 0  # Always recorded; used for audit
     error: str | None = None
     has_compensation: bool = False
     compensation_ref: dict | None = None  # Opaque ref, stored in ToolExecution
@@ -74,14 +76,15 @@ class ButlerToolResult:
 # Compensation is invoked by DurableExecutor._compensate() on workflow failure.
 
 _COMPENSATION_HANDLERS: dict[str, str] = {
-    "write_file":    "delete_written_file",
-    "patch_file":    "revert_patch",
-    "send_message":  "recall_message",   # platform-dependent; best-effort
+    "write_file": "delete_written_file",
+    "patch_file": "revert_patch",
+    "send_message": "recall_message",  # platform-dependent; best-effort
     "create_cron_job": "delete_cron_job",
 }
 
 
 # ── Dispatcher ────────────────────────────────────────────────────────────────
+
 
 class ButlerToolDispatch:
     """Dispatches tool calls through Hermes's physical execution layer.
@@ -92,7 +95,7 @@ class ButlerToolDispatch:
     def __init__(
         self,
         compiled_specs: dict[str, ButlerToolSpec],
-        env_bridge: "HermesEnvBridge",
+        env_bridge: HermesEnvBridge,
         account_tier: str = "free",
         channel: str = "api",
         assurance_level: str = "AAL1",
@@ -113,6 +116,7 @@ class ButlerToolDispatch:
         task_id: str | None = None,
         session_id: str | None = None,
         account_id: str | None = None,
+        tenant_id: str | None = None,  # Required for multi-tenant isolation
         tool_call_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> ButlerToolResult:
@@ -120,6 +124,9 @@ class ButlerToolDispatch:
 
         Called by ToolExecutor after its own DB bookkeeping.
         Returns ButlerToolResult — never raises Hermes exceptions.
+
+        Args:
+            tenant_id: Required tenant UUID for multi-tenant isolation
         """
         execution_id = f"bte_{uuid.uuid4().hex[:12]}"
         start_ms = int(time.monotonic() * 1000)
@@ -140,9 +147,14 @@ class ButlerToolDispatch:
                 success=False,
                 tool_name=tool_name,
                 execution_id=execution_id,
-                risk_tier=self._specs.get(tool_name, ButlerToolSpec(
-                    name=tool_name, hermes_name=tool_name, risk_tier=RiskTier.L2,
-                )).risk_tier.value,
+                risk_tier=self._specs.get(
+                    tool_name,
+                    ButlerToolSpec(
+                        name=tool_name,
+                        hermes_name=tool_name,
+                        risk_tier=RiskTier.L2,
+                    ),
+                ).risk_tier.value,
                 duration_ms=duration_ms,
                 error=str(e),
             )
@@ -153,7 +165,7 @@ class ButlerToolDispatch:
                 success=False,
                 tool_name=tool_name,
                 execution_id=execution_id,
-                risk_tier=spec.risk_tier.value if 'spec' in dir() else "L2",
+                risk_tier=spec.risk_tier.value if "spec" in dir() else "L2",
                 duration_ms=int(time.monotonic() * 1000) - start_ms,
                 error="approval_required — tool should not have reached dispatch",
             )
@@ -250,7 +262,7 @@ class ButlerToolDispatch:
         task_id: str,
         session_id: str,
         tool_call_id: str,
-        env_ctx: "EnvContext",
+        env_ctx: EnvContext,
     ) -> str:
         """Call Hermes's handle_function_call from a thread pool executor.
 
@@ -264,19 +276,31 @@ class ButlerToolDispatch:
             os.environ[k] = v
 
         try:
-            from integrations.hermes.model_tools import handle_function_call
-            result = handle_function_call(
-                function_name=tool_name,
-                function_args=params,
-                task_id=task_id,
-                tool_call_id=tool_call_id,
-                session_id=session_id,
-                skip_pre_tool_call_hook=True,  # Butler policy gate already ran
-            )
-            return result if isinstance(result, str) else json.dumps(result)
+            # Use langchain Hermes integration for production
+            from backend.langchain.hermes_governance import HermesToolDispatcher
+            from backend.langchain.hermes_governance import _hermes_impl_mapping
+
+            # Check if this is a Hermes tool
+            hermes_spec = _hermes_impl_mapping.get(tool_name)
+            if not hermes_spec:
+                return json.dumps({"error": f"Tool '{tool_name}' is not a Hermes implementation"})
+
+            # Use the actual compiled specs from the global mapping
+            from backend.langchain.hermes_governance import register_hermes_tools_in_butler
+            compiled_specs = register_hermes_tools_in_butler()
+
+            # Create dispatcher with actual compiled specs
+            dispatcher = HermesToolDispatcher(compiled_specs=compiled_specs)
+            result = asyncio.run(dispatcher.dispatch(
+                tool_name=tool_name,
+                args=params,
+                env=env_ctx.env_overrides,
+                tenant_id=env_ctx.env_overrides.get("tenant_id"),
+            ))
+            return json.dumps(result)
 
         except ImportError:
-            # Hermes not available — return a structured error
+            # Langchain Hermes integration not available — return a structured error
             return json.dumps({"error": f"Hermes dispatch unavailable for tool '{tool_name}'"})
         except Exception as exc:
             return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
@@ -313,9 +337,11 @@ class ButlerToolDispatch:
 
 # ── Sandbox environment bridge ─────────────────────────────────────────────────
 
+
 @dataclass
 class EnvContext:
     """Environment overrides to apply around a tool execution."""
+
     sandbox_profile: str
     env_overrides: dict[str, str] = field(default_factory=dict)
     docker_image: str | None = None
@@ -340,18 +366,18 @@ class HermesEnvBridge:
 
     _ENV_PROFILE_VARS: dict[str, dict[str, str]] = {
         # Hermes terminal tool checks HERMES_USE_DOCKER to route terminal execution
-        "docker":      {"HERMES_USE_DOCKER": "1", "HERMES_DOCKER_BACKEND": "enabled"},
+        "docker": {"HERMES_USE_DOCKER": "1", "HERMES_DOCKER_BACKEND": "enabled"},
         # Modal env is triggered by HERMES_USE_MODAL
-        "modal":       {"HERMES_USE_MODAL": "1"},
+        "modal": {"HERMES_USE_MODAL": "1"},
         # SSH env is triggered by HERMES_USE_SSH
-        "ssh":         {"HERMES_USE_SSH": "1"},
+        "ssh": {"HERMES_USE_SSH": "1"},
         # Daytona env
-        "daytona":     {"HERMES_USE_DAYTONA": "1"},
+        "daytona": {"HERMES_USE_DAYTONA": "1"},
         # Singularity
         "singularity": {"HERMES_USE_SINGULARITY": "1"},
         # local/none — no overrides; execute in current process
-        "local":       {},
-        "none":        {},
+        "local": {},
+        "none": {},
     }
 
     def build_env_context(self, spec: ButlerToolSpec) -> EnvContext:
@@ -361,7 +387,8 @@ class HermesEnvBridge:
 
         # All tool executions inherit HERMES_HOME from Butler
         from infrastructure.config import settings
-        env_overrides["HERMES_HOME"] = str(settings.hermes_home)
+
+        env_overrides["HERMES_HOME"] = str(settings.HERMES_HOME)
 
         return EnvContext(
             sandbox_profile=profile,

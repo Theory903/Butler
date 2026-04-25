@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Set
 
 import structlog
 
@@ -10,7 +8,7 @@ logger = structlog.get_logger(__name__)
 
 # Oracle-Grade v2.0 Rule: Only allowstated binaries can be executed by the Tools service.
 # This prevents trivial escalation if an LLM manages to bypass parameter validation.
-SAFE_BINS: Set[str] = {
+SAFE_BINS: set[str] = {
     "/usr/bin/git",
     "/usr/bin/ls",
     "/usr/bin/cat",
@@ -27,9 +25,10 @@ SAFE_BINS: Set[str] = {
     "python3",
 }
 
+
 class ToolAuditor:
     """Security auditor for tool execution.
-    
+
     Ported from OpenClaw v3.1 Oracle-Grade patterns:
     - Binary allowlisting (SafeBin).
     - Executable path resolution & validation.
@@ -45,13 +44,14 @@ class ToolAuditor:
         """Verify if a binary is in the SafeBin allowlist."""
         # Normalize: if it's just a name, resolve it
         path = Path(binary)
-        
+
         # If it's a relative path or just a command name, we check if it's explicitly allowed
         if not path.is_absolute():
             if str(path) in self.safe_bins:
                 return True
             # Try to resolve via PATH
             import shutil
+
             resolved = shutil.which(str(path))
             if not resolved:
                 return False
@@ -66,19 +66,15 @@ class ToolAuditor:
 
         binary = command[0]
         is_safe = self.is_safe_binary(binary)
-        
+
         logger.info(
             "tool_execution_audited",
             binary=binary,
             command=" ".join(command[:3]) + ("..." if len(command) > 3 else ""),
             account_id=account_id,
-            safe=is_safe
+            safe=is_safe,
         )
 
         if not is_safe:
-            logger.warning(
-                "unsafe_tool_execution_blocked",
-                binary=binary,
-                account_id=account_id
-            )
+            logger.warning("unsafe_tool_execution_blocked", binary=binary, account_id=account_id)
             raise PermissionError(f"Execution of binary '{binary}' is blocked by SafeBin policy.")

@@ -11,17 +11,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.base_config import ButlerBaseConfig
 from core.base_service import ButlerBaseService
-from core.envelope import ButlerEnvelope
+from core.envelope import ButlerEnvelope, OrchestratorResult
 from core.observability import get_tracer
+from infrastructure.config import settings
 from domain.events.schemas import ButlerEvent, StreamFinalEvent
 from domain.memory.contracts import IColdStore, IMemoryWriteStore, MemoryServiceContract
-from domain.orchestrator.contracts import OrchestratorResult, OrchestratorServiceContract
+from domain.orchestrator.contracts import (
+    ExecutionMode,
+    OrchestratorServiceContract,
+)
 from domain.orchestrator.exceptions import OrchestratorErrors
 from domain.orchestrator.models import ApprovalRequest, Task, Workflow
 from domain.orchestrator.runtime_kernel import (
     ExecutionContext,
     ExecutionMessage,
-    RuntimeKernel,
+    ExecutionStrategy,
 )
 from domain.orchestrator.state import TaskStateMachine
 from domain.search.contracts import ISearchService
@@ -29,9 +33,12 @@ from domain.security.contracts import IContentGuard, IRedactionService
 from domain.tools.contracts import ToolsServiceContract
 from services.memory.session_store import ButlerSessionStore
 from services.orchestrator.blender import BlenderSignal, ButlerBlender
-from services.orchestrator.executor import DurableExecutor
+from services.orchestrator.executor import ApprovalRequired, DurableExecutor
 from services.orchestrator.intake import IntakeProcessor
-from services.orchestrator.planner import PlanEngine
+
+# Deprecated: Direct graph compilation now wired in service
+# from services.orchestrator.langgraph_runtime import ButlerLangGraphRuntime
+from services.orchestrator.planner import Plan, PlanEngine
 
 logger = structlog.get_logger(__name__)
 
@@ -39,9 +46,9 @@ logger = structlog.get_logger(__name__)
 class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
     """Top-level Butler orchestration service.
 
-    This service coordinates the lawful request flow:
-    intake -> safety/redaction -> context/blending -> planning -> workflow/task
-    creation -> kernel execution -> persistence -> memory update.
+    Lawful flow:
+      intake -> safety/redaction -> context/blending -> planning
+      -> workflow creation -> durable execution -> persistence -> memory update
     """
 
     def __init__(
@@ -52,7 +59,6 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
         intake_proc: IntakeProcessor,
         planner: PlanEngine,
         executor: DurableExecutor,
-        kernel: RuntimeKernel,
         blender: ButlerBlender,
         config: ButlerBaseConfig,
         memory_store: IMemoryWriteStore | None = None,
@@ -64,6 +70,7 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
         feature_service: object | None = None,
         redaction_service: IRedactionService | None = None,
         content_guard: IContentGuard | None = None,
+        checkpointer: object | None = None,
     ) -> None:
         super().__init__(config=config)
         self._db = db
@@ -71,7 +78,6 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
         self._intake = intake_proc
         self._planner = planner
         self._executor = executor
-        self._kernel = kernel
         self._blender = blender
         self._memory_store = memory_store
         self._cold_store = cold_store
@@ -83,6 +89,10 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
         self._redactor = redaction_service
         self._guard = content_guard
         self._tracer = get_tracer()
+        self._checkpointer = checkpointer
+        # Deprecated: Direct graph compilation now wired in service
+        # self._langgraph_runtime = ButlerLangGraphRuntime()
+        self._compiled_graph: object | None = None
 
     async def on_startup(self) -> None:
         logger.info("orchestrator_service_startup_complete")
@@ -104,6 +114,7 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
             memory_store=self._memory_store,
             redis=self._redis,
             cold_store=self._cold_store,
+            memory_service=self._memory,
         )
 
     async def _check_safety(self, text: str) -> dict[str, object]:
@@ -143,7 +154,7 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
             )
             try:
                 provider = ModelProviderFactory.get_provider("groq")
-                model_name = "llama-3.3-70b-versatile"
+                model_name = settings.DEFAULT_MODEL
             except Exception:
                 return "I'm here to help. What would you like to do?"
 
@@ -164,7 +175,7 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
                 provider=provider_type,
                 model=model_name,
             )
-            return response.content
+            return response.content or ""
         except Exception as exc:
             logger.warning(
                 "llm_direct_response_failed",
@@ -180,21 +191,7 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
         intake_result: object,
         message: str,
     ) -> bool:
-        if self._smart_router is None:
-            return False
-
-        from services.ml.smart_router import RouterRequest
-
-        routing_request = RouterRequest(
-            intent=intake_result,
-            message=message,
-            context_token_count=0,
-        )
-        routing_decision = self._smart_router.route(routing_request)
-        return (
-            routing_decision.tier.value < 2
-            and getattr(intake_result, "intent", None) != "system_stats"
-        )
+        return False
 
     async def _build_blended_candidates(
         self,
@@ -225,6 +222,14 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
 
         if store is not None:
             context_pack = await store.get_context(query=envelope.message)
+
+            if not context_pack.session_history and not context_pack.summary_anchor:
+                hydrated = await self._hydrate_butler_history_from_store(
+                    store=store,
+                    session_id=envelope.session_id,
+                )
+                if hydrated:
+                    context_pack = await store.get_context(query=envelope.message)
 
             if context_pack.summary_anchor:
                 messages.append(
@@ -263,6 +268,28 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
         )
         return messages
 
+    async def _hydrate_butler_history_from_store(
+        self,
+        *,
+        store: ButlerSessionStore,
+        session_id: str,
+    ) -> bool:
+        """Hydrate conversation history from Butler session store only.
+
+        Butler MemoryService is the only legal memory authority.
+        Hermes SessionDB bypass is removed per P0 hardening.
+
+        Returns False since Butler session store is the source of truth
+        and hydration is not needed. This function is kept for API
+        compatibility but does not perform migration from external sources.
+        """
+        logger.debug(
+            "orchestrator_butler_history_hydrate_skipped",
+            session_id=session_id,
+            reason="butler_session_store_is_authority",
+        )
+        return False
+
     async def _create_workflow(
         self,
         *,
@@ -293,7 +320,7 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
         envelope: ButlerEnvelope,
         intake_result: object,
         candidates: Sequence[object],
-    ) -> object:
+    ) -> Plan:
         context_lines = [f"- [{candidate.source}] {candidate.content}" for candidate in candidates]
         augmented_prompt = (
             "Context:\n" + "\n".join(context_lines) + "\n\nUser request: " + envelope.message
@@ -302,59 +329,105 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
         return await self._planner.create_plan(
             intent=getattr(intake_result, "intent", ""),
             context={"prompt": augmented_prompt},
+            tenant_id=envelope.account_id,  # P0: Use account_id as tenant_id fallback
         )
 
-    def _resolve_execution_model(self, envelope: ButlerEnvelope) -> str:
-        return envelope.model or "auto"
-
-    def _extract_toolset(self) -> list[object]:
-        if self._tools is None:
-            return []
-
-        compiled_specs = getattr(self._tools, "_specs", {})
-        if isinstance(compiled_specs, dict):
-            return list(compiled_specs.values())
-        return []
-
-    async def _execute_via_kernel(
+    async def _create_streaming_task(
         self,
         *,
-        envelope: ButlerEnvelope,
         workflow: Workflow,
-        plan: object,
-        messages: Sequence[ExecutionMessage],
-    ) -> dict[str, object]:
+        envelope: ButlerEnvelope,
+    ) -> Task:
         task = Task(
             id=uuid.uuid4(),
             workflow_id=workflow.id,
-            account_id=uuid.UUID(envelope.account_id),
-            session_id=envelope.session_id,
-            task_type=getattr(workflow, "intent", "session"),
-            state="queued",
+            task_type=getattr(workflow, "intent", "session") or "session",
+            status="pending",
             input_data={"message": envelope.message},
         )
         self._db.add(task)
         await self._db.flush()
-
-        workflow.plan_schema = plan.to_dict() if hasattr(plan, "to_dict") else {}
-
-        strategy = self._kernel.choose_strategy(task, workflow)
-        execution_context = ExecutionContext(
-            task=task,
-            workflow=workflow,
-            strategy=strategy,
-            model=self._resolve_execution_model(envelope),
-            toolset=self._extract_toolset(),
-            system_prompt="You are Butler.",
-            messages=list(messages),
-            trace_id=str(uuid.uuid4()),
-            account_id=envelope.account_id,
-            session_id=envelope.session_id,
-        )
-        return await self._kernel.execute(execution_context)
+        return task
 
     async def intake(self, envelope: ButlerEnvelope) -> OrchestratorResult:
+        # Direct graph compilation with fallback
+        try:
+            from services.orchestrator.graph import (
+                compile_butler_graph,
+                langgraph_available,
+                run_fallback_graph,
+            )
+
+            if langgraph_available():
+                # Compile graph on first use, cache for subsequent calls
+                if self._compiled_graph is None:
+                    self._compiled_graph = compile_butler_graph(
+                        core_runner=self._intake_core,
+                        context_provider=self._build_graph_context,
+                        checkpointer=self._checkpointer,
+                    )
+
+                state = await self._compiled_graph.ainvoke(
+                    {"envelope": envelope, "graph_path": []},
+                    config={
+                        "configurable": {
+                            "thread_id": envelope.session_id,
+                            "checkpoint_ns": envelope.identity.tenant_id
+                            if envelope.identity
+                            else envelope.account_id,
+                        }
+                    },
+                )
+                final_result = state.get("final_result")
+                if isinstance(final_result, OrchestratorResult):
+                    if final_result.metadata is None:
+                        final_result.metadata = {}
+                    final_result.metadata["graph_runtime"] = True
+                    final_result.metadata["fallback_used"] = False
+                    return final_result
+            else:
+                # Fallback to sequential execution
+                state = await run_fallback_graph(
+                    envelope=envelope,
+                    core_runner=self._intake_core,
+                    context_provider=self._build_graph_context,
+                )
+                final_result = state.get("final_result")
+                if isinstance(final_result, OrchestratorResult):
+                    if final_result.metadata is None:
+                        final_result.metadata = {}
+                    final_result.metadata["graph_runtime"] = False
+                    final_result.metadata["fallback_used"] = True
+                    return final_result
+        except Exception as exc:
+            logger.warning(
+                "orchestrator_graph_execution_failed",
+                session_id=envelope.session_id,
+                error=str(exc),
+            )
+
+        # Ultimate fallback to core intake
+        result = await self._intake_core(envelope)
+        if result.metadata is None:
+            result.metadata = {}
+        result.metadata["graph_runtime"] = False
+        result.metadata["fallback_used"] = True
+        return result
+
+    async def _build_graph_context(self, envelope: ButlerEnvelope) -> object | None:
+        """Build graph context through the canonical memory service when available."""
+        if self._memory is None:
+            return None
+
+        return await self._memory.build_context(
+            account_id=envelope.account_id,
+            query=envelope.message,
+            session_id=envelope.session_id,
+        )
+
+    async def _intake_core(self, envelope: ButlerEnvelope) -> OrchestratorResult:
         workflow: Workflow | None = None
+        workflow_id: str | None = None
 
         try:
             with self._tracer.span(
@@ -367,6 +440,8 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
                 if not bool(safety.get("safe", False)):
                     return OrchestratorResult(
                         workflow_id=str(uuid.uuid4()),
+                        session_id=envelope.session_id,
+                        request_id=envelope.request_id,
                         content=(
                             "Request blocked by safety policy: "
                             f"{safety.get('reason', 'unknown_reason')}"
@@ -396,6 +471,8 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
                     )
                     return OrchestratorResult(
                         workflow_id=str(uuid.uuid4()),
+                        session_id=envelope.session_id,
+                        request_id=envelope.request_id,
                         content=response_content,
                         actions=[],
                     )
@@ -410,25 +487,96 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
                     redaction_applied=bool(redaction_map),
                     blender_count=len(candidates),
                 )
+                workflow_id = str(workflow.id)
                 plan = await self._create_plan(
                     envelope=redacted_envelope,
                     intake_result=intake_result,
                     candidates=candidates,
                 )
-                messages = await self._build_messages(
-                    store=store,
-                    envelope=redacted_envelope,
-                    candidates=candidates,
-                )
 
-                execution_result = await self._execute_via_kernel(
-                    envelope=redacted_envelope,
-                    workflow=workflow,
-                    plan=plan,
-                    messages=messages,
-                )
+                if (
+                    plan.execution_mode == ExecutionMode.AGENTIC
+                    or plan.execution_mode == ExecutionMode.DETERMINISTIC
+                ):
+                    workflow.plan_schema = plan.to_dict()
+                    strategy = (
+                        ExecutionStrategy.HERMES_AGENT
+                        if plan.execution_mode == ExecutionMode.AGENTIC
+                        else ExecutionStrategy.DETERMINISTIC
+                    )
 
-                response_content = str(execution_result.get("content", "") or "")
+                    task = Task(
+                        id=uuid.uuid4(),
+                        workflow_id=workflow.id,
+                        task_type="orchestrator",
+                        input_data={"prompt": redacted_envelope.message},
+                    )
+                    self._db.add(task)
+                    await self._db.flush()
+
+                    messages = await self._build_messages(
+                        store=store,
+                        envelope=redacted_envelope,
+                        candidates=candidates,
+                    )
+
+                    context = ExecutionContext(
+                        task=task,
+                        workflow=workflow,
+                        strategy=strategy,
+                        model=redacted_envelope.model or self._executor._model,
+                        toolset=self._executor._extract_toolset(),
+                        system_prompt=self._executor._system_prompt,
+                        messages=messages,
+                        trace_id=self._tracer.get_current_trace_id()
+                        or f"trc_{uuid.uuid4().hex[:12]}",
+                        account_id=redacted_envelope.account_id,
+                        tenant_id=redacted_envelope.account_id,  # P0: Use account_id as tenant_id fallback
+                        session_id=redacted_envelope.session_id,
+                    )
+
+                    try:
+                        # RuntimeKernel.execute_result returns ExecutionResult
+                        res = await self._executor._kernel.execute_result(context)
+                    except ApprovalRequired as approval:
+                        approval_request = await self._executor.suspend_for_approval(
+                            task=task,
+                            workflow=workflow,
+                            error=approval,
+                        )
+                        return OrchestratorResult(
+                            workflow_id=workflow_id,
+                            content=approval.description,
+                            actions=[],
+                            requires_approval=True,
+                            approval_id=str(approval_request.id),
+                            session_id=envelope.session_id,
+                            request_id=envelope.request_id,
+                            metadata={
+                                "status": "awaiting_approval",
+                                "tool_name": approval.tool_name,
+                                "risk_tier": approval.risk_tier,
+                            },
+                        )
+
+                    # Update task status based on result
+                    task.completed_at = datetime.now(UTC)
+                    task.status = "completed"
+                    task.output_data = res.to_legacy_dict()
+                    await self._db.commit()
+
+                    execution_result = res
+                else:
+                    await self._db.flush()
+                    await self._db.commit()
+
+                    # DurableExecutor.execute_workflow returns WorkflowResult
+                    execution_result = await self._executor.execute_workflow(
+                        workflow=workflow,
+                        plan=plan,
+                    )
+
+                response_content = str(execution_result.content or "")
                 if response_content:
                     output_safety = await self._check_safety(response_content)
                     if not bool(output_safety.get("safe", False)):
@@ -438,8 +586,6 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
                             response_content,
                             redaction_map,
                         )
-
-                await self._db.commit()
 
                 if store is not None and response_content:
                     await store.append_turn(role="assistant", content=response_content)
@@ -453,16 +599,36 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
                         store,
                     )
 
+                # Map ExecutionResult or WorkflowResult to OrchestratorResult
+                execution_metadata = {}
+                if hasattr(execution_result, "metadata"):
+                    execution_metadata = dict(execution_result.metadata)
+
+                if hasattr(execution_result, "token_usage"):
+                    # ExecutionResult
+                    input_tokens = execution_result.token_usage.input_tokens
+                    output_tokens = execution_result.token_usage.output_tokens
+                else:
+                    # WorkflowResult
+                    input_tokens = execution_result.input_tokens
+                    output_tokens = execution_result.output_tokens
+
                 return OrchestratorResult(
-                    workflow_id=str(workflow.id),
+                    workflow_id=workflow_id,
                     content=response_content,
-                    actions=list(execution_result.get("actions", []) or []),
+                    actions=list(execution_result.actions),
+                    session_id=envelope.session_id,
+                    request_id=envelope.request_id,
+                    metadata={
+                        **execution_metadata,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "duration_ms": execution_result.duration_ms,
+                    },
                 )
 
-        except Exception:
-            if workflow is not None:
-                workflow_id = str(workflow.id)
-            else:
+        except Exception as exc:
+            if workflow_id is None:
                 workflow_id = str(uuid.uuid4())
 
             logger.exception(
@@ -470,20 +636,24 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
                 workflow_id=workflow_id,
                 session_id=envelope.session_id,
                 account_id=envelope.account_id,
+                error_type=type(exc).__name__,
+                error_message=str(exc),
             )
-
             await self._db.rollback()
 
             return OrchestratorResult(
                 workflow_id=workflow_id,
+                session_id=envelope.session_id,
+                request_id=envelope.request_id,
                 content="Butler could not complete the request.",
+                actions=[],
                 metadata={"phase": "intake_failed"},
             )
 
     async def intake_streaming(
         self,
         envelope: ButlerEnvelope,
-    ) -> AsyncGenerator[ButlerEvent, None]:
+    ) -> AsyncGenerator[ButlerEvent]:
         workflow: Workflow | None = None
         final_parts: list[str] = []
 
@@ -560,42 +730,61 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
                     candidates=candidates,
                 )
 
-                task = Task(
-                    id=uuid.uuid4(),
-                    workflow_id=workflow.id,
-                    account_id=uuid.UUID(redacted_envelope.account_id),
-                    session_id=redacted_envelope.session_id,
-                    task_type=getattr(workflow, "intent", "session"),
-                    state="queued",
-                    input_data={"message": redacted_envelope.message},
-                )
-                self._db.add(task)
-                await self._db.flush()
+                if (
+                    plan.execution_mode == ExecutionMode.AGENTIC
+                    or plan.execution_mode == ExecutionMode.DETERMINISTIC
+                ):
+                    workflow.plan_schema = plan.to_dict()
+                    strategy = (
+                        ExecutionStrategy.HERMES_AGENT
+                        if plan.execution_mode == ExecutionMode.AGENTIC
+                        else ExecutionStrategy.DETERMINISTIC
+                    )
+                    task = Task(
+                        id=uuid.uuid4(),
+                        workflow_id=workflow.id,
+                        task_type="orchestrator",
+                        status="pending",
+                        input_data={"prompt": redacted_envelope.message},
+                    )
+                    self._db.add(task)
+                    await self._db.flush()
+                    await self._db.commit()
 
-                workflow.plan_schema = plan.to_dict() if hasattr(plan, "to_dict") else {}
-                strategy = self._kernel.choose_strategy(task, workflow)
+                    context = ExecutionContext(
+                        task=task,
+                        workflow=workflow,
+                        strategy=strategy,
+                        model=redacted_envelope.model or self._executor._model,
+                        toolset=self._executor._extract_toolset(),
+                        system_prompt=self._executor._system_prompt,
+                        messages=messages,
+                        trace_id=self._tracer.get_current_trace_id()
+                        or f"trc_{uuid.uuid4().hex[:12]}",
+                        account_id=redacted_envelope.account_id,
+                        session_id=redacted_envelope.session_id,
+                    )
 
-                execution_context = ExecutionContext(
-                    task=task,
-                    workflow=workflow,
-                    strategy=strategy,
-                    model=self._resolve_execution_model(redacted_envelope),
-                    toolset=self._extract_toolset(),
-                    system_prompt="You are Butler.",
-                    messages=list(messages),
-                    trace_id=str(uuid.uuid4()),
-                    account_id=redacted_envelope.account_id,
-                    session_id=redacted_envelope.session_id,
-                )
+                    event_gen = self._executor._kernel.execute_streaming(context)
+                else:
+                    task = await self._create_streaming_task(
+                        workflow=workflow,
+                        envelope=redacted_envelope,
+                    )
+                    await self._db.flush()
+                    await self._db.commit()
+                    event_gen = self._executor.execute_streaming(
+                        workflow=workflow,
+                        task=task,
+                        messages=messages,
+                    )
 
-                async for event in self._kernel.execute_streaming(execution_context):
+                async for event in event_gen:
                     if isinstance(event, StreamFinalEvent):
                         content = str(event.payload.get("content", "") or "")
                         if content:
                             final_parts.append(content)
                     yield event
-
-                await self._db.commit()
 
                 restored_content = self._restore_output("".join(final_parts), redaction_map)
                 if store is not None and restored_content:
@@ -616,7 +805,10 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
                     True,
                 )
 
-                logger.info("orchestrator_stream_complete", workflow_id=str(workflow.id))
+                logger.info(
+                    "orchestrator_stream_complete",
+                    workflow_id=str(workflow.id),
+                )
 
         except Exception:
             await self._db.rollback()
@@ -642,6 +834,7 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
     ) -> None:
         if self._features is None:
             return
+
         await self._features.record_interaction_outcome(user_id, tool_id, success)
         logger.info(
             "interaction_outcome_recorded",
@@ -680,26 +873,45 @@ class OrchestratorService(ButlerBaseService, OrchestratorServiceContract):
         )
         return list(result.scalars().all())
 
-    async def approve_request(self, approval_id: str, decision: str) -> Task:
+    async def approve_request(
+        self,
+        approval_id: str,
+        decision: str,
+        account_id: str | None = None,
+    ) -> Task:
+        if decision not in {"approved", "denied"}:
+            raise OrchestratorErrors.invalid_approval_decision(decision)
+
         approval = await self._db.get(ApprovalRequest, uuid.UUID(approval_id))
         if approval is None:
             raise OrchestratorErrors.APPROVAL_NOT_FOUND
 
+        if account_id is not None and str(approval.account_id) != account_id:
+            raise OrchestratorErrors.APPROVAL_NOT_FOUND
+
+        if approval.status != "pending":
+            raise OrchestratorErrors.APPROVAL_NOT_FOUND
+
+        now = datetime.now(UTC)
+        expires_at = getattr(approval, "expires_at", None)
+        if expires_at is not None and expires_at <= now:
+            approval.status = "expired"
+            approval.decided_at = now
+            await self._db.commit()
+            raise OrchestratorErrors.APPROVAL_EXPIRED
+
         approval.status = decision
-        approval.decided_at = datetime.now(UTC)
+        approval.decided_at = now
 
         task = await self._db.get(Task, approval.task_id)
         if task is None:
             raise OrchestratorErrors.TASK_NOT_FOUND
 
         if decision == "approved":
-            transition = TaskStateMachine.transition(
-                task,
-                "executing",
-                "approval_granted",
-            )
-            self._db.add(transition)
             await self._executor.resume_task(task)
+        elif task.status == "awaiting_approval":
+            transition = TaskStateMachine.transition(task, "failed", "approval_denied")
+            self._db.add(transition)
 
         await self._db.commit()
         return task

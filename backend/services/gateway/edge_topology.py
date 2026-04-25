@@ -18,17 +18,18 @@ SWE-5 Compliant:
 import asyncio
 import time
 import uuid
-from enum import Enum
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
 
-import httpx
 import redis.asyncio as redis
-from pydantic import BaseModel, Field, validator
 from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
 from opentelemetry.metrics import get_meter
+from opentelemetry.trace import Status, StatusCode
+from pydantic import BaseModel, Field, validator
 
+from services.security.safe_request import EgressDecision, SafeRequestClient
 
 tracer = trace.get_tracer(__name__)
 meter = get_meter(__name__)
@@ -37,11 +38,15 @@ meter = get_meter(__name__)
 request_counter = meter.create_counter("edge.requests.total", description="Total edge requests")
 cache_hits_counter = meter.create_counter("edge.cache.hits", description="Cache hits")
 cache_misses_counter = meter.create_counter("edge.cache.misses", description="Cache misses")
-rate_limited_counter = meter.create_counter("edge.rate_limited", description="Rate limited requests")
-circuit_open_counter = meter.create_counter("edge.circuit_open", description="Circuit breaker open events")
+rate_limited_counter = meter.create_counter(
+    "edge.rate_limited", description="Rate limited requests"
+)
+circuit_open_counter = meter.create_counter(
+    "edge.circuit_open", description="Circuit breaker open events"
+)
 
 
-class CircuitState(str, Enum):
+class CircuitState(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
@@ -49,20 +54,31 @@ class CircuitState(str, Enum):
 
 class EdgeConfig(BaseModel):
     """Edge topology configuration"""
+
     redis_url: str = Field(default="redis://localhost:6379/1", description="Redis connection URL")
     cache_ttl: int = Field(default=300, ge=1, description="Default cache TTL in seconds")
-    stale_while_revalidate: int = Field(default=60, ge=0, description="Stale while revalidate window")
+    stale_while_revalidate: int = Field(
+        default=60, ge=0, description="Stale while revalidate window"
+    )
     rate_limit_requests: int = Field(default=100, ge=1, description="Requests per window")
     rate_limit_window: int = Field(default=60, ge=1, description="Rate limit window in seconds")
-    circuit_failure_threshold: int = Field(default=5, ge=1, description="Circuit breaker failure threshold")
-    circuit_reset_timeout: int = Field(default=30, ge=1, description="Circuit reset timeout in seconds")
+    circuit_failure_threshold: int = Field(
+        default=5, ge=1, description="Circuit breaker failure threshold"
+    )
+    circuit_reset_timeout: int = Field(
+        default=30, ge=1, description="Circuit reset timeout in seconds"
+    )
     max_connections: int = Field(default=100, ge=1, description="Max upstream connections")
-    max_keepalive_connections: int = Field(default=20, ge=0, description="Max keepalive connections")
+    max_keepalive_connections: int = Field(
+        default=20, ge=0, description="Max keepalive connections"
+    )
     keepalive_timeout: int = Field(default=30, ge=0, description="Keepalive timeout in seconds")
-    stream_buffer_size: int = Field(default=65536, ge=1024, description="Stream buffer size in bytes")
+    stream_buffer_size: int = Field(
+        default=65536, ge=1024, description="Stream buffer size in bytes"
+    )
 
     @validator("stale_while_revalidate")
-    def stale_less_than_ttl(cls, v: int, values: Dict[str, Any]) -> int:
+    def stale_less_than_ttl(cls, v: int, values: dict[str, Any]) -> int:
         if v > values.get("cache_ttl", 300):
             raise ValueError("stale_while_revalidate must be less than cache_ttl")
         return v
@@ -71,6 +87,7 @@ class EdgeConfig(BaseModel):
 @dataclass
 class CircuitBreaker:
     """Circuit breaker per upstream service"""
+
     failure_threshold: int
     reset_timeout: int
     state: CircuitState = CircuitState.CLOSED
@@ -118,31 +135,24 @@ class CircuitBreaker:
 
 @dataclass
 class UpstreamPool:
-    """Connection pool for upstream services"""
+    """Connection pool for upstream services with SafeRequestClient for SSRF protection."""
+
     base_url: str
-    client: httpx.AsyncClient = field(init=False)
+    client: SafeRequestClient = field(init=False)
     circuit_breaker: CircuitBreaker = field(init=False)
     config: EdgeConfig
+    tenant_id: str = "default"
 
     def __post_init__(self) -> None:
-        limits = httpx.Limits(
-            max_connections=self.config.max_connections,
-            max_keepalive_connections=self.config.max_keepalive_connections,
-            keepalive_expiry=self.config.keepalive_timeout
-        )
-        self.client = httpx.AsyncClient(
-            base_url=self.base_url,
-            limits=limits,
-            timeout=httpx.Timeout(30.0, connect=5.0),
-            follow_redirects=False
-        )
+        # P0 hardening: Use SafeRequestClient instead of httpx for SSRF protection
+        self.client = SafeRequestClient()
         self.circuit_breaker = CircuitBreaker(
             failure_threshold=self.config.circuit_failure_threshold,
-            reset_timeout=self.config.circuit_reset_timeout
+            reset_timeout=self.config.circuit_reset_timeout,
         )
 
     async def close(self) -> None:
-        await self.client.aclose()
+        await self.client.close()
 
 
 class EdgeRouter:
@@ -150,7 +160,7 @@ class EdgeRouter:
 
     def __init__(self, config: EdgeConfig):
         self.config = config
-        self.upstreams: Dict[str, UpstreamPool] = {}
+        self.upstreams: dict[str, UpstreamPool] = {}
         self._lock = asyncio.Lock()
 
     async def register_upstream(self, name: str, base_url: str) -> None:
@@ -159,7 +169,7 @@ class EdgeRouter:
             if name not in self.upstreams:
                 self.upstreams[name] = UpstreamPool(base_url=base_url, config=self.config)
 
-    async def route(self, service: str, path: str, method: str = "GET", **kwargs) -> httpx.Response:
+    async def route(self, service: str, path: str, method: str = "GET", **kwargs) -> Any:
         """Route request to upstream service with circuit breaker protection"""
         with tracer.start_as_current_span("edge.router.route") as span:
             span.set_attribute("service", service)
@@ -178,7 +188,35 @@ class EdgeRouter:
                 raise RuntimeError(f"Service {service} is unavailable (circuit open)")
 
             try:
-                response = await upstream.client.request(method, path, **kwargs)
+                # P0 hardening: Use SafeRequestClient with tenant_id for SSRF protection
+                url = f"{upstream.base_url}{path}"
+                if method == "GET":
+                    response = await upstream.client.get(
+                        url,
+                        upstream.tenant_id,
+                        headers=kwargs.get("headers"),
+                        params=kwargs.get("params"),
+                    )
+                elif method == "POST":
+                    response = await upstream.client.post(
+                        url,
+                        upstream.tenant_id,
+                        headers=kwargs.get("headers"),
+                        json=kwargs.get("json"),
+                        data=kwargs.get("data"),
+                    )
+                else:
+                    # For other methods, use httpx directly with SSRF check
+                    # P0 hardening: Add SSRF protection for other methods
+                    decision, reason = upstream.client._egress_policy.check_url(
+                        url, upstream.tenant_id
+                    )
+                    if decision == EgressDecision.DENY:
+                        raise RuntimeError(f"SSRF protection denied request to {url}: {reason}")
+                    import httpx
+
+                    async with httpx.AsyncClient() as http_client:
+                        response = await http_client.request(method, url, **kwargs)
 
                 if 500 <= response.status_code < 600:
                     upstream.circuit_breaker.record_failure()
@@ -204,15 +242,15 @@ class EdgeRouter:
 class EdgeCache:
     """Stale-while-revalidate cache implementation using Redis"""
 
-    def __init__(self, config: EdgeConfig, redis_client: Optional[redis.Redis] = None):
+    def __init__(self, config: EdgeConfig, redis_client: redis.Redis | None = None):
         self.config = config
         self.redis = redis_client or redis.from_url(config.redis_url)
-        self._revalidate_lock: Dict[str, asyncio.Lock] = {}
+        self._revalidate_lock: dict[str, asyncio.Lock] = {}
 
     def _cache_key(self, key: str) -> str:
         return f"edge:cache:{key}"
 
-    async def get(self, key: str) -> Tuple[Optional[bytes], bool]:
+    async def get(self, key: str) -> tuple[bytes | None, bool]:
         """Get cached value, returns (value, is_stale)"""
         with tracer.start_as_current_span("edge.cache.get") as span:
             span.set_attribute("cache_key", key)
@@ -238,7 +276,7 @@ class EdgeCache:
 
             return value, is_stale
 
-    async def set(self, key: str, value: bytes, ttl: Optional[int] = None) -> None:
+    async def set(self, key: str, value: bytes, ttl: int | None = None) -> None:
         """Set cached value"""
         with tracer.start_as_current_span("edge.cache.set") as span:
             span.set_attribute("cache_key", key)
@@ -252,7 +290,7 @@ class EdgeCache:
 
         return self._revalidate_lock[key].locked() is False
 
-    async def acquire_revalidate_lock(self, key: str) -> Optional[asyncio.Lock]:
+    async def acquire_revalidate_lock(self, key: str) -> asyncio.Lock | None:
         """Acquire lock for revalidation (prevents thundering herd)"""
         if key not in self._revalidate_lock:
             self._revalidate_lock[key] = asyncio.Lock()
@@ -272,7 +310,7 @@ class EdgeCache:
 class RateLimiter:
     """Leaky bucket rate limiter per client identifier"""
 
-    def __init__(self, config: EdgeConfig, redis_client: Optional[redis.Redis] = None):
+    def __init__(self, config: EdgeConfig, redis_client: redis.Redis | None = None):
         self.config = config
         self.redis = redis_client or redis.from_url(config.redis_url)
 
@@ -280,7 +318,7 @@ class RateLimiter:
         window = int(time.time() // self.config.rate_limit_window)
         return f"edge:rate:{client_id}:{window}"
 
-    async def allow_request(self, client_id: str) -> Tuple[bool, int, int]:
+    async def allow_request(self, client_id: str) -> tuple[bool, int, int]:
         """Check if request is allowed, returns (allowed, remaining, reset_time)"""
         with tracer.start_as_current_span("edge.rate_limiter.check") as span:
             span.set_attribute("client_id", client_id)
@@ -294,7 +332,10 @@ class RateLimiter:
 
             count = int(count)
             remaining = max(0, self.config.rate_limit_requests - count)
-            reset_time = int((int(time.time() // self.config.rate_limit_window) + 1) * self.config.rate_limit_window)
+            reset_time = int(
+                (int(time.time() // self.config.rate_limit_window) + 1)
+                * self.config.rate_limit_window
+            )
 
             allowed = count <= self.config.rate_limit_requests
 
@@ -315,7 +356,7 @@ class StreamBuffer:
 
     def __init__(self, buffer_size: int = 65536):
         self.buffer_size = buffer_size
-        self.queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=buffer_size // 1024)
+        self.queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=buffer_size // 1024)
         self.closed = False
 
     async def write(self, chunk: bytes) -> None:
@@ -329,7 +370,7 @@ class StreamBuffer:
         self.closed = True
         await self.queue.put(None)
 
-    async def stream(self) -> AsyncGenerator[bytes, None]:
+    async def stream(self) -> AsyncGenerator[bytes]:
         """Stream chunks from buffer"""
         while True:
             chunk = await self.queue.get()
@@ -343,10 +384,10 @@ class WebSocketProxy:
 
     def __init__(self, config: EdgeConfig):
         self.config = config
-        self.active_connections: Dict[str, Any] = {}
+        self.active_connections: dict[str, Any] = {}
         self._connection_lock = asyncio.Lock()
 
-    async def proxy_sse(self, upstream_url: str, client_stream: Any) -> AsyncGenerator[str, None]:
+    async def proxy_sse(self, upstream_url: str, client_stream: Any) -> AsyncGenerator[str]:
         """Proxy Server-Sent Events with heartbeat and timeout protection"""
         with tracer.start_as_current_span("edge.websocket.proxy_sse") as span:
             connection_id = str(uuid.uuid4())
@@ -357,17 +398,31 @@ class WebSocketProxy:
             timeout = 30.0
 
             try:
-                async with httpx.AsyncClient() as client:
-                    async with client.stream("GET", upstream_url, timeout=httpx.Timeout(None, read=timeout)) as response:
-                        async for line in response.aiter_lines():
-                            if time.time() - last_heartbeat > timeout:
-                                yield "event: timeout\ndata: Connection timeout\n\n"
-                                break
+                # P0 hardening: Use SafeRequestClient with SSRF protection for streaming
+                decision, reason = SafeRequestClient()._egress_policy.check_url(
+                    upstream_url, "default"
+                )
+                if decision == EgressDecision.DENY:
+                    raise RuntimeError(
+                        f"SSRF protection denied request to {upstream_url}: {reason}"
+                    )
+                import httpx
 
-                            if line.strip() == "":
-                                last_heartbeat = time.time()
+                async with (
+                    httpx.AsyncClient() as client,
+                    client.stream(
+                        "GET", upstream_url, timeout=httpx.Timeout(None, read=timeout)
+                    ) as response,
+                ):
+                    async for line in response.aiter_lines():
+                        if time.time() - last_heartbeat > timeout:
+                            yield "event: timeout\ndata: Connection timeout\n\n"
+                            break
 
-                            yield line + "\n"
+                        if line.strip() == "":
+                            last_heartbeat = time.time()
+
+                        yield line + "\n"
 
             except asyncio.CancelledError:
                 span.set_attribute("cancelled", True)
@@ -380,7 +435,7 @@ class WebSocketProxy:
 class EdgeTopology:
     """Main edge topology facade"""
 
-    def __init__(self, config: Optional[EdgeConfig] = None):
+    def __init__(self, config: EdgeConfig | None = None):
         self.config = config or EdgeConfig()
         self.router = EdgeRouter(self.config)
         self.cache = EdgeCache(self.config)

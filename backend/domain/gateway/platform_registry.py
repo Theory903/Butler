@@ -42,50 +42,51 @@ logger = structlog.get_logger(__name__)
 
 # All 19 Hermes platform modules (lazy import path)
 _PLATFORM_MODULES: dict[str, str] = {
-    "telegram":       "integrations.hermes.gateway.platforms.telegram",
-    "discord":        "integrations.hermes.gateway.platforms.discord",
-    "slack":          "integrations.hermes.gateway.platforms.slack",
-    "whatsapp":       "integrations.hermes.gateway.platforms.whatsapp",
-    "signal":         "integrations.hermes.gateway.platforms.signal",
-    "mattermost":     "integrations.hermes.gateway.platforms.mattermost",
-    "matrix":         "integrations.hermes.gateway.platforms.matrix",
-    "email":          "integrations.hermes.gateway.platforms.email",
-    "sms":            "integrations.hermes.gateway.platforms.sms",
-    "dingtalk":       "integrations.hermes.gateway.platforms.dingtalk",
-    "feishu":         "integrations.hermes.gateway.platforms.feishu",
-    "wecom":          "integrations.hermes.gateway.platforms.wecom",
-    "weixin":         "integrations.hermes.gateway.platforms.weixin",
-    "qqbot":          "integrations.hermes.gateway.platforms.qqbot",
-    "homeassistant":  "integrations.hermes.gateway.platforms.homeassistant",
-    "bluebubbles":    "integrations.hermes.gateway.platforms.bluebubbles",
-    "webhook":        "integrations.hermes.gateway.platforms.webhook",
-    "api_server":     "integrations.hermes.gateway.platforms.api_server",
+    "telegram": "integrations.hermes.gateway.platforms.telegram",
+    "discord": "integrations.hermes.gateway.platforms.discord",
+    "slack": "integrations.hermes.gateway.platforms.slack",
+    "whatsapp": "integrations.hermes.gateway.platforms.whatsapp",
+    "signal": "integrations.hermes.gateway.platforms.signal",
+    "mattermost": "integrations.hermes.gateway.platforms.mattermost",
+    "matrix": "integrations.hermes.gateway.platforms.matrix",
+    "email": "integrations.hermes.gateway.platforms.email",
+    "sms": "integrations.hermes.gateway.platforms.sms",
+    "dingtalk": "integrations.hermes.gateway.platforms.dingtalk",
+    "feishu": "integrations.hermes.gateway.platforms.feishu",
+    "wecom": "integrations.hermes.gateway.platforms.wecom",
+    "weixin": "integrations.hermes.gateway.platforms.weixin",
+    "qqbot": "integrations.hermes.gateway.platforms.qqbot",
+    "homeassistant": "integrations.hermes.gateway.platforms.homeassistant",
+    "bluebubbles": "integrations.hermes.gateway.platforms.bluebubbles",
+    "webhook": "integrations.hermes.gateway.platforms.webhook",
+    "api_server": "integrations.hermes.gateway.platforms.api_server",
 }
 
 # Per-platform message length caps (Butler layer, not Hermes)
 _MAX_MESSAGE_LENGTH: dict[str, int] = {
-    "telegram":      4096,
-    "discord":       2000,
-    "slack":         3000,
-    "whatsapp":      4096,
-    "signal":        4096,
-    "mattermost":    4000,
-    "matrix":        4096,
-    "email":         50_000,
-    "sms":           160,
-    "dingtalk":      2000,
-    "feishu":        4000,
-    "wecom":         2048,
-    "weixin":        2048,
-    "qqbot":         2000,
+    "telegram": 4096,
+    "discord": 2000,
+    "slack": 3000,
+    "whatsapp": 4096,
+    "signal": 4096,
+    "mattermost": 4000,
+    "matrix": 4096,
+    "email": 50_000,
+    "sms": 160,
+    "dingtalk": 2000,
+    "feishu": 4000,
+    "wecom": 2048,
+    "weixin": 2048,
+    "qqbot": 2000,
     "homeassistant": 1000,
-    "bluebubbles":   2000,
-    "webhook":       100_000,
-    "api_server":    100_000,
+    "bluebubbles": 2000,
+    "webhook": 100_000,
+    "api_server": 100_000,
 }
 
 
 # ── HermesPlatformAdapterWrapper (S — single platform, lazy load) ─────────────
+
 
 class HermesPlatformAdapterWrapper:
     """Wraps a single Hermes platform module as a Butler IPlatformAdapter.
@@ -100,18 +101,18 @@ class HermesPlatformAdapterWrapper:
     """
 
     def __init__(self, platform_id: str, module_path: str) -> None:
-        self._platform_id  = platform_id
-        self._module_path  = module_path
+        self._platform_id = platform_id
+        self._module_path = module_path
         self._instance: Any | None = None
         self._load_error: str | None = None
-        self._loaded       = False
+        self._loaded = False
 
     @property
-    def platform_id(self) -> str:           # IPlatformAdapter
+    def platform_id(self) -> str:  # IPlatformAdapter
         return self._platform_id
 
     @property
-    def max_message_length(self) -> int:    # IPlatformAdapter
+    def max_message_length(self) -> int:  # IPlatformAdapter
         return _MAX_MESSAGE_LENGTH.get(self._platform_id, 4096)
 
     def _ensure_loaded(self) -> None:
@@ -140,7 +141,7 @@ class HermesPlatformAdapterWrapper:
                 error=str(exc),
             )
 
-    def is_available(self) -> bool:         # IPlatformAdapter
+    def is_available(self) -> bool:  # IPlatformAdapter
         self._ensure_loaded()
         if self._instance is None:
             return False
@@ -151,7 +152,7 @@ class HermesPlatformAdapterWrapper:
                 return False
         return True
 
-    async def send(                          # IPlatformAdapter
+    async def send(  # IPlatformAdapter
         self,
         recipient: str,
         content: str,
@@ -173,6 +174,7 @@ class HermesPlatformAdapterWrapper:
                 if fn is None:
                     continue
                 import asyncio
+
                 result = fn(recipient, content, **kwargs)
                 if asyncio.iscoroutine(result):
                     result = await result
@@ -180,7 +182,9 @@ class HermesPlatformAdapterWrapper:
             logger.warning("butler_platform_no_send_method", platform=self._platform_id)
             return False
         except Exception as exc:
-            logger.warning("butler_platform_send_failed", platform=self._platform_id, error=str(exc))
+            logger.warning(
+                "butler_platform_send_failed", platform=self._platform_id, error=str(exc)
+            )
             return False
 
     def raw_instance(self) -> Any | None:
@@ -195,6 +199,7 @@ class HermesPlatformAdapterWrapper:
 
 # ── ButlerPlatformRegistry (IPlatformRegistry, DI-friendly) ────────────────────
 
+
 class ButlerPlatformRegistry:
     """Registry of all Butler platform adapters.
 
@@ -204,9 +209,7 @@ class ButlerPlatformRegistry:
     """
 
     def __init__(self, adapters: list[IPlatformAdapter]) -> None:
-        self._adapters: dict[str, IPlatformAdapter] = {
-            a.platform_id: a for a in adapters
-        }
+        self._adapters: dict[str, IPlatformAdapter] = {a.platform_id: a for a in adapters}
 
     def register(self, adapter: IPlatformAdapter) -> None:  # IPlatformRegistry
         self._adapters[adapter.platform_id] = adapter
@@ -215,10 +218,10 @@ class ButlerPlatformRegistry:
     def get(self, platform_id: str) -> IPlatformAdapter | None:  # IPlatformRegistry
         return self._adapters.get(platform_id)
 
-    def all_adapters(self) -> list[IPlatformAdapter]:       # IPlatformRegistry
+    def all_adapters(self) -> list[IPlatformAdapter]:  # IPlatformRegistry
         return list(self._adapters.values())
 
-    def available_adapters(self) -> list[IPlatformAdapter]: # IPlatformRegistry
+    def available_adapters(self) -> list[IPlatformAdapter]:  # IPlatformRegistry
         return [a for a in self._adapters.values() if a.is_available()]
 
     def available_platform_ids(self) -> list[str]:
@@ -226,13 +229,13 @@ class ButlerPlatformRegistry:
 
     def status(self) -> dict:
         return {
-            "total":     len(self._adapters),
+            "total": len(self._adapters),
             "available": len(self.available_adapters()),
             "platforms": [
                 {
-                    "id":        a.platform_id,
+                    "id": a.platform_id,
                     "available": a.is_available(),
-                    "max_len":   a.max_message_length,
+                    "max_len": a.max_message_length,
                 }
                 for a in self._adapters.values()
             ],
@@ -241,10 +244,10 @@ class ButlerPlatformRegistry:
 
 # ── Default factory ───────────────────────────────────────────────────────────
 
+
 def make_default_platform_registry() -> ButlerPlatformRegistry:
     """Production: all 19 Hermes adapters, lazy-loaded."""
     adapters: list[IPlatformAdapter] = [
-        HermesPlatformAdapterWrapper(pid, mod)
-        for pid, mod in _PLATFORM_MODULES.items()
+        HermesPlatformAdapterWrapper(pid, mod) for pid, mod in _PLATFORM_MODULES.items()
     ]
     return ButlerPlatformRegistry(adapters=adapters)

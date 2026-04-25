@@ -43,6 +43,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _effective_temperature_for_model(
+    model: str,
+    base_url: Optional[str] = None,
+) -> Optional[float]:
+    """Return a fixed temperature for models with strict sampling contracts.
+
+    Returns ``None`` when the model manages temperature server-side (Kimi);
+    callers must omit the ``temperature`` kwarg entirely in that case.
+    """
+    try:
+        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
+    except Exception:
+        return None
+    result = _fixed_temperature_for_model(model, base_url)
+    if result is OMIT_TEMPERATURE:
+        return None  # caller must omit temperature
+    return result
+
+
 
 
 # ============================================================================
@@ -119,15 +138,15 @@ def create_environment(
         Environment instance with execute() and cleanup() methods
     """
     if env_type == "local":
-        from integrations.hermes.tools.environments.local import LocalEnvironment
+        from tools.environments.local import LocalEnvironment
         return LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
-        from integrations.hermes.tools.environments.docker import DockerEnvironment
+        from tools.environments.docker import DockerEnvironment
         return DockerEnvironment(image=image, cwd=cwd, timeout=timeout, **kwargs)
     
     elif env_type == "modal":
-        from integrations.hermes.tools.environments.modal import ModalEnvironment
+        from tools.environments.modal import ModalEnvironment
         return ModalEnvironment(image=image, cwd=cwd, timeout=timeout, **kwargs)
     
     else:
@@ -200,7 +219,7 @@ class MiniSWERunner:
             }
             self.client = OpenAI(**client_kwargs)
         else:
-            from integrations.hermes.agent.auxiliary_client import resolve_provider_client
+            from agent.auxiliary_client import resolve_provider_client
             self.client, _ = resolve_provider_client("openrouter", model=model)
             if self.client is None:
                 # Fallback: try auto-detection
@@ -442,12 +461,20 @@ Complete the user's task step by step."""
                 
                 # Make API call
                 try:
-                    response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=api_messages,
-                        tools=self.tools,
-                        timeout=300.0
+                    api_kwargs = {
+                        "model": self.model,
+                        "messages": api_messages,
+                        "tools": self.tools,
+                        "timeout": 300.0,
+                    }
+                    fixed_temperature = _effective_temperature_for_model(
+                        self.model,
+                        str(getattr(self.client, "base_url", "") or ""),
                     )
+                    if fixed_temperature is not None:
+                        api_kwargs["temperature"] = fixed_temperature
+
+                    response = self.client.chat.completions.create(**api_kwargs)
                 except Exception as e:
                     self.logger.error(f"API call failed: {e}")
                     break

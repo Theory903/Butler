@@ -1,177 +1,284 @@
 from __future__ import annotations
 
+import math
 import time
-from typing import Any, Dict, List, Optional
 
 import structlog
-from domain.ml.contracts import RankingContract, RerankResult
+
+from domain.ml.contracts import RankingContract, RerankResult, RetrievalCandidate
 from services.ml.features import FeatureService
-from services.ml.registry import ModelRegistry
 
 logger = structlog.get_logger(__name__)
 
+
+def _clamp_score(value: float) -> float:
+    return max(0.0, min(float(value), 1.0))
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_candidate_metadata(candidate: RetrievalCandidate) -> dict[str, object]:
+    return candidate.metadata if isinstance(candidate.metadata, dict) else {}
+
+
+def _compute_recency_decay(
+    timestamp_value: object,
+    *,
+    now_wall_clock: float,
+    half_life_hours: float = 24.0 * 7,
+) -> float:
+    """Compute a smooth recency multiplier in the range (0, 1].
+
+    Expects wall-clock timestamps (Unix epoch seconds) in metadata.
+    """
+    ts = _coerce_float(timestamp_value, default=-1.0)
+    if ts <= 0.0:
+        return 1.0
+
+    age_seconds = max(0.0, now_wall_clock - ts)
+    age_hours = age_seconds / 3600.0
+
+    if half_life_hours <= 0.0:
+        return 1.0
+
+    return 0.5 ** (age_hours / half_life_hours)
+
+
 class LightRanker(RankingContract):
-    """
-    T2/T3 Candidate Ranker for the Butler Blender.
-    
-    Implements behavioral-aware ranking:
-    1. Relevance (from retrieval scores)
-    2. Recency (penalize old memories)
-    3. User Signal weight (boost items user interacted with recently)
+    """Fast behavioral-aware ranker for Butler candidate blending.
+
+    Signals:
+    1. Base retrieval score
+    2. Recency decay
+    3. User affinity / success signals
+    4. Explicit metadata overrides
     """
 
-    def __init__(self, registry: Optional[ModelRegistry] = None, feature_service: Optional[FeatureService] = None):
-        self._registry = registry or ModelRegistry()
+    def __init__(
+        self,
+        feature_service: FeatureService | None = None,
+        *,
+        recency_half_life_hours: float = 24.0 * 7,
+        affinity_boost_threshold: float = 0.8,
+        affinity_boost_multiplier: float = 1.15,
+        low_trust_threshold: float = 0.4,
+        low_trust_penalty_multiplier: float = 0.9,
+        high_affinity_metadata_multiplier: float = 1.2,
+    ) -> None:
         self._features = feature_service
+        self._recency_half_life_hours = recency_half_life_hours
+        self._affinity_boost_threshold = affinity_boost_threshold
+        self._affinity_boost_multiplier = affinity_boost_multiplier
+        self._low_trust_threshold = low_trust_threshold
+        self._low_trust_penalty_multiplier = low_trust_penalty_multiplier
+        self._high_affinity_metadata_multiplier = high_affinity_metadata_multiplier
 
-    async def rerank(self, query: str, candidates: List[Any], user_id: Optional[str] = None) -> List[RerankResult]:
-        """
-        Rank candidates based on query relevance and metadata.
-        Expected candidates: List[BlenderCandidate] (or compatible objects).
-        """
-        results = []
-        start_time = time.monotonic()
-        
-        # 1. Fetch user interest vectors if user_id is provided
-        user_signals = {}
-        if self._features and user_id:
-            vector = await self._features.get_online_features(user_id, ["user_affinity", "agent_success_rate"])
-            user_signals = vector.features
-            logger.debug("ranking_signals_fetched", user_id=user_id, signals=user_signals)
-        
-        for idx, candidate in enumerate(candidates):
-            # Base score from the retriever
-            score = getattr(candidate, "score", 0.5)
-            
-            # Recency boost (if timestamp exists in metadata)
-            metadata = getattr(candidate, "metadata", {})
-            ts = metadata.get("ts")
-            if ts:
-                # Basic recency decay (placeholder: 10% boost for fresh items)
-                score *= 1.1 
-            
-            # Behavioral boost: Affinity Signal
-            affinity = user_signals.get("user_affinity", 0.5)
-            if affinity > 0.8:
-                score *= 1.15
-                
-            # Behavioral boost: Success Signal (Trust)
-            trust = user_signals.get("agent_success_rate", 0.7)
-            if trust < 0.4:
-                # Penalize uncertain candidates if session trust is low
-                score *= 0.9
-                
-            # Manual boost override
-            if metadata.get("affinity") == "high":
-                score *= 1.2
-                
-            results.append(RerankResult(
-                index=idx,
-                score=min(score, 1.0),
-                metadata=metadata
-            ))
-            
-        # Select top-K
-        sorted_results = sorted(results, key=lambda x: x.score, reverse=True)
-        
-        latency = (time.monotonic() - start_time) * 1000
-        logger.debug("ranking_completed", count=len(candidates), duration_ms=latency)
-        
-        return sorted_results
+    async def rerank(
+        self,
+        query: str,
+        candidates: list[RetrievalCandidate],
+        user_id: str | None = None,
+    ) -> list[RerankResult]:
+        """Rank candidates based on retrieval score plus lightweight user/context signals."""
+        del query
 
-    def select_tier(self, intent_label: str, confidence: float) -> int:
-        """Heuristic to select optimal ML tier for the request."""
-        # TODO: Move this to a dedicated Router service in Phase 3
-        if intent_label in ["clarification", "casual"]:
-            return 2  # Local Qwen3 (T2)
-        if confidence > 0.9 and intent_label in ["instruction"]:
-            return 2  # Local is enough
-        return 3 # Cloud Frontier (T3)
-
-class HeavyRanker(RankingContract):
-    """
-    T3 Deep Ranker for Butler v3.0 (Oracle-Grade).
-    
-    Implements a multi-objective scoring architecture inspired by 'the-algorithm':
-    1. Semantic Relevance (Vector)
-    2. Behavioral Affinity (Signal Store)
-    3. Trust & Success Rate (Signal Store)
-    4. Graph Distance (Knowledge Base)
-    5. Recency Decay (Linear/Poly)
-    """
-
-    def __init__(self, registry: Optional[ModelRegistry] = None, feature_service: Optional[FeatureService] = None):
-        self._registry = registry or ModelRegistry()
-        self._features = feature_service
-        logger.info("heavy_ranker_initialized")
-
-    async def rerank(self, query: str, candidates: List[Any], user_id: Optional[str] = None) -> List[RerankResult]:
-        """
-        Execute deep ranking over candidates.
-        """
         if not candidates:
             return []
 
-        start_time = time.monotonic()
-        results = []
+        start_monotonic = time.monotonic()
+        now_wall_clock = time.time()
 
-        # 1. Enrichment: Fetch Unified User Action (UUA) features
-        user_signals = {}
-        if self._features and user_id:
+        user_signals: dict[str, float] = {}
+        if self._features is not None and user_id:
             try:
                 vector = await self._features.get_online_features(
-                    user_id, 
-                    ["user_affinity", "agent_trust_score", "recency_bias", "interaction_depth"]
+                    user_id,
+                    ["user_affinity", "agent_success_rate"],
                 )
-                user_signals = vector.features
-            except Exception as e:
-                logger.warning("ranking_feature_fetch_failed", error=str(e))
+                user_signals = {key: _coerce_float(value) for key, value in vector.features.items()}
+                logger.debug(
+                    "light_ranking_signals_fetched",
+                    user_id=user_id,
+                    signals=user_signals,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "light_ranking_signals_failed",
+                    user_id=user_id,
+                    error=str(exc),
+                )
 
-        # 2. Deep Scoring Loop
+        affinity = user_signals.get("user_affinity", 0.5)
+        trust = user_signals.get("agent_success_rate", 0.7)
+
+        scored_results: list[RerankResult] = []
+
         for idx, candidate in enumerate(candidates):
-            # A. Base Semantic Score (from retrieval)
-            score = float(getattr(candidate, "score", 0.5))
-            
-            # B. Metadata extraction
-            metadata = getattr(candidate, "metadata", {})
-            
-            # C. Behavioral Signals (Multiplier)
-            affinity = user_signals.get("user_affinity", 0.5)
-            trust = user_signals.get("agent_trust_score", 0.7)
-            
-            # Weighted Behavioral Boost
-            # Success signal is more important for utility tools; affinity for casual chat.
-            behavioral_boost = (affinity * 0.4) + (trust * 0.6)
-            score *= (1.0 + (behavioral_boost * 0.25)) # Max 25% boost from behavior
+            metadata = _extract_candidate_metadata(candidate)
+            score = _clamp_score(candidate.score)
 
-            # D. Recency Decay
-            ts = metadata.get("timestamp") or metadata.get("ts")
-            if ts:
-                age_hours = (time.time() - float(ts)) / 3600
-                # Poly decay: score / (1 + age_hours^0.5)
-                decay = 1.0 / (1.0 + (max(0, age_hours) ** 0.5) * 0.05)
+            timestamp_value = metadata.get("timestamp", metadata.get("ts"))
+            recency_multiplier = _compute_recency_decay(
+                timestamp_value,
+                now_wall_clock=now_wall_clock,
+                half_life_hours=self._recency_half_life_hours,
+            )
+            score *= recency_multiplier
+
+            if affinity > self._affinity_boost_threshold:
+                score *= self._affinity_boost_multiplier
+
+            if trust < self._low_trust_threshold:
+                score *= self._low_trust_penalty_multiplier
+
+            if metadata.get("affinity") == "high":
+                score *= self._high_affinity_metadata_multiplier
+
+            scored_results.append(
+                RerankResult(
+                    index=idx,
+                    score=_clamp_score(score),
+                    metadata={
+                        **metadata,
+                        "ranker": "light",
+                        "affinity": affinity,
+                        "trust": trust,
+                        "recency_multiplier": recency_multiplier,
+                    },
+                )
+            )
+
+        sorted_results = sorted(
+            scored_results,
+            key=lambda item: item.score,
+            reverse=True,
+        )
+
+        latency_ms = (time.monotonic() - start_monotonic) * 1000.0
+        logger.debug(
+            "light_ranking_completed",
+            count=len(candidates),
+            duration_ms=round(latency_ms, 2),
+        )
+        return sorted_results
+
+
+class HeavyRanker(RankingContract):
+    """Deeper multi-signal ranker for Butler.
+
+    Signals:
+    1. Base retrieval score
+    2. Behavioral affinity / trust
+    3. Recency decay
+    4. Source bias / diversity proxy
+    5. Optional interaction-depth signal
+    """
+
+    def __init__(
+        self,
+        feature_service: FeatureService | None = None,
+        *,
+        recency_decay_strength: float = 0.05,
+        ambient_source_penalty: float = 0.95,
+        behavioral_boost_cap: float = 0.25,
+    ) -> None:
+        self._features = feature_service
+        self._recency_decay_strength = recency_decay_strength
+        self._ambient_source_penalty = ambient_source_penalty
+        self._behavioral_boost_cap = behavioral_boost_cap
+        logger.info("heavy_ranker_initialized")
+
+    async def rerank(
+        self,
+        query: str,
+        candidates: list[RetrievalCandidate],
+        user_id: str | None = None,
+    ) -> list[RerankResult]:
+        """Execute deeper reranking over candidates."""
+        if not candidates:
+            return []
+
+        start_monotonic = time.monotonic()
+        now_wall_clock = time.time()
+
+        user_signals: dict[str, float] = {}
+        if self._features is not None and user_id:
+            try:
+                vector = await self._features.get_online_features(
+                    user_id,
+                    [
+                        "user_affinity",
+                        "agent_trust_score",
+                        "recency_bias",
+                        "interaction_depth",
+                    ],
+                )
+                user_signals = {key: _coerce_float(value) for key, value in vector.features.items()}
+            except Exception as exc:
+                logger.warning("heavy_ranking_feature_fetch_failed", error=str(exc))
+
+        affinity = user_signals.get("user_affinity", 0.5)
+        trust = user_signals.get("agent_trust_score", 0.7)
+        interaction_depth_signal = user_signals.get("interaction_depth", 0.0)
+
+        results: list[RerankResult] = []
+
+        for idx, candidate in enumerate(candidates):
+            metadata = _extract_candidate_metadata(candidate)
+            score = _clamp_score(candidate.score)
+
+            behavioral_boost = (affinity * 0.4) + (trust * 0.6)
+            score *= 1.0 + min(
+                self._behavioral_boost_cap, behavioral_boost * self._behavioral_boost_cap
+            )
+
+            ts = metadata.get("timestamp", metadata.get("ts"))
+            ts_float = _coerce_float(ts, default=-1.0)
+            if ts_float > 0.0:
+                age_hours = max(0.0, (now_wall_clock - ts_float) / 3600.0)
+                decay = 1.0 / (1.0 + (math.sqrt(age_hours) * self._recency_decay_strength))
                 score *= decay
 
-            # E. Diversity Bias (penalty for consecutive identical sources)
-            source = metadata.get("source", "unknown")
-            # Logic for diversity would usually look at previous results, 
-            # here we just apply a multiplier if it's from a "noisy" source
+            source = str(metadata.get("source", "unknown"))
             if source == "ambient":
-                score *= 0.95
+                score *= self._ambient_source_penalty
 
-            results.append(RerankResult(
-                index=idx,
-                score=min(max(score, 0.0), 1.0),
-                metadata=metadata
-            ))
+            candidate_depth = _coerce_float(metadata.get("interaction_depth"), default=0.0)
+            combined_depth = max(candidate_depth, interaction_depth_signal)
+            score += min(0.15, combined_depth * 0.05)
 
-        # 3. Final Sort
-        sorted_results = sorted(results, key=lambda x: x.score, reverse=True)
-        
-        latency = (time.monotonic() - start_time) * 1000
-        logger.info("heavy_ranking_completed",
-                    query_len=len(query),
-                    candidates=len(candidates),
-                    latency_ms=latency)
+            results.append(
+                RerankResult(
+                    index=idx,
+                    score=_clamp_score(score),
+                    metadata={
+                        **metadata,
+                        "ranker": "heavy",
+                        "affinity": affinity,
+                        "trust": trust,
+                        "interaction_depth_signal": combined_depth,
+                    },
+                )
+            )
 
+        sorted_results = sorted(
+            results,
+            key=lambda item: item.score,
+            reverse=True,
+        )
+
+        latency_ms = (time.monotonic() - start_monotonic) * 1000.0
+        logger.info(
+            "heavy_ranking_completed",
+            query_len=len(query),
+            candidates=len(candidates),
+            latency_ms=round(latency_ms, 2),
+        )
         return sorted_results

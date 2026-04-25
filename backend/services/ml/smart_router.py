@@ -30,7 +30,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any
 
 import structlog
 
@@ -41,10 +40,10 @@ logger = structlog.get_logger(__name__)
 
 
 class ModelTier(IntEnum):
-    T0 = 0   # Pattern match — zero cost, zero latency
-    T1 = 1   # Keyword ML — sub-ms
-    T2 = 2   # Local LLM (vLLM / TriAttention)
-    T3 = 3   # Cloud frontier (Anthropic / OpenAI / Gemini)
+    T0 = 0  # Pattern match — zero cost, zero latency
+    T1 = 1  # Keyword ML — sub-ms
+    T2 = 2  # Local LLM (vLLM / TriAttention)
+    T3 = 3  # Cloud frontier (Anthropic / OpenAI / Gemini)
 
 
 # Latency budget thresholds (ms) for tier escalation
@@ -62,9 +61,10 @@ class RoutingDecision:
     Consumed by RuntimeKernel to configure HermesAgentBackend.
     Never exposed to API callers.
     """
+
     tier: ModelTier
-    runtime_profile: str           # Key into MLRuntimeManager.PROFILES
-    provider: str                  # vllm | external_api | pattern | keyword
+    runtime_profile: str  # Key into MLRuntimeManager.PROFILES
+    provider: str  # vllm | external_api | pattern | keyword
     tri_attention: bool
     latency_budget_ms: int
     estimated_prompt_tokens: int
@@ -76,11 +76,12 @@ class RoutingDecision:
 @dataclass
 class RouterRequest:
     """Input to ButlerSmartRouter.route()."""
+
     intent: IntentResult
     message: str
     context_token_count: int = 0
     latency_budget_ms: int = _T3_MAX_LATENCY_MS
-    force_tier: ModelTier | None = None   # explicit override (admin/test)
+    force_tier: ModelTier | None = None  # explicit override (admin/test)
 
 
 class ButlerSmartRouter:
@@ -221,9 +222,7 @@ class ButlerSmartRouter:
             },
         )
 
-    def _profile_for_tier(
-        self, tier: ModelTier, request: RouterRequest
-    ) -> tuple[str, str, bool]:
+    def _profile_for_tier(self, tier: ModelTier, request: RouterRequest) -> tuple[str, str, bool]:
         """Return (profile_name, provider, tri_attention) for a tier."""
         match tier:
             case ModelTier.T0:

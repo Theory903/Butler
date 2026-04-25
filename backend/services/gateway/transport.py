@@ -13,21 +13,19 @@ Key Features:
 
 import asyncio
 import time
-from typing import Optional, Dict
 
-from fastapi import WebSocket, WebSocketDisconnect, HTTPException, status
+from fastapi import WebSocket, WebSocketDisconnect
 from redis.asyncio import Redis
 
-from domain.auth.contracts import AccountContext
 from core.observability import get_metrics
 from core.tracing import tracer
+from domain.auth.contracts import AccountContext
 from services.gateway.auth_middleware import JWTAuthMiddleware
-from core.errors import GatewayErrors
 
 
 class LeakyBucketRateLimiter:
     """Nginx-inspired leaky bucket rate limiter."""
-    
+
     def __init__(self, redis: Redis, rate: float = 10.0, capacity: int = 50):
         """
         Args:
@@ -41,22 +39,22 @@ class LeakyBucketRateLimiter:
 
     async def acquire(self, key: str) -> bool:
         """Attempt to acquire a token from the bucket."""
-        with tracer.start_as_current_span(f"rate_limit.acquire"):
+        with tracer.start_as_current_span("rate_limit.acquire"):
             now = time.time()
             lua_script = """
             local key = KEYS[1]
             local rate = tonumber(ARGV[1])
             local capacity = tonumber(ARGV[2])
             local now = tonumber(ARGV[3])
-            
+
             local current_level = tonumber(redis.call('HGET', key, 'level') or '0')
             local last_update = tonumber(redis.call('HGET', key, 'last_update') or now)
-            
+
             -- Leak tokens based on elapsed time
             local elapsed = math.max(0, now - last_update)
             local leaked = elapsed * rate
             current_level = math.max(0, current_level - leaked)
-            
+
             if current_level + 1 <= capacity then
                 current_level = current_level + 1
                 redis.call('HSET', key, 'level', current_level, 'last_update', now)
@@ -65,13 +63,14 @@ class LeakyBucketRateLimiter:
             else:
                 return 0
             """
-            
+
             result = await self.redis.eval(lua_script, 1, key, self.rate, self.capacity, now)
             return bool(result)
 
 
 class ButlerTransportContext:
     """Wrapper holding connection state and isolated context."""
+
     def __init__(self, account: AccountContext, websocket: WebSocket):
         self.account = account
         self.websocket = websocket
@@ -85,16 +84,16 @@ class HermesTransportEdge:
     def __init__(self, auth_middleware: JWTAuthMiddleware, redis: Redis):
         self.auth_middleware = auth_middleware
         self.rate_limiter = LeakyBucketRateLimiter(redis, rate=5.0, capacity=20)
-        self.active_transports: Dict[str, ButlerTransportContext] = {}
+        self.active_transports: dict[str, ButlerTransportContext] = {}
 
-    async def connect(self, websocket: WebSocket, token: str) -> Optional[ButlerTransportContext]:
+    async def connect(self, websocket: WebSocket, token: str) -> ButlerTransportContext | None:
         """Authenticate and establish hardened connection."""
         await websocket.accept()
-        
+
         try:
             # Enforce authentication explicitly at the transport boundary
             account_ctx = await self.auth_middleware.authenticate(f"Bearer {token}")
-        except Exception as e:
+        except Exception:
             get_metrics().inc_counter("gateway.transport.rejected", tags={"reason": "auth_failure"})
             await websocket.close(code=1008, reason="Authentication Failed")
             return None
@@ -108,17 +107,19 @@ class HermesTransportEdge:
 
         transport_ctx = ButlerTransportContext(account=account_ctx, websocket=websocket)
         self.active_transports[account_ctx.session_id] = transport_ctx
-        
+
         get_metrics().inc_counter("gateway.transport.connected", tags={"tenant": account_ctx.sub})
         return transport_ctx
 
     async def disconnect(self, session_id: str) -> None:
         """Cleanly remove the transport context."""
         if session_id in self.active_transports:
-             del self.active_transports[session_id]
-             get_metrics().inc_counter("gateway.transport.disconnected")
+            del self.active_transports[session_id]
+            get_metrics().inc_counter("gateway.transport.disconnected")
 
-    async def run_ping_pong_loop(self, transport_ctx: ButlerTransportContext, timeout_s: float = 30.0):
+    async def run_ping_pong_loop(
+        self, transport_ctx: ButlerTransportContext, timeout_s: float = 30.0
+    ):
         """Hardened ping/pong lifecycle to prevent zombie agent holding."""
         websocket = transport_ctx.websocket
         while True:
@@ -129,15 +130,17 @@ class HermesTransportEdge:
                     # We expect custom heartbeat protocol from client or standard WS ping
                     await websocket.send_json({"type": "ping", "timestamp": time.time()})
                     # Wait for pong or data
-                    message = await websocket.receive_text()
+                    await websocket.receive_text()
                     transport_ctx.last_active = time.time()
-            except asyncio.TimeoutError:
-                get_metrics().inc_counter("gateway.transport.timeout", tags={"session": transport_ctx.account.session_id})
+            except TimeoutError:
+                get_metrics().inc_counter(
+                    "gateway.transport.timeout", tags={"session": transport_ctx.account.session_id}
+                )
                 await websocket.close(code=1011, reason="Ping Timeout")
                 break
             except WebSocketDisconnect:
                 break
             except Exception:
                 break
-        
+
         await self.disconnect(transport_ctx.account.session_id)

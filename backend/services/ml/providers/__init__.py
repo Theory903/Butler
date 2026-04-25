@@ -1,148 +1,251 @@
-"""ML Reasoning Providers — v3.1.
+"""ML Reasoning Providers — Butler production provider layer.
 
-Changes:
-  - AnthropicProvider.generate_stream(): full production implementation
-    with SSE parsing, partial-token accumulation, timeout handling,
-    and buffered-fallback on failure.
-  - VLLMProvider.generate_stream(): wired (was pass).
-
-Anthropic streaming design:
-  - Uses httpx streaming over the SSE endpoint.
-  - Accumulates partial tokens before yielding to handle split delta events.
-  - On any infrastructure error: falls back to buffered generate() and
-    yields the result as a single token chunk.
-  - Emits a finalization sentinel event in logs for observability.
-  - Per-request timeout: 120s connection + 30s idle read (configurable).
+Design goals:
+- typed provider boundary for runtime-facing reasoning calls
+- shared HTTP/retry/stream parsing helpers where reasonable
+- provider-specific payload builders only where APIs differ
+- robust streaming behavior with graceful degradation
 """
 
 from __future__ import annotations
 
+import json
 import os
 import time
-import json
-from typing import Any, Dict, List, Optional, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import httpx
 import structlog
 
-from domain.ml.contracts import (
-    ReasoningContract,
-    ReasoningRequest,
-    ReasoningResponse,
-)
+from domain.ml.contracts import ReasoningContract, ReasoningRequest, ReasoningResponse
 
 logger = structlog.get_logger(__name__)
 
-# ── Shared timeout policy ──────────────────────────────────────────────────────
 _DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)
 _STREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=5.0)
 
 
-# ── OpenAI Provider ───────────────────────────────────────────────────────────
+class ProviderConfigurationError(RuntimeError):
+    """Raised when a provider is missing required configuration."""
 
-class OpenAIProvider(ReasoningContract):
-    """OpenAI-compatible Reasoning Provider (Chat Completions API)."""
+
+class BaseHTTPReasoningProvider(ReasoningContract):
+    """Small shared base for HTTP-backed reasoning providers."""
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        *,
+        timeout: httpx.Timeout = _DEFAULT_TIMEOUT,
+        stream_timeout: httpx.Timeout = _STREAM_TIMEOUT,
+    ) -> None:
+        self._client = httpx.AsyncClient(timeout=timeout)
+        self._stream_client = httpx.AsyncClient(timeout=stream_timeout)
+
+    async def close(self) -> None:
+        await self._client.aclose()
+        await self._stream_client.aclose()
+
+    def _require_api_key(self, api_key: str | None, provider_name: str) -> str:
+        if not api_key or not api_key.strip():
+            raise ProviderConfigurationError(f"{provider_name} API key is not configured")
+        return api_key.strip()
+
+    def _extract_model(self, request: ReasoningRequest, fallback_model: str) -> str:
+        if request.preferred_model:
+            return request.preferred_model
+        raw_model = request.metadata.get("model")
+        if isinstance(raw_model, str) and raw_model.strip():
+            return raw_model.strip()
+        return fallback_model
+
+    def _normalize_usage(self, usage: Any) -> dict[str, Any]:
+        if isinstance(usage, dict):
+            return dict(usage)
+        return {}
+
+    def _base_response(
+        self,
+        *,
+        content: str,
+        raw_response: dict[str, Any] | None,
+        usage: dict[str, Any],
+        model_version: str,
+        provider_name: str,
+        finish_reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ReasoningResponse:
+        return ReasoningResponse(
+            content=content,
+            raw_response=raw_response,
+            usage=usage,
+            model_version=model_version,
+            provider_name=provider_name,
+            finish_reason=finish_reason,
+            metadata=metadata or {},
+        )
+
+    async def _iter_sse_data_lines(
+        self,
+        response: httpx.Response,
+    ) -> AsyncGenerator[tuple[str | None, str]]:
+        """Yield (event_name, data_line) pairs from an SSE response.
+
+        Handles standard SSE framing:
+        - event: ...
+        - data: ...
+        - blank line terminates an event block
+        """
+        current_event: str | None = None
+        data_lines: list[str] = []
+
+        async for line in response.aiter_lines():
+            if line == "":
+                if data_lines:
+                    yield current_event, "\n".join(data_lines)
+                current_event = None
+                data_lines = []
+                continue
+
+            if line.startswith(":"):
+                continue
+
+            if line.startswith("event:"):
+                current_event = line[6:].strip()
+                continue
+
+            if line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+                continue
+
+        if data_lines:
+            yield current_event, "\n".join(data_lines)
+
+
+class OpenAIProvider(BaseHTTPReasoningProvider):
+    """OpenAI-compatible reasoning provider."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
         base_url: str = "https://api.openai.com/v1",
     ) -> None:
+        super().__init__()
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self._base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
 
-    async def generate(self, request: ReasoningRequest) -> ReasoningResponse:
-        url = f"{self._base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
+    def _headers(self) -> dict[str, str]:
+        api_key = self._require_api_key(self._api_key, "OpenAI")
+        return {
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": request.metadata.get("model", "gpt-4o"),
+
+    def _payload(self, request: ReasoningRequest, *, stream: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self._extract_model(request, "gpt-4o"),
             "messages": [],
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
-            "stop": request.stop_sequences or None,
         }
+        if request.stop_sequences:
+            payload["stop"] = request.stop_sequences
+        if stream:
+            payload["stream"] = True
+
         if request.system_prompt:
             payload["messages"].append({"role": "system", "content": request.system_prompt})
         payload["messages"].append({"role": "user", "content": request.prompt})
+        return payload
 
-        t0 = time.monotonic()
-        response = await self._client.post(url, json=payload, headers=headers)
+    async def generate(self, request: ReasoningRequest) -> ReasoningResponse:
+        url = f"{self._base_url}/chat/completions"
+        payload = self._payload(request)
+        started_at = time.monotonic()
+
+        response = await self._client.post(url, json=payload, headers=self._headers())
         response.raise_for_status()
         data = response.json()
-        latency = (time.monotonic() - t0) * 1000
 
-        content = data["choices"][0]["message"]["content"]
-        usage = data.get("usage", {})
-        logger.debug("openai.generate.ok", latency_ms=round(latency, 1), tokens=usage.get("total_tokens"))
+        latency_ms = round((time.monotonic() - started_at) * 1000, 1)
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
+        usage = self._normalize_usage(data.get("usage", {}))
+        usage.setdefault("duration_ms", latency_ms)
 
-        return ReasoningResponse(
+        logger.debug(
+            "openai_generate_ok",
+            latency_ms=latency_ms,
+            model=data.get("model", payload["model"]),
+            total_tokens=usage.get("total_tokens"),
+        )
+
+        return self._base_response(
             content=content,
             raw_response=data,
             usage=usage,
             model_version=data.get("model", payload["model"]),
+            provider_name="openai",
+            finish_reason=choice.get("finish_reason"),
         )
 
-    async def generate_stream(self, request: ReasoningRequest) -> AsyncGenerator[str, None]:
+    async def generate_stream(self, request: ReasoningRequest) -> AsyncGenerator[str]:
         url = f"{self._base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": request.metadata.get("model", "gpt-4o"),
-            "messages": [],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-            "stream": True,
-        }
-        if request.system_prompt:
-            payload["messages"].append({"role": "system", "content": request.system_prompt})
-        payload["messages"].append({"role": "user", "content": request.prompt})
+        payload = self._payload(request, stream=True)
 
-        async with self._client.stream("POST", url, json=payload, headers=headers) as response:
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                chunk_data = line[6:]
-                if chunk_data == "[DONE]":
-                    break
+        async with self._stream_client.stream(
+            "POST",
+            url,
+            json=payload,
+            headers=self._headers(),
+        ) as response:
+            response.raise_for_status()
+
+            async for _, data_line in self._iter_sse_data_lines(response):
+                if data_line == "[DONE]":
+                    return
+
                 try:
-                    chunk_json = json.loads(chunk_data)
-                    delta = chunk_json["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        yield delta
-                except Exception:
+                    chunk = json.loads(data_line)
+                except json.JSONDecodeError:
+                    logger.debug("openai_stream_invalid_json_ignored")
                     continue
 
+                try:
+                    delta = chunk["choices"][0]["delta"].get("content", "")
+                except (KeyError, IndexError, AttributeError):
+                    continue
 
-# ── Anthropic Provider ────────────────────────────────────────────────────────
+                if delta:
+                    yield delta
 
-class AnthropicProvider(ReasoningContract):
-    """Anthropic Claude Reasoning Provider — v3.1 with production streaming."""
+
+class AnthropicProvider(BaseHTTPReasoningProvider):
+    """Anthropic Claude reasoning provider with robust SSE streaming."""
 
     _MESSAGES_URL = "https://api.anthropic.com/v1/messages"
     _ANTHROPIC_VERSION = "2023-06-01"
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022") -> None:
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "claude-sonnet-4.6",
+    ) -> None:
+        super().__init__()
+        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self._model = model
-        self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
-        self._stream_client = httpx.AsyncClient(timeout=_STREAM_TIMEOUT)
 
     def _headers(self) -> dict[str, str]:
+        api_key = self._require_api_key(self._api_key, "Anthropic")
         return {
-            "x-api-key": self._api_key,
+            "x-api-key": api_key,
             "anthropic-version": self._ANTHROPIC_VERSION,
             "content-type": "application/json",
         }
 
-    def _payload(self, request: ReasoningRequest, *, stream: bool = False) -> dict:
-        payload: dict = {
-            "model": request.metadata.get("model", self._model),
+    def _payload(self, request: ReasoningRequest, *, stream: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self._extract_model(request, self._model),
             "max_tokens": request.max_tokens,
             "messages": [{"role": "user", "content": request.prompt}],
             "temperature": request.temperature,
@@ -156,39 +259,62 @@ class AnthropicProvider(ReasoningContract):
         return payload
 
     async def generate(self, request: ReasoningRequest) -> ReasoningResponse:
-        """Buffered (non-streaming) inference."""
         payload = self._payload(request)
-        t0 = time.monotonic()
+        started_at = time.monotonic()
+
         response = await self._client.post(
-            self._MESSAGES_URL, json=payload, headers=self._headers()
+            self._MESSAGES_URL,
+            json=payload,
+            headers=self._headers(),
         )
         response.raise_for_status()
         data = response.json()
-        latency = (time.monotonic() - t0) * 1000
 
-        content = data["content"][0]["text"]
-        logger.debug("anthropic.generate.ok", latency_ms=round(latency, 1), model=data.get("model"))
+        latency_ms = round((time.monotonic() - started_at) * 1000, 1)
 
-        return ReasoningResponse(
-            content=content,
-            raw_response=data,
-            usage=data.get("usage", {}),
-            model_version=data.get("model", payload["model"]),
+        text_parts: list[str] = []
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                text = block.get("text", "")
+                if text:
+                    text_parts.append(text)
+
+        content = "".join(text_parts)
+        usage = self._normalize_usage(data.get("usage", {}))
+        usage.setdefault("duration_ms", latency_ms)
+
+        logger.debug(
+            "anthropic_generate_ok",
+            latency_ms=latency_ms,
+            model=data.get("model", payload["model"]),
         )
 
-    async def generate_stream(self, request: ReasoningRequest) -> AsyncGenerator[str, None]:
-        """Production Anthropic SSE streaming with fallback.
+        return self._base_response(
+            content=content,
+            raw_response=data,
+            usage=usage,
+            model_version=data.get("model", payload["model"]),
+            provider_name="anthropic",
+            finish_reason=data.get("stop_reason"),
+        )
 
-        SSE event types used:
-          content_block_delta / delta.type=text_delta → yield delta.text
-          message_stop                                → finalize
+    async def generate_stream(self, request: ReasoningRequest) -> AsyncGenerator[str]:
+        """Anthropic SSE streaming with buffered fallback.
 
-        On any transport failure, falls back to buffered generate()
-        and yields the complete text as a single chunk.
+        Anthropic documents these stream events:
+        - message_start
+        - content_block_start
+        - content_block_delta
+        - content_block_stop
+        - message_delta
+        - message_stop
+        plus ping/error/unknown future events. We handle unknown events
+        gracefully and only emit text deltas outward.
         """
         payload = self._payload(request, stream=True)
-        t0 = time.monotonic()
-        accumulated = 0
+        started_at = time.monotonic()
+        emitted_chars = 0
+
         try:
             async with self._stream_client.stream(
                 "POST",
@@ -198,149 +324,153 @@ class AnthropicProvider(ReasoningContract):
             ) as response:
                 response.raise_for_status()
 
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
-
-                    # SSE format: "event: ...\ndata: ..."
-                    if line.startswith("event:"):
-                        event_type = line[6:].strip()
-                        if event_type == "message_stop":
-                            logger.debug(
-                                "anthropic.stream.complete",
-                                tokens=accumulated,
-                                ms=round((time.monotonic() - t0) * 1000, 1),
-                            )
-                            return
-                        continue
-
-                    if not line.startswith("data:"):
-                        continue
-
-                    raw = line[5:].strip()
-                    if not raw or raw == "[DONE]":
+                async for event_name, data_line in self._iter_sse_data_lines(response):
+                    if not data_line or data_line == "[DONE]":
                         continue
 
                     try:
-                        event = json.loads(raw)
+                        event = json.loads(data_line)
                     except json.JSONDecodeError:
+                        logger.debug("anthropic_stream_invalid_json_ignored")
                         continue
 
-                    event_type = event.get("type", "")
+                    event_type = event.get("type") or event_name or ""
+
+                    if event_type == "ping":
+                        continue
+
+                    if event_type == "error":
+                        logger.error("anthropic_stream_api_error", error=event.get("error"))
+                        raise RuntimeError(f"Anthropic stream error: {event.get('error')}")
 
                     if event_type == "content_block_delta":
                         delta = event.get("delta", {})
-                        if delta.get("type") == "text_delta":
+                        delta_type = delta.get("type")
+
+                        if delta_type == "text_delta":
                             text = delta.get("text", "")
                             if text:
-                                accumulated += len(text)
+                                emitted_chars += len(text)
                                 yield text
+                            continue
 
-                    elif event_type == "message_stop":
+                        # Ignore input_json_delta / thinking_delta / signature_delta
+                        continue
+
+                    if event_type == "message_stop":
                         logger.debug(
-                            "anthropic.stream.complete",
-                            tokens=accumulated,
-                            ms=round((time.monotonic() - t0) * 1000, 1),
+                            "anthropic_stream_complete",
+                            emitted_chars=emitted_chars,
+                            elapsed_ms=round((time.monotonic() - started_at) * 1000, 1),
                         )
                         return
 
-                    elif event_type == "error":
-                        error_detail = event.get("error", {})
-                        logger.error("anthropic.stream.api_error", error=error_detail)
-                        raise RuntimeError(f"Anthropic stream error: {error_detail}")
+                    # message_start / content_block_start / content_block_stop /
+                    # message_delta / unknown future events are intentionally ignored
 
         except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-            # Fallback: buffered generate — yield as single chunk
             logger.warning(
-                "anthropic.stream.fallback_to_buffered",
+                "anthropic_stream_fallback_to_buffered",
                 error=str(exc),
-                elapsed_ms=round((time.monotonic() - t0) * 1000, 1),
+                elapsed_ms=round((time.monotonic() - started_at) * 1000, 1),
             )
             try:
                 result = await self.generate(request)
-                yield result.content
+                if result.content:
+                    yield result.content
+                return
             except Exception as fallback_exc:
-                logger.error("anthropic.stream.fallback_failed", error=str(fallback_exc))
-                raise RuntimeError("Anthropic streaming and buffered fallback both failed") from fallback_exc
+                logger.error("anthropic_stream_fallback_failed", error=str(fallback_exc))
+                raise RuntimeError(
+                    "Anthropic streaming failed and buffered fallback also failed"
+                ) from fallback_exc
 
 
-# ── vLLM Provider ─────────────────────────────────────────────────────────────
-
-class VLLMProvider(ReasoningContract):
-    """Local vLLM Reasoning Provider (TriAttention Optimized)."""
+class VLLMProvider(BaseHTTPReasoningProvider):
+    """Local vLLM provider using the OpenAI-compatible server surface."""
 
     def __init__(self, base_url: str = "http://localhost:8000/v1") -> None:
+        super().__init__()
         self._base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
-        self._stream_client = httpx.AsyncClient(timeout=_STREAM_TIMEOUT)
+
+    def _payload(self, request: ReasoningRequest, *, stream: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self._extract_model(request, "meta-llama-3.1-8b"),
+            "messages": [],
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+            "extra_body": {
+                "triattention": request.metadata.get("triattention", True),
+                "kv_budget": request.metadata.get("kv_budget", 12000),
+            },
+        }
+        if stream:
+            payload["stream"] = True
+        if request.system_prompt:
+            payload["messages"].append({"role": "system", "content": request.system_prompt})
+        payload["messages"].append({"role": "user", "content": request.prompt})
+        return payload
 
     async def generate(self, request: ReasoningRequest) -> ReasoningResponse:
         url = f"{self._base_url}/chat/completions"
-        payload = {
-            "model": request.metadata.get("model", "qwen2.5-72b-instruct"),
-            "messages": [],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-            "extra_body": {
-                "triattention": request.metadata.get("triattention", True),
-                "kv_budget": request.metadata.get("kv_budget", 12000),
-            },
-        }
-        if request.system_prompt:
-            payload["messages"].append({"role": "system", "content": request.system_prompt})
-        payload["messages"].append({"role": "user", "content": request.prompt})
+        payload = self._payload(request)
+        started_at = time.monotonic()
 
-        t0 = time.monotonic()
         response = await self._client.post(url, json=payload)
         response.raise_for_status()
         data = response.json()
-        latency = (time.monotonic() - t0) * 1000
 
-        content = data["choices"][0]["message"]["content"]
-        logger.debug("vllm.generate.ok", latency_ms=round(latency, 1), triattention=True)
+        latency_ms = round((time.monotonic() - started_at) * 1000, 1)
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
+        usage = self._normalize_usage(data.get("usage", {}))
+        usage.setdefault("duration_ms", latency_ms)
 
-        return ReasoningResponse(
-            content=content,
-            raw_response=data,
-            usage=data.get("usage", {}),
-            model_version=data.get("model", payload["model"]),
+        logger.debug(
+            "vllm_generate_ok",
+            latency_ms=latency_ms,
+            model=data.get("model", payload["model"]),
+            triattention=payload["extra_body"]["triattention"],
         )
 
-    async def generate_stream(self, request: ReasoningRequest) -> AsyncGenerator[str, None]:
-        """vLLM streaming — OpenAI-compatible SSE format."""
+        return self._base_response(
+            content=content,
+            raw_response=data,
+            usage=usage,
+            model_version=data.get("model", payload["model"]),
+            provider_name="vllm",
+            finish_reason=choice.get("finish_reason"),
+            metadata={"triattention": payload["extra_body"]["triattention"]},
+        )
+
+    async def generate_stream(self, request: ReasoningRequest) -> AsyncGenerator[str]:
+        """vLLM streaming via the OpenAI-compatible SSE surface."""
         url = f"{self._base_url}/chat/completions"
-        payload = {
-            "model": request.metadata.get("model", "qwen2.5-72b-instruct"),
-            "messages": [],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-            "stream": True,
-            "extra_body": {
-                "triattention": request.metadata.get("triattention", True),
-                "kv_budget": request.metadata.get("kv_budget", 12000),
-            },
-        }
-        if request.system_prompt:
-            payload["messages"].append({"role": "system", "content": request.system_prompt})
-        payload["messages"].append({"role": "user", "content": request.prompt})
+        payload = self._payload(request, stream=True)
 
         try:
             async with self._stream_client.stream("POST", url, json=payload) as response:
                 response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    chunk_data = line[6:]
-                    if chunk_data == "[DONE]":
+
+                async for _, data_line in self._iter_sse_data_lines(response):
+                    if data_line == "[DONE]":
                         return
+
                     try:
-                        chunk_json = json.loads(chunk_data)
-                        delta = chunk_json["choices"][0]["delta"].get("content", "")
-                        if delta:
-                            yield delta
-                    except Exception:
+                        chunk = json.loads(data_line)
+                    except json.JSONDecodeError:
+                        logger.debug("vllm_stream_invalid_json_ignored")
                         continue
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
-            logger.warning("vllm.stream.fallback", error=str(exc))
+
+                    try:
+                        delta = chunk["choices"][0]["delta"].get("content", "")
+                    except (KeyError, IndexError, AttributeError):
+                        continue
+
+                    if delta:
+                        yield delta
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+            logger.warning("vllm_stream_fallback_to_buffered", error=str(exc))
             result = await self.generate(request)
-            yield result.content
+            if result.content:
+                yield result.content

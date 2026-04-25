@@ -1,8 +1,7 @@
 """Orchestrator service - intent parsing, planning, execution."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
 
 router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 

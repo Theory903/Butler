@@ -59,19 +59,18 @@ Observability:
 
 from __future__ import annotations
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.routes.acp import create_acp_router
 from api.routes.cron import create_cron_router
-from services.workflow.acp_server import ButlerACPServer, ACPDecision, ACPStatus
 from services.cron.cron_service import ButlerCronService, CreateCronJobRequest
-
+from services.workflow.acp_server import ACPDecision, ButlerACPServer
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Fixtures
 # ───────────────────────────────────────────────────────────────────────────────
+
 
 def _acp_app(server: ButlerACPServer) -> TestClient:
     app = FastAPI()
@@ -109,12 +108,14 @@ def _seed_acp_request(server: ButlerACPServer, account_id: str = "demo") -> str:
 
 def _seed_cron_job(svc: ButlerCronService, account_id: str = "demo") -> str:
     """Create a cron job and return its id."""
-    job = svc.create(CreateCronJobRequest(
-        account_id=account_id,
-        name="test job",
-        cron_expression="0 9 * * *",
-        action="send_notification",
-    ))
+    job = svc.create(
+        CreateCronJobRequest(
+            account_id=account_id,
+            name="test job",
+            cron_expression="0 9 * * *",
+            action="send_notification",
+        )
+    )
     return job.id
 
 
@@ -122,8 +123,8 @@ def _seed_cron_job(svc: ButlerCronService, account_id: str = "demo") -> str:
 # Phase 8b: ACP Routes
 # ───────────────────────────────────────────────────────────────────────────────
 
-class TestACPRoutes:
 
+class TestACPRoutes:
     def test_list_pending_empty(self):
         server = _fresh_acp_server()
         client = _acp_app(server)
@@ -247,8 +248,8 @@ class TestACPRoutes:
 # Phase 8b: Cron Routes
 # ───────────────────────────────────────────────────────────────────────────────
 
-class TestCronRoutes:
 
+class TestCronRoutes:
     def test_list_jobs_empty(self):
         svc = _fresh_cron_svc()
         client = _cron_app(svc)
@@ -284,10 +285,14 @@ class TestCronRoutes:
         client = _cron_app(svc)
         # Pre-fill 50 jobs directly via service
         for i in range(50):
-            svc.create(CreateCronJobRequest(
-                account_id="demo", name=f"j{i}",
-                cron_expression="0 9 * * *", action="noop",
-            ))
+            svc.create(
+                CreateCronJobRequest(
+                    account_id="demo",
+                    name=f"j{i}",
+                    cron_expression="0 9 * * *",
+                    action="noop",
+                )
+            )
         resp = client.post(
             "/cron/jobs?account_id=demo",
             json={"name": "Over", "cron_expression": "0 9 * * *", "action": "noop"},
@@ -391,21 +396,24 @@ class TestCronRoutes:
 # Phase 9: Observability
 # ───────────────────────────────────────────────────────────────────────────────
 
-class TestObservability:
 
+class TestObservability:
     def setup_method(self):
-        from core.observability import ButlerTracer, ButlerMetrics
+        from core.observability import ButlerMetrics, ButlerTracer
+
         ButlerTracer.reset()
         ButlerMetrics.reset()
 
     def test_tracer_singleton(self):
         from core.observability import ButlerTracer
+
         t1 = ButlerTracer.get()
         t2 = ButlerTracer.get()
         assert t1 is t2
 
     def test_tracer_reset_gives_new_instance(self):
         from core.observability import ButlerTracer
+
         t1 = ButlerTracer.get()
         ButlerTracer.reset()
         t2 = ButlerTracer.get()
@@ -413,34 +421,40 @@ class TestObservability:
 
     def test_tracer_span_noop_does_not_raise(self):
         from core.observability import ButlerTracer
+
         tracer = ButlerTracer.get()
         with tracer.span("test.span", attrs={"key": "value"}, account_id="acc1"):
             pass  # Should not raise regardless of OTel availability
 
     def test_tracer_span_with_no_attrs(self):
         from core.observability import ButlerTracer
+
         tracer = ButlerTracer.get()
         with tracer.span("bare.span"):
             pass
 
     def test_tracer_record_error_does_not_raise(self):
         from core.observability import ButlerTracer
+
         tracer = ButlerTracer.get()
         tracer.record_error(ValueError("test error"))
 
     def test_tracer_is_available_is_bool(self):
         from core.observability import ButlerTracer
+
         tracer = ButlerTracer.get()
         assert isinstance(tracer.is_available, bool)
 
     def test_metrics_singleton(self):
         from core.observability import ButlerMetrics
+
         m1 = ButlerMetrics.get()
         m2 = ButlerMetrics.get()
         assert m1 is m2
 
     def test_metrics_reset_gives_new_instance(self):
         from core.observability import ButlerMetrics
+
         m1 = ButlerMetrics.get()
         ButlerMetrics.reset()
         m2 = ButlerMetrics.get()
@@ -448,21 +462,25 @@ class TestObservability:
 
     def test_record_http_request_does_not_raise(self):
         from core.observability import ButlerMetrics
+
         m = ButlerMetrics.get()
         m.record_http_request("GET", "/api/v1/chat", 200, 0.123)
 
     def test_record_tool_call_does_not_raise(self):
         from core.observability import ButlerMetrics
+
         m = ButlerMetrics.get()
         m.record_tool_call("web_search", "L0", success=True)
 
     def test_record_llm_tokens_does_not_raise(self):
         from core.observability import ButlerMetrics
+
         m = ButlerMetrics.get()
         m.record_llm_tokens("anthropic", "claude-3-5-sonnet", 100, 200, 50)
 
     def test_set_circuit_breaker_state_does_not_raise(self):
         from core.observability import ButlerMetrics
+
         m = ButlerMetrics.get()
         m.set_circuit_breaker_state("redis", "open")
         m.set_circuit_breaker_state("redis", "closed")
@@ -470,36 +488,43 @@ class TestObservability:
 
     def test_record_memory_write_does_not_raise(self):
         from core.observability import ButlerMetrics
+
         m = ButlerMetrics.get()
         m.record_memory_write("HOT")
         m.record_memory_write("COLD")
 
     def test_set_cron_active_does_not_raise(self):
         from core.observability import ButlerMetrics
+
         m = ButlerMetrics.get()
         m.set_cron_active(7)
 
     def test_set_acp_pending_does_not_raise(self):
         from core.observability import ButlerMetrics
+
         m = ButlerMetrics.get()
         m.set_acp_pending(3)
 
     def test_metrics_is_available_is_bool(self):
         from core.observability import ButlerMetrics
+
         m = ButlerMetrics.get()
         assert isinstance(m.is_available, bool)
 
     def test_get_tracer_convenience(self):
-        from core.observability import get_tracer, ButlerTracer
+        from core.observability import ButlerTracer, get_tracer
+
         t = get_tracer()
         assert isinstance(t, ButlerTracer)
 
     def test_get_metrics_convenience(self):
-        from core.observability import get_metrics, ButlerMetrics
+        from core.observability import ButlerMetrics, get_metrics
+
         m = get_metrics()
         assert isinstance(m, ButlerMetrics)
 
     def test_setup_observability_noop_no_endpoint(self):
         from core.observability import setup_observability
+
         # Should not raise even with no OTel packages active
         setup_observability(None, "butler", otel_endpoint=None)

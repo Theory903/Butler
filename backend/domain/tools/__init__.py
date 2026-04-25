@@ -1,18 +1,17 @@
+"""Tool domain contracts."""
+
+from __future__ import annotations
+
+from .contracts import ToolsServiceContract, ValidationResult
 from .models import ToolDefinition, ToolExecution
-from .contracts import (
-    ToolsServiceContract,
-    ToolResult,
-    VerificationResult,
-    ValidationResult
-)
-from .exceptions import ToolErrors
+from .spec import ApprovalMode, RiskTier, ToolSpec
 
 __all__ = [
     "ToolDefinition",
     "ToolExecution",
+    "ToolSpec",
+    "RiskTier",
+    "ApprovalMode",
     "ToolsServiceContract",
-    "ToolResult",
-    "VerificationResult",
     "ValidationResult",
-    "ToolErrors"
 ]

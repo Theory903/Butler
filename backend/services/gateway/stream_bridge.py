@@ -23,22 +23,21 @@ WebSocket wire format:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import time
-import structlog
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 
+import structlog
 from fastapi import WebSocket, WebSocketDisconnect
+from redis.asyncio import Redis
 
 from domain.events.schemas import (
     ButlerEvent,
-    StreamTokenEvent,
-    StreamFinalEvent,
     StreamErrorEvent,
-    StreamApprovalRequiredEvent,
-    StreamToolCallEvent,
-    StreamToolResultEvent,
+    StreamFinalEvent,
+    StreamTokenEvent,
 )
 
 logger = structlog.get_logger(__name__)
@@ -66,13 +65,14 @@ def _redact(text: str) -> str:
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
-    "X-Accel-Buffering": "no",       # disable nginx buffering
+    "X-Accel-Buffering": "no",  # disable nginx buffering
     "Connection": "keep-alive",
     "Transfer-Encoding": "chunked",
 }
 
 
 # ── Bridge ────────────────────────────────────────────────────────────────────
+
 
 class ButlerStreamBridge:
     """Converts ButlerEvent stream into SSE or WebSocket wire frames.
@@ -96,7 +96,7 @@ class ButlerStreamBridge:
         account_id: str,
         redis: Redis,
         request_id: str = "",
-        last_event_id: Optional[int] = None,
+        last_event_id: int | None = None,
     ) -> None:
         self._session_id = session_id
         self._account_id = account_id
@@ -112,8 +112,8 @@ class ButlerStreamBridge:
 
     async def as_sse(
         self,
-        event_stream: AsyncGenerator[ButlerEvent, None],
-    ) -> AsyncGenerator[str, None]:
+        event_stream: AsyncGenerator[ButlerEvent],
+    ) -> AsyncGenerator[str]:
         """Yield SSE-formatted strings via a bounded queue (true backpressure).
 
         Architecture:
@@ -127,7 +127,7 @@ class ButlerStreamBridge:
         async def _producer():
             try:
                 async for event in event_stream:
-                    await queue.put(event)          # blocks when full -> backpressure
+                    await queue.put(event)  # blocks when full -> backpressure
                     if isinstance(event, (StreamFinalEvent, StreamErrorEvent)):
                         break
             except Exception as exc:
@@ -141,6 +141,7 @@ class ButlerStreamBridge:
         # Track open stream in Prometheus gauge
         try:
             from core.observability import get_metrics
+
             get_metrics().inc_active_streams()
         except Exception:
             pass
@@ -177,10 +178,8 @@ class ButlerStreamBridge:
             while True:
                 # Keepalive: if nothing arrives within the interval, ping
                 try:
-                    item = await asyncio.wait_for(
-                        queue.get(), timeout=_KEEPALIVE_INTERVAL_S
-                    )
-                except asyncio.TimeoutError:
+                    item = await asyncio.wait_for(queue.get(), timeout=_KEEPALIVE_INTERVAL_S)
+                except TimeoutError:
                     yield ": keepalive\n\n"
                     continue
 
@@ -233,6 +232,7 @@ class ButlerStreamBridge:
             # Decrement active stream gauge
             try:
                 from core.observability import get_metrics
+
                 get_metrics().dec_active_streams()
             except Exception:
                 pass
@@ -246,7 +246,7 @@ class ButlerStreamBridge:
     async def forward_to_ws(
         self,
         websocket: WebSocket,
-        event_stream: AsyncGenerator[ButlerEvent, None],
+        event_stream: AsyncGenerator[ButlerEvent],
     ) -> None:
         """Forward ButlerEvents to an open WebSocket with a send semaphore."""
         await self._ws_send(
@@ -266,15 +266,13 @@ class ButlerStreamBridge:
                 if isinstance(event, (StreamFinalEvent, StreamErrorEvent)):
                     break
 
-            await self._ws_send(
-                websocket, {"event": "done", "session_id": self._session_id}
-            )
+            await self._ws_send(websocket, {"event": "done", "session_id": self._session_id})
 
         except WebSocketDisconnect:
             logger.debug("ws_disconnected", session_id=self._session_id)
         except Exception as exc:
             logger.exception("ws_stream_error", session_id=self._session_id)
-            try:
+            with contextlib.suppress(Exception):
                 await self._ws_send(
                     websocket,
                     {
@@ -284,8 +282,6 @@ class ButlerStreamBridge:
                         "detail": str(exc),
                     },
                 )
-            except Exception:
-                pass
 
     async def _ws_send(self, websocket: WebSocket, frame: dict) -> None:
         """Thread-safe WebSocket send via semaphore."""
@@ -313,7 +309,7 @@ class ButlerStreamBridge:
         return {"event": event.event_type, "payload": payload}
 
     @staticmethod
-    def _sse_frame(data: dict, event_id: Optional[int] = None) -> str:
+    def _sse_frame(data: dict, event_id: int | None = None) -> str:
         """Format a dict as an SSE frame with optional event id."""
         lines = []
         if event_id is not None:
@@ -323,7 +319,7 @@ class ButlerStreamBridge:
         lines.append("")
         return "\n".join(lines)
 
-    async def _log_event(self, data: dict, event_id: Optional[int] = None) -> None:
+    async def _log_event(self, data: dict, event_id: int | None = None) -> None:
         """Append frame to Redis Stream for durable resume support."""
         try:
             # XADD with id='*' (auto-generated Redis ID)
@@ -339,6 +335,7 @@ class ButlerStreamBridge:
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
+
 
 def _now_ms() -> int:
     return int(time.monotonic() * 1000)

@@ -11,65 +11,72 @@ Tiers:
 """
 
 import uuid
-from typing import List, Dict, Any, Optional
+from datetime import UTC, datetime
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
-from datetime import datetime, UTC
 
 
 class BaseMemoryArtifact(BaseModel):
     """Common foundation for all memory representations."""
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4)
     account_id: uuid.UUID
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    
+    is_scrubbed: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
     model_config = ConfigDict(from_attributes=True)
 
 
 class WorkingMemoryTier(BaseMemoryArtifact):
     """Tier 1: Short-term contextual window.
-    
+
     Holds recent chat histories, current active tool states, and uncommitted
     working scratchpads. Flushed routinely to Episodic Memory.
     """
+
     session_id: str
     active_tokens: int
-    context_window: List[Dict[str, Any]] = Field(default_factory=list)
-    epoch_summaries: List[str] = Field(default_factory=list)
+    context_window: list[dict[str, Any]] = Field(default_factory=list)
+    epoch_summaries: list[str] = Field(default_factory=list)
 
 
 class EpisodicMemoryTier(BaseMemoryArtifact):
     """Tier 2: Vector-based semantic search (Qdrant).
-    
+
     Stores conversational chunks, tool outputs, and document embeddings.
     Indexed purely by time and semantic similarity.
     """
+
     vector_id: str
     content: str
     embedding_source: str
     timestamp: datetime
-    ttl_expires_at: Optional[datetime] = None
+    ttl_expires_at: datetime | None = None
 
 
 class StructuralMemoryTier(BaseMemoryArtifact):
     """Tier 3: Relational Knowledge Graph (Neo4j).
-    
+
     Stores explicitly extracted entities, relationships, attributes, and
     notebook entries. Highly curated and explicitly verified.
     """
+
     entity_id: str
     entity_class: str
     name: str
-    attributes: Dict[str, Any]
-    relations: List[Dict[str, Any]]
+    attributes: dict[str, Any]
+    relations: list[dict[str, Any]]
 
 
 class ColdStorageTier(BaseMemoryArtifact):
     """Tier 4: Compressed Archives (FAISS/S3).
-    
+
     Stores fully dormant memory graphs, stale Qdrant snapshots, and raw
     ingested zip files containing ancient chat history.
     """
+
     archive_key: str
     compressed_size_bytes: int
     hash_signature: str

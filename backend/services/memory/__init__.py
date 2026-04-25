@@ -12,5 +12,5 @@ __all__ = [
     "MemoryEvolutionEngine",
     "EntityResolutionEngine",
     "EpisodicMemoryEngine",
-    "UnderstandingService"
+    "UnderstandingService",
 ]

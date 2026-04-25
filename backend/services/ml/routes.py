@@ -1,19 +1,18 @@
 """ML service - embeddings and intent classification."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import List, Optional
 
 router = APIRouter(prefix="/ml", tags=["ml"])
 
 
 class EmbedRequest(BaseModel):
     text: str
-    model: Optional[str] = "text-embedding-3-small"
+    model: str | None = "text-embedding-3-small"
 
 
 class EmbedResponse(BaseModel):
-    embedding: List[float]
+    embedding: list[float]
     model: str
     tokens: int
 

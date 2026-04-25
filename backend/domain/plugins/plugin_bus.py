@@ -37,11 +37,14 @@ logger = structlog.get_logger(__name__)
 
 _HERMES_PLUGINS_ROOT = (
     Path(__file__).parent.parent.parent  # backend/
-    / "integrations" / "hermes" / "plugins"
+    / "integrations"
+    / "hermes"
+    / "plugins"
 )
 
 
 # ── Plugin value object ────────────────────────────────────────────────────────
+
 
 @dataclass
 class ButlerPlugin:
@@ -49,14 +52,15 @@ class ButlerPlugin:
 
     Satisfies IPlugin protocol (L).
     """
+
     name: str
-    plugin_type: str          # "memory" | "context"
+    plugin_type: str  # "memory" | "context"
     module_path: str
-    instance: Any             # duck-typed — any object with butler plugin methods
+    instance: Any  # duck-typed — any object with butler plugin methods
     _available: bool = field(default=True, repr=False)
     error: str | None = None
 
-    def is_available(self) -> bool:          # IPlugin
+    def is_available(self) -> bool:  # IPlugin
         return self._available
 
     @property
@@ -66,6 +70,7 @@ class ButlerPlugin:
 
 # ── IPluginLoader implementations (O, D) ─────────────────────────────────────
 
+
 class HermesMemoryPluginLoader:
     """Loads plugins from integrations/hermes/plugins/memory/.
 
@@ -73,14 +78,14 @@ class HermesMemoryPluginLoader:
     Extends IPluginLoader without modifying the bus (O).
     """
 
-    async def load(self) -> list[ButlerPlugin]:          # IPluginLoader
+    async def load(self) -> list[ButlerPlugin]:  # IPluginLoader
         return await _load_from_dir(_HERMES_PLUGINS_ROOT / "memory", "memory")
 
 
 class HermesContextPluginLoader:
     """Loads plugins from integrations/hermes/plugins/context_engine/."""
 
-    async def load(self) -> list[ButlerPlugin]:          # IPluginLoader
+    async def load(self) -> list[ButlerPlugin]:  # IPluginLoader
         return await _load_from_dir(_HERMES_PLUGINS_ROOT / "context_engine", "context")
 
 
@@ -114,9 +119,8 @@ async def _import_plugin(name: str, mod_path: str, plugin_type: str) -> ButlerPl
     try:
         mod = importlib.import_module(mod_path)
         # Discover plugin by convention: plugin singleton, Plugin class, or get_plugin factory
-        instance = (
-            getattr(mod, "plugin", None)
-            or (getattr(mod, "Plugin", None)() if hasattr(mod, "Plugin") else None)
+        instance = getattr(mod, "plugin", None) or (
+            getattr(mod, "Plugin", None)() if hasattr(mod, "Plugin") else None
         )
         if hasattr(mod, "get_plugin") and instance is None:
             instance = mod.get_plugin()
@@ -148,12 +152,12 @@ async def _import_plugin(name: str, mod_path: str, plugin_type: str) -> ButlerPl
 
 
 def _dir_to_module(path: Path) -> str:
-    rel = path.relative_to(_HERMES_PLUGINS_ROOT.parent)   # relative to integrations/hermes/
-    base = "integrations.hermes." + str(rel).replace("/", ".").replace("\\", ".")
-    return base
+    rel = path.relative_to(_HERMES_PLUGINS_ROOT.parent)  # relative to integrations/hermes/
+    return "integrations.hermes." + str(rel).replace("/", ".").replace("\\", ".")
 
 
 # ── ButlerPluginBus (IPluginBus, DI-friendly) ─────────────────────────────────
+
 
 class ButlerPluginBus:
     """Butler plugin lifecycle manager.
@@ -175,7 +179,7 @@ class ButlerPluginBus:
         self._plugins: dict[str, ButlerPlugin] = {}
         self._loaded = False
 
-    async def load_all(self) -> "ButlerPluginBus":          # IPluginBus
+    async def load_all(self) -> ButlerPluginBus:  # IPluginBus
         """Run all loaders and collect plugins. Idempotent."""
         if self._loaded:
             return self
@@ -187,7 +191,9 @@ class ButlerPluginBus:
                 for p in plugins:
                     self._plugins[p.name] = p
             except Exception as exc:
-                logger.warning("butler_plugin_loader_failed", loader=type(loader).__name__, error=str(exc))
+                logger.warning(
+                    "butler_plugin_loader_failed", loader=type(loader).__name__, error=str(exc)
+                )
 
         logger.info(
             "butler_plugins_loaded",
@@ -196,10 +202,10 @@ class ButlerPluginBus:
         )
         return self
 
-    def get(self, name: str) -> ButlerPlugin | None:         # IPluginBus
+    def get(self, name: str) -> ButlerPlugin | None:  # IPluginBus
         return self._plugins.get(name)
 
-    def all_plugins(self) -> list[ButlerPlugin]:             # IPluginBus
+    def all_plugins(self) -> list[ButlerPlugin]:  # IPluginBus
         return list(self._plugins.values())
 
     def plugins_of_type(self, plugin_type: str) -> list[ButlerPlugin]:  # IPluginBus
@@ -208,7 +214,7 @@ class ButlerPluginBus:
     def available_plugins(self) -> list[ButlerPlugin]:
         return [p for p in self._plugins.values() if p.available]
 
-    async def teardown_all(self) -> None:                    # IPluginBus
+    async def teardown_all(self) -> None:  # IPluginBus
         for p in self._plugins.values():
             if p.instance and hasattr(p.instance, "teardown"):
                 try:
@@ -218,7 +224,9 @@ class ButlerPluginBus:
                 except Exception as exc:
                     logger.warning("butler_plugin_teardown_failed", name=p.name, error=str(exc))
 
-    def register(self, name: str, instance: Any, plugin_type: str = "memory") -> ButlerPlugin:  # IPluginBus
+    def register(
+        self, name: str, instance: Any, plugin_type: str = "memory"
+    ) -> ButlerPlugin:  # IPluginBus
         """Programmatic registration — for tests and service bootstrapping."""
         p = ButlerPlugin(
             name=name,
@@ -243,12 +251,15 @@ class ButlerPluginBus:
 
 # ── Default factory (production wiring) ──────────────────────────────────────
 
+
 def make_default_plugin_bus() -> ButlerPluginBus:
     """Production factory: injects all Hermes plugin loaders.
 
     Tests inject their own loaders — this is never imported in tests.
     """
-    return ButlerPluginBus(loaders=[
-        HermesMemoryPluginLoader(),
-        HermesContextPluginLoader(),
-    ])
+    return ButlerPluginBus(
+        loaders=[
+            HermesMemoryPluginLoader(),
+            HermesContextPluginLoader(),
+        ]
+    )

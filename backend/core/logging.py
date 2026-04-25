@@ -434,6 +434,23 @@ _META_KEYS = frozenset(
 )
 
 
+def _coerce_tier(raw_tier: Any) -> Tier:
+    if isinstance(raw_tier, Tier):
+        return raw_tier
+
+    if isinstance(raw_tier, str):
+        normalized = raw_tier.strip()
+        if normalized.isdigit():
+            raw_tier = int(normalized)
+        else:
+            return Tier.NARRATIVE
+
+    try:
+        return Tier(raw_tier)
+    except (TypeError, ValueError):
+        return Tier.NARRATIVE
+
+
 def _dict_to_event(event_dict: dict) -> MissionEvent:
     stage_str = event_dict.get("stage", "request")
     status_str = event_dict.get("status", "info")
@@ -464,7 +481,7 @@ def _dict_to_event(event_dict: dict) -> MissionEvent:
         session_id=event_dict.get("session_id", ""),
         timestamp_iso=ts,
         duration_ms=event_dict.get("duration_ms"),
-        tier=Tier(event_dict.get("tier", 2)),
+        tier=_coerce_tier(event_dict.get("tier", 2)),
         service=event_dict.get("service", ""),
         environment=event_dict.get("environment", ""),
         node_id=event_dict.get("node_id", ""),
@@ -497,7 +514,7 @@ class MissionLogProcessor:
     def _flush_on_exit(self) -> None:
         line = self._health.flush_if_pending(self._renderer)
         if line:
-            print(line, flush=True)
+            pass
 
     def __call__(self, _logger: Any, _method: str, event_dict: dict) -> str:
         key = event_dict.get("event", "")
@@ -511,17 +528,17 @@ class MissionLogProcessor:
                 parts = [p for p in (health_line, boot_tree) if p]
                 if parts:
                     return "\n".join(parts)
-                raise structlog.DropEvent()
+                raise structlog.DropEvent
 
             if self._boot.absorb(event_dict):
-                raise structlog.DropEvent()
+                raise structlog.DropEvent
 
         # ── Health clustering ─────────────────────────────────────────────────
         if stage_str == "health" or any(
             w in key for w in ("heartbeat", "health", "butler_healthy")
         ):
             self._health.feed(event_dict)
-            raise structlog.DropEvent()
+            raise structlog.DropEvent
 
         # ── Normal event ──────────────────────────────────────────────────────
         health_prefix = self._health.flush_if_pending(self._renderer)

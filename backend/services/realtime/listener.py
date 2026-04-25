@@ -1,13 +1,13 @@
 """RealtimePubSubListener — Phase 9 Scalability.
 
 Handles the background Redis Pub/Sub subscription for the local node.
-Works in tandem with ConnectionManager to ensure high-performance 
+Works in tandem with ConnectionManager to ensure high-performance
 distributed event fan-out.
 """
 
 import asyncio
+import contextlib
 import json
-from typing import Optional
 
 import structlog
 from redis.asyncio import Redis
@@ -16,25 +16,26 @@ from .manager import ConnectionManager
 
 logger = structlog.get_logger(__name__)
 
+
 class RealtimePubSubListener:
     """
     Background worker that listens to Redis Pub/Sub for realtime events.
     Uses dynamic subscription to only listen for channels relevant to local connections.
     """
-    
+
     def __init__(self, redis: Redis, manager: ConnectionManager):
         self._redis = redis
         self._manager = manager
         self._pubsub = redis.pubsub()
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._pubsub_prefix = "butler:pubsub:acct:"
 
     async def start(self):
         """Start the background pubsub loop."""
         if self._running:
             return
-        
+
         self._running = True
         # Subscribe to a dummy channel to initialize the pubsub connection
         await self._pubsub.subscribe("butler:internal:wakeup")
@@ -46,11 +47,9 @@ class RealtimePubSubListener:
         self._running = False
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
-        
+
         await self._pubsub.aclose()
         logger.info("realtime_pubsub_listener_stopped")
 
@@ -70,17 +69,19 @@ class RealtimePubSubListener:
         """Main event loop for processing Pub/Sub messages."""
         while self._running:
             try:
-                message = await self._pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                message = await self._pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
                 if message is not None:
                     # message['channel'] = b'butler:pubsub:acct:auth0|...'
-                    channel_name = message['channel'].decode()
+                    channel_name = message["channel"].decode()
                     account_id = channel_name.replace(self._pubsub_prefix, "")
-                    
-                    data = json.loads(message['data'])
-                    
+
+                    data = json.loads(message["data"])
+
                     # Dispatch to local WS if it exists on THIS node
                     await self._manager.dispatch_local(account_id, data)
-                    
+
             except asyncio.CancelledError:
                 break
             except Exception as e:

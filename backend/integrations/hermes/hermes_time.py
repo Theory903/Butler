@@ -16,7 +16,7 @@ crashes due to a bad timezone string.
 import logging
 import os
 from datetime import datetime
-from .hermes_constants import get_config_path
+from integrations.hermes.hermes_constants import get_config_path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -100,4 +100,5 @@ def now() -> datetime:
         return datetime.now(tz)
     # No timezone configured — use server-local (still tz-aware)
     return datetime.now().astimezone()
+
 

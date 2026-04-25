@@ -1,62 +1,76 @@
-"""Butler Observability — Phase 9.
-
-Extends the original setup_observability() stub with:
-  ButlerTracer        — OTel span management with graceful no-op fallback
-  ButlerMetrics       — Prometheus counter/histogram/gauge registry
-  ObservabilityMiddleware — ASGI auto-instrumentation for all HTTP
-
-Semantic conventions (opentelemetry-specification §resource):
-  service.name              = "butler"
-  service.version           = {BUTLER_VERSION env var}
-  butler.account_id         = {account_id}
-  butler.session_id         = {session_id}
-  butler.tool.name          = {tool_name}
-  butler.tool.risk_tier     = {L0..L3}
-  butler.memory.tier        = {HOT|WARM|COLD|GRAPH|STRUCT}
-  butler.model.tier         = {T0..T3}
-  butler.model.provider     = {anthropic|openai|local}
-
-Prometheus metrics:
-  butler_http_requests_total{method,path,status}
-  butler_http_latency_seconds{method,path}        (histogram)
-  butler_tool_calls_total{tool_name,risk_tier,success}
-  butler_llm_tokens_total{provider,model,type}    (input|output|cache)
-  butler_circuit_breaker_state{service}           (0=closed,1=half_open,2=open)
-  butler_memory_writes_total{tier}
-  butler_cron_jobs_active                         (gauge)
-  butler_acp_requests_pending                     (gauge)
-
-Design rule: observe-and-continue — no observability call ever raises
-or breaks the hot path. All emitters are wrapped in try/except.
-
-Governed by: docs/00-governance/transplant-constitution.md §8
-"""
-
 from __future__ import annotations
 
 import os
 import time
-from contextlib import contextmanager
-from typing import Any, Generator
+from collections.abc import Generator
+from contextlib import contextmanager, suppress
+from typing import Any
 
 import structlog
 
 logger = structlog.get_logger(__name__)
 
 _BUTLER_VERSION = os.environ.get("BUTLER_VERSION", "dev")
-_SERVICE_NAME   = "butler"
+_SERVICE_NAME = "butler"
+
+AttributeValue = str | bool | int | float
+_OTEL_INITIALIZED = False
 
 
-# ── Original setup_observability (kept intact) ─────────────────────────────────
+def _safe_attr_value(value: Any) -> AttributeValue | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value
+    if isinstance(value, str):
+        return value
+    return str(value)
 
-def setup_observability(app, service_name: str, otel_endpoint: str | None):
-    """Configure full OTel stack with Butler semantic conventions.
 
-    Original Phase 0 stub — kept for startup wiring in main.py.
-    Phase 9 extends with ButlerTracer / ButlerMetrics for service-layer use.
+def _safe_set_span_attributes(span: Any, attrs: dict[str, Any] | None) -> None:
+    if not attrs:
+        return
+    for key, value in attrs.items():
+        if not key:
+            continue
+        safe_value = _safe_attr_value(value)
+        if safe_value is None:
+            continue
+        try:
+            span.set_attribute(key, safe_value)
+        except Exception:
+            logger.debug("span_attribute_set_failed", key=key)
+
+
+def _resolve_http_route(scope: dict[str, Any]) -> str:
+    """Prefer low-cardinality route template when available."""
+    route = scope.get("route")
+    if route is not None:
+        path = getattr(route, "path", None)
+        if isinstance(path, str) and path.strip():
+            return path
+    path = scope.get("path", "/")
+    return path if isinstance(path, str) and path else "/"
+
+
+def setup_observability(app: Any, service_name: str, otel_endpoint: str | None) -> None:
+    """Configure OpenTelemetry + optional auto-instrumentation.
+
+    Safe to call multiple times. Later calls become no-ops after successful init.
     """
+    global _OTEL_INITIALIZED
+
+    if _OTEL_INITIALIZED:
+        logger.debug("observability_already_initialized")
+        return
+
     if not otel_endpoint:
-        return  # Skip in dev/test without collector
+        logger.info("observability_disabled_no_endpoint")
+        return
 
     try:
         from opentelemetry import metrics, trace
@@ -67,75 +81,89 @@ def setup_observability(app, service_name: str, otel_endpoint: str | None):
         from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
         from opentelemetry.sdk.metrics import MeterProvider
         from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+        from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-        # Traces
-        trace_provider = TracerProvider()
+        resource = Resource.create(
+            {
+                "service.name": service_name or _SERVICE_NAME,
+                "service.version": _BUTLER_VERSION,
+            }
+        )
+
+        trace_provider = TracerProvider(resource=resource)
         trace_provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=otel_endpoint))
+            BatchSpanProcessor(
+                OTLPSpanExporter(endpoint=otel_endpoint),
+            )
         )
         trace.set_tracer_provider(trace_provider)
 
-        # Metrics
         metric_reader = PeriodicExportingMetricReader(
             OTLPMetricExporter(endpoint=otel_endpoint),
             export_interval_millis=15000,
         )
-        meter_provider = MeterProvider(metric_readers=[metric_reader])
+        meter_provider = MeterProvider(
+            resource=resource,
+            metric_readers=[metric_reader],
+        )
         metrics.set_meter_provider(meter_provider)
 
-        # Auto-instrument FastAPI, SQLAlchemy, Redis
-        FastAPIInstrumentor.instrument_app(app)
-        SQLAlchemyInstrumentor().instrument()
-        RedisInstrumentor().instrument()
+        try:
+            FastAPIInstrumentor.instrument_app(app)
+        except Exception as exc:
+            logger.warning("fastapi_instrumentation_failed", error=str(exc))
 
-        logger.info("observability_setup_complete", endpoint=otel_endpoint)
+        try:
+            SQLAlchemyInstrumentor().instrument()
+        except Exception as exc:
+            logger.warning("sqlalchemy_instrumentation_failed", error=str(exc))
+
+        try:
+            RedisInstrumentor().instrument()
+        except Exception as exc:
+            logger.warning("redis_instrumentation_failed", error=str(exc))
+
+        _OTEL_INITIALIZED = True
+        logger.info("observability_setup_complete", endpoint=otel_endpoint, service=service_name)
 
     except ImportError as exc:
         logger.warning("observability_sdk_missing", error=str(exc))
+    except Exception as exc:
+        logger.exception("observability_setup_failed", error=str(exc))
 
-
-# ── ButlerTracer ───────────────────────────────────────────────────────────────
 
 class ButlerTracer:
-    """Butler OTel tracer — service-layer span management.
+    """Service-layer tracing helper with graceful no-op fallback."""
 
-    Graceful no-op when opentelemetry-sdk is not installed.
-
-    Usage:
-        tracer = ButlerTracer.get()
-        with tracer.span("tool.execute", attrs={"butler.tool.name": "web_search"}) as span:
-            ...
-    """
-
-    _instance: "ButlerTracer | None" = None
+    _instance: ButlerTracer | None = None
 
     def __init__(self) -> None:
         self._tracer = self._init_tracer()
 
     @classmethod
-    def get(cls) -> "ButlerTracer":
+    def get(cls) -> ButlerTracer:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
     @classmethod
     def reset(cls) -> None:
-        """Force re-initialisation (useful in tests)."""
         cls._instance = None
 
-    def _init_tracer(self):
+    def _init_tracer(self) -> Any | None:
         try:
             from opentelemetry import trace
 
-            # Re-use provider if already set by setup_observability()
-            trace.get_tracer_provider()
             tracer = trace.get_tracer(_SERVICE_NAME, _BUTLER_VERSION)
             logger.debug("butler_tracer_ready")
             return tracer
         except ImportError:
             logger.debug("otel_sdk_not_installed_noop_tracer")
+            return None
+        except Exception as exc:
+            logger.warning("butler_tracer_init_failed", error=str(exc))
             return None
 
     @contextmanager
@@ -145,46 +173,56 @@ class ButlerTracer:
         attrs: dict[str, Any] | None = None,
         account_id: str | None = None,
         session_id: str | None = None,
-    ) -> Generator:
-        """Context manager wrapping work in an OTel span.
-
-        Always safe — yields None (no-op) when OTel is unavailable.
-        """
+    ) -> Generator[Any | None]:
+        """Wrap work in a span. Never breaks the hot path."""
         if self._tracer is None:
             yield None
             return
 
         try:
+            from opentelemetry.trace import Status, StatusCode
+
             with self._tracer.start_as_current_span(name) as span:
                 merged = dict(attrs or {})
                 if account_id:
                     merged["butler.account_id"] = account_id
                 if session_id:
                     merged["butler.session_id"] = session_id
-                for k, v in merged.items():
-                    span.set_attribute(k, str(v))
-                
-                # Context propagation for log correlation
+
+                _safe_set_span_attributes(span, merged)
+
                 trace_id = self.get_current_trace_id()
-                with structlog.contextvars.bound_contextvars(trace_id=trace_id):
-                    yield span
-        except Exception as e:
-            # ONLY catch internal OTel failures. Application errors from 'yield'
-            # are propagated naturally because they are not caught here (re-raised by 'with').
-            # We catch here ONLY if start_as_current_span or the setup logic fails.
-            logger.debug("otel_span_internal_error", error=str(e))
-            # DO NOT yield again here. Let the exception propagate.
+                if trace_id:
+                    with structlog.contextvars.bound_contextvars(trace_id=trace_id):
+                        try:
+                            yield span
+                            span.set_status(Status(StatusCode.OK))
+                        except Exception as exc:
+                            span.record_exception(exc)
+                            span.set_status(Status(StatusCode.ERROR, str(exc)))
+                            raise
+                else:
+                    try:
+                        yield span
+                        span.set_status(Status(StatusCode.OK))
+                    except Exception as exc:
+                        span.record_exception(exc)
+                        span.set_status(Status(StatusCode.ERROR, str(exc)))
+                        raise
+        except Exception:
             raise
 
     def record_error(self, exc: Exception) -> None:
-        """Record an exception on the current active span."""
         if self._tracer is None:
             return
         try:
             from opentelemetry import trace
+            from opentelemetry.trace import Status, StatusCode
+
             span = trace.get_current_span()
-            if span.is_recording():
+            if span is not None and span.is_recording():
                 span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
         except Exception:
             pass
 
@@ -193,11 +231,11 @@ class ButlerTracer:
         return self._tracer is not None
 
     def get_current_trace_id(self) -> str | None:
-        """Get hex string of current trace id. Safe for log correlation."""
         if self._tracer is None:
             return None
         try:
             from opentelemetry import trace
+
             span_context = trace.get_current_span().get_span_context()
             if span_context.is_valid:
                 return format(span_context.trace_id, "032x")
@@ -206,26 +244,16 @@ class ButlerTracer:
         return None
 
 
-# ── ButlerMetrics ──────────────────────────────────────────────────────────────
-
 class ButlerMetrics:
-    """Butler Prometheus metrics registry.
+    """Prometheus metrics registry with no-op safety."""
 
-    Graceful no-op when prometheus_client is not installed.
-
-    Usage:
-        m = ButlerMetrics.get()
-        m.record_tool_call("web_search", "L0", success=True)
-        m.record_http_request("GET", "/api/v1/chat", 200, 0.123)
-    """
-
-    _instance: "ButlerMetrics | None" = None
+    _instance: ButlerMetrics | None = None
 
     def __init__(self) -> None:
         self._available = self._init_metrics()
 
     @classmethod
-    def get(cls) -> "ButlerMetrics":
+    def get(cls) -> ButlerMetrics:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
@@ -261,7 +289,7 @@ class ButlerMetrics:
             )
             self._circuit_breaker = Gauge(
                 "butler_circuit_breaker_state",
-                "Circuit breaker state per service (0=closed, 1=half_open, 2=open)",
+                "Circuit breaker state per service (0=closed,1=half_open,2=open)",
                 ["service"],
             )
             self._memory_writes = Counter(
@@ -279,9 +307,8 @@ class ButlerMetrics:
             )
             self.GAUGE_CLUSTER_HEALTH = Gauge(
                 "butler_cluster_health_value",
-                "Current global cluster health (0=Critical, 1=Degraded, 2=Healthy, -1=NoNodes)",
+                "Cluster health (0=Critical,1=Degraded,2=Healthy,-1=NoNodes)",
             )
-            # Node Health & Resource Metrics
             self._node_cpu = Gauge(
                 "butler_node_cpu_percent",
                 "Current CPU usage percentage of the node",
@@ -289,20 +316,19 @@ class ButlerMetrics:
             )
             self._node_mem = Gauge(
                 "butler_node_memory_percent",
-                "Current Memory usage percentage of the node",
+                "Current memory usage percentage of the node",
                 ["node_id"],
             )
             self._node_status = Gauge(
                 "butler_node_status_value",
-                "Current node health status (0=Healthy, 1=Degraded, 2=Unhealthy)",
+                "Current node health status (0=Healthy,1=Degraded,2=Unhealthy)",
                 ["node_id"],
             )
             self._load_shed_events = Counter(
                 "butler_load_shed_events_total",
-                "Total number of load shedding events (rejections or throttling)",
+                "Total number of load shedding events",
                 ["node_id", "service", "reason"],
             )
-            # Gateway edge counters — read by /internal/metrics/summary
             self._rate_limit_hits = Counter(
                 "butler_gateway_rate_limit_hits_total",
                 "Total requests rejected by edge rate limiter",
@@ -310,48 +336,45 @@ class ButlerMetrics:
             )
             self._idempotency_replays = Counter(
                 "butler_gateway_idempotency_replays_total",
-                "Total idempotency cache hits (request replayed from cache)",
+                "Total idempotency cache hits",
                 ["endpoint"],
             )
             self._auth_failures = Counter(
                 "butler_gateway_auth_failures_total",
-                "Total JWT / auth rejections at the edge",
+                "Total JWT/auth rejections at the edge",
                 ["reason"],
             )
             self._active_streams = Gauge(
                 "butler_gateway_active_streams",
-                "Number of currently open SSE / WebSocket streams",
+                "Number of currently open SSE/WebSocket streams",
             )
             logger.info("prometheus_metrics_initialized")
             return True
         except ImportError:
             logger.debug("prometheus_client_not_installed_metrics_noop")
             return False
+        except ValueError as exc:
+            logger.warning("prometheus_metrics_already_registered", error=str(exc))
+            return False
 
-    # ── Public helpers ────────────────────────────────────────────────────────
-
-    def record_http_request(
-        self, method: str, path: str, status: int, latency_s: float
-    ) -> None:
+    def record_http_request(self, method: str, path: str, status: int, latency_s: float) -> None:
         if not self._available:
             return
         try:
             self._http_requests.labels(method=method, path=path, status=str(status)).inc()
-            self._http_latency.labels(method=method, path=path).observe(latency_s)
+            self._http_latency.labels(method=method, path=path).observe(max(latency_s, 0.0))
         except Exception:
             pass
 
     def record_tool_call(self, tool_name: str, risk_tier: str, success: bool) -> None:
         if not self._available:
             return
-        try:
+        with suppress(Exception):
             self._tool_calls.labels(
                 tool_name=tool_name,
                 risk_tier=risk_tier,
                 success=str(success).lower(),
             ).inc()
-        except Exception:
-            pass
 
     def record_llm_tokens(
         self,
@@ -364,48 +387,80 @@ class ButlerMetrics:
         if not self._available:
             return
         try:
-            if input_tokens:
-                self._llm_tokens.labels(provider=provider, model=model, type="input").inc(input_tokens)
-            if output_tokens:
-                self._llm_tokens.labels(provider=provider, model=model, type="output").inc(output_tokens)
-            if cache_tokens:
-                self._llm_tokens.labels(provider=provider, model=model, type="cache").inc(cache_tokens)
+            if input_tokens > 0:
+                self._llm_tokens.labels(provider=provider, model=model, type="input").inc(
+                    input_tokens
+                )
+            if output_tokens > 0:
+                self._llm_tokens.labels(provider=provider, model=model, type="output").inc(
+                    output_tokens
+                )
+            if cache_tokens > 0:
+                self._llm_tokens.labels(provider=provider, model=model, type="cache").inc(
+                    cache_tokens
+                )
         except Exception:
             pass
 
     def set_circuit_breaker_state(self, service: str, state: str) -> None:
-        """Record circuit breaker state as gauge: closed=0, half_open=1, open=2."""
         if not self._available:
             return
-        _map = {"closed": 0, "half_open": 1, "open": 2}
-        try:
-            self._circuit_breaker.labels(service=service).set(_map.get(state, 0))
-        except Exception:
-            pass
+        state_map = {"closed": 0, "half_open": 1, "open": 2}
+        with suppress(Exception):
+            self._circuit_breaker.labels(service=service).set(state_map.get(state, 0))
 
     def record_memory_write(self, tier: str) -> None:
         if not self._available:
             return
-        try:
+        with suppress(Exception):
             self._memory_writes.labels(tier=tier).inc()
+
+    def inc_counter(
+        self,
+        name: str,
+        *,
+        tags: dict[str, object] | None = None,
+        value: int = 1,
+    ) -> None:
+        """Compatibility shim for legacy call sites that still emit generic counters."""
+        if value == 0 or not self._available:
+            return
+
+        normalized_tags = {str(key): str(tag_value) for key, tag_value in (tags or {}).items()}
+
+        try:
+            if name == "memory.consent.scrubbed_bytes":
+                self._memory_writes.labels(tier="SCRUBBED_BYTES").inc(max(value, 0))
+                return
+
+            if name.startswith("memory.consent."):
+                tier = name.removeprefix("memory.consent.").upper()
+                self._memory_writes.labels(tier=tier).inc(max(value, 0))
+                return
+
+            if name.startswith("gateway.transport."):
+                reason = normalized_tags.get("reason", name.removeprefix("gateway.transport."))
+                self._auth_failures.labels(reason=reason).inc(max(value, 0))
+                return
+
+            if name.startswith(("realtime.mux.", "mcp.memory.")):
+                # These are best-effort internal counters. Keep the compatibility
+                # surface non-throwing even when no dedicated metric exists yet.
+                return
         except Exception:
             pass
 
     def set_cron_active(self, count: int) -> None:
         if not self._available:
             return
-        try:
-            self._cron_active.set(count)
-        except Exception:
-            pass
+        with suppress(Exception):
+            self._cron_active.set(max(count, 0))
 
     def set_acp_pending(self, count: int) -> None:
         if not self._available:
             return
-        try:
-            self._acp_pending.set(count)
-        except Exception:
-            pass
+        with suppress(Exception):
+            self._acp_pending.set(max(count, 0))
 
     def record_node_resource(self, node_id: str, cpu: float, mem: float, status: str) -> None:
         if not self._available:
@@ -413,72 +468,61 @@ class ButlerMetrics:
         try:
             self._node_cpu.labels(node_id=node_id).set(cpu)
             self._node_mem.labels(node_id=node_id).set(mem)
-            _status_map = {"HEALTHY": 0, "DEGRADED": 1, "UNHEALTHY": 2, "STARTING": 0}
-            self._node_status.labels(node_id=node_id).set(_status_map.get(status, 2))
+            status_map = {"HEALTHY": 0, "DEGRADED": 1, "UNHEALTHY": 2, "STARTING": 0}
+            self._node_status.labels(node_id=node_id).set(status_map.get(status, 2))
         except Exception:
             pass
 
-    def record_load_shed(self, node_id: str, service: str, reason: str) -> None:
+    def record_load_shed(
+        self,
+        node_id: str | None = None,
+        service: str | None = None,
+        reason: str = "unknown",
+        *,
+        component: str | None = None,
+    ) -> None:
         if not self._available:
             return
-        try:
-            self._load_shed_events.labels(node_id=node_id, service=service, reason=reason).inc()
-        except Exception:
-            pass
-
-    # ── Gateway edge metrics ───────────────────────────────────────────────────
+        resolved_node_id = node_id or "unknown"
+        resolved_service = service or component or "unknown"
+        with suppress(Exception):
+            self._load_shed_events.labels(
+                node_id=resolved_node_id,
+                service=resolved_service,
+                reason=reason,
+            ).inc()
 
     def inc_rate_limit_hit(self, endpoint: str = "unknown") -> None:
-        """Increment when a request is rejected by the edge rate limiter."""
         if not self._available:
             return
-        try:
+        with suppress(Exception):
             self._rate_limit_hits.labels(endpoint=endpoint).inc()
-        except Exception:
-            pass
 
     def inc_idempotency_replay(self, endpoint: str = "unknown") -> None:
-        """Increment when a cached idempotent response is replayed."""
         if not self._available:
             return
-        try:
+        with suppress(Exception):
             self._idempotency_replays.labels(endpoint=endpoint).inc()
-        except Exception:
-            pass
 
     def inc_auth_failure(self, reason: str = "invalid_token") -> None:
-        """Increment on every JWT / auth rejection at the edge."""
         if not self._available:
             return
-        try:
+        with suppress(Exception):
             self._auth_failures.labels(reason=reason).inc()
-        except Exception:
-            pass
 
     def inc_active_streams(self) -> None:
-        """Increment when a new SSE / WebSocket stream opens."""
         if not self._available:
             return
-        try:
+        with suppress(Exception):
             self._active_streams.inc()
-        except Exception:
-            pass
 
     def dec_active_streams(self) -> None:
-        """Decrement when an SSE / WebSocket stream closes."""
         if not self._available:
             return
-        try:
+        with suppress(Exception):
             self._active_streams.dec()
-        except Exception:
-            pass
 
-    def get_gateway_snapshot(self) -> dict:
-        """Return a point-in-time snapshot of gateway counters for /internal/metrics/summary.
-
-        Reads _value directly from prometheus_client label maps.
-        Safe to call even when prometheus_client is unavailable — returns zeros.
-        """
+    def get_gateway_snapshot(self) -> dict[str, int]:
         if not self._available:
             return {
                 "rate_limit_hits": 0,
@@ -486,9 +530,10 @@ class ButlerMetrics:
                 "auth_failures": 0,
                 "active_streams": 0,
             }
+
         try:
-            def _sum_counter(counter) -> int:
-                """Sum all label combinations of a Counter."""
+
+            def _sum_counter(counter: Any) -> int:
                 total = 0
                 for metric in counter.collect():
                     for sample in metric.samples:
@@ -496,7 +541,7 @@ class ButlerMetrics:
                             total += int(sample.value)
                 return total
 
-            def _read_gauge(gauge) -> int:
+            def _read_gauge(gauge: Any) -> int:
                 for metric in gauge.collect():
                     for sample in metric.samples:
                         return int(sample.value)
@@ -521,62 +566,70 @@ class ButlerMetrics:
         return self._available
 
 
-# ── Observability ASGI Middleware ─────────────────────────────────────────────
-
 class ObservabilityMiddleware:
-    """ASGI middleware: auto-instruments every HTTP request.
+    """ASGI middleware for request spans, metrics, and structured logs."""
 
-    Emits per-request:
-      - OTel span ("http.request GET /path")
-      - Prometheus http_requests_total + http_latency_seconds
-      - structlog structured log line at INFO level
-
-    Usage in main.py:
-        app.add_middleware(ObservabilityMiddleware)
-    """
-
-    def __init__(self, app) -> None:
-        self._app    = app
+    def __init__(self, app: Any) -> None:
+        self._app = app
         self._tracer = ButlerTracer.get()
         self._metrics = ButlerMetrics.get()
 
-    async def __call__(self, scope, receive, send) -> None:
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
 
         method = scope.get("method", "UNKNOWN")
-        path   = scope.get("path", "/")
-        start  = time.monotonic()
-        status = [200]
+        route = _resolve_http_route(scope)
+        raw_path = scope.get("path", "/")
+        start = time.monotonic()
+        status_code = 500
 
-        async def _wrapped_send(message):
+        async def _wrapped_send(message: dict[str, Any]) -> None:
+            nonlocal status_code
             if message.get("type") == "http.response.start":
-                status[0] = message.get("status", 200)
+                status_code = int(message.get("status", 200))
             await send(message)
 
-        span_name = f"http.request {method} {path}"
-        with self._tracer.span(span_name, attrs={"http.method": method, "http.route": path}):
-            try:
+        span_name = f"http.request {method} {route}"
+
+        try:
+            with self._tracer.span(
+                span_name,
+                attrs={
+                    "http.method": method,
+                    "http.route": route,
+                    "url.path": raw_path,
+                },
+            ) as span:
                 await self._app(scope, receive, _wrapped_send)
-            finally:
-                latency = time.monotonic() - start
-                self._metrics.record_http_request(
-                    method=method,
-                    path=path,
-                    status=status[0],
-                    latency_s=latency,
-                )
-                logger.info(
-                    "http_request",
-                    method=method,
-                    path=path,
-                    status=status[0],
-                    latency_ms=round(latency * 1000, 1),
-                )
 
+                if span is not None:
+                    with suppress(Exception):
+                        span.set_attribute("http.status_code", status_code)
+        except Exception as exc:
+            self._tracer.record_error(exc)
+            raise
+        finally:
+            latency = time.monotonic() - start
 
-# ── Convenience accessors ─────────────────────────────────────────────────────
+            self._metrics.record_http_request(
+                method=method,
+                path=route,
+                status=status_code,
+                latency_s=latency,
+            )
+
+            logger.info(
+                "http_request",
+                method=method,
+                route=route,
+                path=raw_path,
+                status=status_code,
+                latency_ms=round(latency * 1000, 1),
+                trace_id=self._tracer.get_current_trace_id(),
+            )
+
 
 def get_tracer() -> ButlerTracer:
     return ButlerTracer.get()

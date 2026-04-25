@@ -36,25 +36,24 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from api.routes.admin import _kill_switches, create_admin_router
 from core.circuit_breaker import (
     ButlerCircuitBreaker,
     CircuitBreakerRegistry,
     CircuitOpenError,
     CircuitState,
-    get_circuit_breaker_registry,
 )
-from api.routes.admin import create_admin_router, _kill_switches, _draining
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_breaker(
     name="test",
@@ -93,8 +92,8 @@ def _make_app(registry=None, cold_store=None, smart_router=None, audit_redis=Non
 # Test 20: ButlerCircuitBreaker state machine
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestCircuitBreaker:
 
+class TestCircuitBreaker:
     def test_initial_state_is_closed(self):
         breaker = _make_breaker()
         assert breaker.state == CircuitState.CLOSED
@@ -234,8 +233,8 @@ class TestCircuitBreaker:
 # Test 21: CircuitBreakerRegistry
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestCircuitBreakerRegistry:
 
+class TestCircuitBreakerRegistry:
     def test_register_and_get(self):
         reg = CircuitBreakerRegistry()
         b = reg.register("mydb", threshold=3)
@@ -285,8 +284,8 @@ class TestCircuitBreakerRegistry:
 # Test 22: AdminPlane HTTP endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestAdminPlane:
 
+class TestAdminPlane:
     def _client(self, **kwargs) -> TestClient:
         app = _make_app(**kwargs)
         return TestClient(app)
@@ -343,6 +342,7 @@ class TestAdminPlane:
 
     def test_drain_enable(self):
         import api.routes.admin as admin_mod
+
         admin_mod._draining = False
         client = self._client()
         resp = client.post("/admin/drain", json={"timeout_s": 60, "reason": "deploy"})
@@ -351,6 +351,7 @@ class TestAdminPlane:
 
     def test_drain_cancel(self):
         import api.routes.admin as admin_mod
+
         admin_mod._draining = True
         client = self._client()
         resp = client.request("DELETE", "/admin/drain")
@@ -373,19 +374,23 @@ class TestAdminPlane:
         assert resp.json()["cold_store"] == {}
 
     def test_routing_dry_run(self):
-        from services.ml.smart_router import ButlerSmartRouter
         from services.ml.runtime import MLRuntimeManager
+        from services.ml.smart_router import ButlerSmartRouter
+
         router = ButlerSmartRouter(runtime=MLRuntimeManager())
         client = self._client(smart_router=router)
-        resp = client.post("/admin/routing/decision", json={
-            "message": "remind me to call Alice tomorrow",
-            "intent_label": "reminder",
-            "intent_confidence": 0.78,
-            "complexity": "tool_action",
-            "requires_tools": True,
-            "context_token_count": 200,
-            "latency_budget_ms": 1500,
-        })
+        resp = client.post(
+            "/admin/routing/decision",
+            json={
+                "message": "remind me to call Alice tomorrow",
+                "intent_label": "reminder",
+                "intent_confidence": 0.78,
+                "complexity": "tool_action",
+                "requires_tools": True,
+                "context_token_count": 200,
+                "latency_budget_ms": 1500,
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "tier" in data
@@ -394,9 +399,12 @@ class TestAdminPlane:
 
     def test_routing_dry_run_without_router(self):
         client = self._client(smart_router=None)
-        resp = client.post("/admin/routing/decision", json={
-            "message": "test",
-        })
+        resp = client.post(
+            "/admin/routing/decision",
+            json={
+                "message": "test",
+            },
+        )
         assert resp.status_code == 200
         assert "error" in resp.json()
 

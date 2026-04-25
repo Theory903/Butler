@@ -22,18 +22,17 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from core.circuit_breaker import CircuitBreakerRegistry, get_circuit_breaker_registry
-from core.errors import ForbiddenProblem, Problem
 
 logger = structlog.get_logger(__name__)
 
 # ── Request / Response schemas ─────────────────────────────────────────────────
+
 
 class KillSwitchRequest(BaseModel):
     enabled: bool = True
@@ -73,12 +72,13 @@ def is_draining() -> bool:
 
 # ── Admin Router ──────────────────────────────────────────────────────────────
 
+
 def create_admin_router(
     registry: CircuitBreakerRegistry | None = None,
-    cold_store=None,         # TurboQuantColdStore | None
-    smart_router=None,       # ButlerSmartRouter | None
-    audit_redis=None,        # Redis | None
-    cluster_redis=None,      # Redis | None — for cluster inspector
+    cold_store=None,  # TurboQuantColdStore | None
+    smart_router=None,  # ButlerSmartRouter | None
+    audit_redis=None,  # Redis | None
+    cluster_redis=None,  # Redis | None — for cluster inspector
 ) -> APIRouter:
     """Create the /admin route group.
 
@@ -96,8 +96,9 @@ def create_admin_router(
     @router.get("/metrics", summary="Prometheus metrics (text format)")
     async def metrics():
         """Scrape target for Prometheus."""
-        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
         from fastapi import Response
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     # ── 0. GET /admin/cluster/status ─────────────────────────────────────────
@@ -146,16 +147,18 @@ def create_admin_router(
                 started_at = data.get("started_at") or data.get("updated_at", time.time())
                 uptime_s = max(0, time.time() - float(started_at))
 
-                nodes.append({
-                    "node_id": node_id,
-                    "status": data.get("status", "UNKNOWN"),
-                    "version": data.get("version", "unknown"),
-                    "cpu_percent": data.get("cpu_percent", 0),
-                    "memory_percent": data.get("memory_percent", 0),
-                    "pending_tools": pending_tools,
-                    "uptime_s": round(uptime_s, 1),
-                    "last_heartbeat": data.get("updated_at", time.time()),
-                })
+                nodes.append(
+                    {
+                        "node_id": node_id,
+                        "status": data.get("status", "UNKNOWN"),
+                        "version": data.get("version", "unknown"),
+                        "cpu_percent": data.get("cpu_percent", 0),
+                        "memory_percent": data.get("memory_percent", 0),
+                        "pending_tools": pending_tools,
+                        "uptime_s": round(uptime_s, 1),
+                        "last_heartbeat": data.get("updated_at", time.time()),
+                    }
+                )
 
             # Cluster-wide roll-up
             total = len(nodes)
@@ -206,7 +209,6 @@ def create_admin_router(
                 "ts": int(time.time()),
             }
 
-
     @router.get("/circuit-breakers", summary="List all circuit breaker states")
     async def list_circuit_breakers() -> dict:
         all_stats = cb_registry.all_stats()
@@ -231,8 +233,14 @@ def create_admin_router(
     @router.get("/services/status", summary="Per-service health and circuit breaker state")
     async def services_status() -> dict:
         services = [
-            "gateway", "orchestrator", "memory", "auth", "ml",
-            "tools", "realtime", "search",
+            "gateway",
+            "orchestrator",
+            "memory",
+            "auth",
+            "ml",
+            "tools",
+            "realtime",
+            "search",
         ]
         statuses = {}
         for svc in services:
@@ -241,9 +249,9 @@ def create_admin_router(
             statuses[svc] = {
                 "killed": killed,
                 "circuit_state": breaker.state.value if breaker else "no_breaker",
-                "status": "killed" if killed else (
-                    "open" if (breaker and breaker.state.value == "open") else "healthy"
-                ),
+                "status": "killed"
+                if killed
+                else ("open" if (breaker and breaker.state.value == "open") else "healthy"),
             }
         return {
             "services": statuses,
@@ -312,7 +320,7 @@ def create_admin_router(
             return {"error": "smart_router not wired", "ts": int(time.time())}
 
         from domain.ml.contracts import IntentResult
-        from services.ml.smart_router import RouterRequest, ModelTier
+        from services.ml.smart_router import ModelTier, RouterRequest
 
         intent = IntentResult(
             label=body.intent_label,

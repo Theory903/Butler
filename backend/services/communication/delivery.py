@@ -16,23 +16,23 @@ Webhook state machine:
   - Stale regressions (e.g. delivered → sent) are logged and discarded
   - Raw webhook payload stored to audit trail
 """
+
 from __future__ import annotations
 
 import json
 import time
 import uuid
+from typing import Any
+
 import structlog
-
-from typing import Dict, Any, Optional
-
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from redis.asyncio import Redis
 
-from api.schemas.communication import SendRequest, DeliveryState, DeliveryPhase, DeliveryStatus
+from api.schemas.communication import DeliveryPhase, DeliveryState, DeliveryStatus, SendRequest
 from domain.communication.models import DeliveryRecord
-from services.communication.policy import CommunicationPolicy
 from services.communication.idempotency import IdempotencyManager
+from services.communication.policy import CommunicationPolicy
 
 logger = structlog.get_logger(__name__)
 
@@ -44,13 +44,13 @@ _PHASE_ORDER: dict[str, int] = {
     DeliveryPhase.READ: 3,
     DeliveryPhase.SUPPRESSED: 4,
     DeliveryPhase.COMPLAINT: 5,
-    DeliveryPhase.FAILED: 99,    # terminal — always allowed
+    DeliveryPhase.FAILED: 99,  # terminal — always allowed
 }
 
 # Approximate stream cap — cheaper than exact under high write rate
 _STREAM_MAXLEN = 10_000
-_DLQ_TTL_S = 604_800            # 7-day DLQ retention
-_WEBHOOK_DEDUP_TTL_S = 86_400   # 24h dedup window
+_DLQ_TTL_S = 604_800  # 7-day DLQ retention
+_WEBHOOK_DEDUP_TTL_S = 86_400  # 24h dedup window
 
 
 class DeliveryService:
@@ -146,7 +146,7 @@ class DeliveryService:
                 stream_key,
                 entry,
                 maxlen=_STREAM_MAXLEN,
-                approximate=True,   # MAXLEN ~ — efficient trim
+                approximate=True,  # MAXLEN ~ — efficient trim
             )
             logger.debug(
                 "delivery.stream.enqueued",
@@ -174,7 +174,7 @@ class DeliveryService:
                 error=str(exc),
             )
 
-    async def get_delivery_state(self, message_id: str) -> Optional[DeliveryState]:
+    async def get_delivery_state(self, message_id: str) -> DeliveryState | None:
         """Fetch the normalised state of a delivery."""
         record = await self.db.get(DeliveryRecord, uuid.UUID(message_id))
         if not record:
@@ -196,9 +196,7 @@ class DeliveryService:
             retry_count=record.retry_count,
         )
 
-    async def process_webhook_event(
-        self, provider: str, payload: Dict[str, Any]
-    ) -> None:
+    async def process_webhook_event(self, provider: str, payload: dict[str, Any]) -> None:
         """Process an incoming provider webhook — idempotent state machine.
 
         Guards:
@@ -208,9 +206,7 @@ class DeliveryService:
         """
         provider_event_id = payload.get("event_id") or payload.get("id") or payload.get("MessageId")
         provider_message_id = (
-            payload.get("message_id")
-            or payload.get("MessageSid")
-            or payload.get("msg_id")
+            payload.get("message_id") or payload.get("MessageSid") or payload.get("msg_id")
         )
 
         if not provider_message_id:
@@ -223,10 +219,16 @@ class DeliveryService:
 
         # 1. Dedup by provider_event_id
         if provider_event_id:
-            dedup_key = f"webhook:seen:{provider}:{provider_event_id}"
-            already_seen = await self.redis.set(
-                dedup_key, "1", nx=True, ex=_WEBHOOK_DEDUP_TTL_S
-            )
+            # Use tenant-scoped key if tenant_id is available
+            tenant_id = getattr(self, 'tenant_id', None)
+            if tenant_id:
+                from services.tenant.namespace import get_tenant_namespace
+                namespace = get_tenant_namespace(tenant_id)
+                dedup_key = f"{namespace.prefix}:webhook:seen:{provider}:{provider_event_id}"
+            else:
+                # Fallback to legacy format for non-tenant contexts
+                dedup_key = f"webhook:seen:{provider}:{provider_event_id}"
+            already_seen = await self.redis.set(dedup_key, "1", nx=True, ex=_WEBHOOK_DEDUP_TTL_S)
             if not already_seen:
                 logger.debug(
                     "webhook.duplicate_skipped",
@@ -276,13 +278,15 @@ class DeliveryService:
         # 6. Audit: append raw payload reference to metadata
         meta = record.metadata_json or {}
         webhooks = meta.setdefault("webhook_events", [])
-        webhooks.append({
-            "provider": provider,
-            "event_id": provider_event_id,
-            "event_type": payload.get("event_type"),
-            "status": payload.get("status"),
-            "ts": time.time(),
-        })
+        webhooks.append(
+            {
+                "provider": provider,
+                "event_id": provider_event_id,
+                "event_type": payload.get("event_type"),
+                "status": payload.get("status"),
+                "ts": time.time(),
+            }
+        )
         record.metadata_json = meta
 
         await self.db.commit()
@@ -294,16 +298,12 @@ class DeliveryService:
             new_status=new_status,
         )
 
-    def _normalise_provider_status(
-        self, provider: str, payload: Dict[str, Any]
-    ) -> tuple[str, str]:
+    def _normalise_provider_status(self, provider: str, payload: dict[str, Any]) -> tuple[str, str]:
         """Map provider-specific status string to (DeliveryPhase, DeliveryStatus).
 
         Extends with more providers as integrations are added.
         """
-        raw_status = (
-            payload.get("status") or payload.get("event_type") or ""
-        ).lower()
+        raw_status = (payload.get("status") or payload.get("event_type") or "").lower()
 
         # Twilio / SendGrid / Mailgun common statuses
         _READ_STATUSES = {"opened", "read", "clicked"}

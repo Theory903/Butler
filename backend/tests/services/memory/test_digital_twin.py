@@ -16,21 +16,19 @@ from uuid import UUID
 import pytest
 
 from services.memory.digital_twin import (
-    DigitalTwinProfile,
-    TwinBuilder,
-    TwinQueryEngine,
-    TrainingDataTransformer,
-    EntityResolver,
-    TemporalReasoner,
     ConsentTier,
-    MemoryLayerType,
+    DigitalTwinProfile,
+    EntityNode,
+    EntityResolver,
     EntityType,
     EpisodicMemory,
     MemoryFact,
     Preference,
-    EntityNode,
     RelationshipEdge,
-    FileMemory,
+    TemporalReasoner,
+    TrainingDataTransformer,
+    TwinBuilder,
+    TwinQueryEngine,
 )
 
 
@@ -49,19 +47,24 @@ class TestDigitalTwinProfile:
         profile = DigitalTwinProfile(user_id=test_user_id)
         assert profile.user_id == test_user_id
         assert profile.consent_tier == ConsentTier.NEVER_TRAIN
-        assert all(layer.entry_count == 0 for layer in (
-            profile.episodic, profile.semantic, profile.preferences,
-            profile.graph, profile.files, profile.training
-        ))
+        assert all(
+            layer.entry_count == 0
+            for layer in (
+                profile.episodic,
+                profile.semantic,
+                profile.preferences,
+                profile.graph,
+                profile.files,
+                profile.training,
+            )
+        )
 
 
 class TestTwinBuilder:
     def test_add_interaction(self, test_user_id: UUID) -> None:
         builder = TwinBuilder(test_user_id)
         interaction = EpisodicMemory(
-            interaction_type="chat",
-            content="Hello Butler",
-            importance=0.7
+            interaction_type="chat", content="Hello Butler", importance=0.7
         )
         builder.add_interaction(interaction)
         profile = builder.build()
@@ -72,12 +75,7 @@ class TestTwinBuilder:
 
     def test_add_fact(self, test_user_id: UUID) -> None:
         builder = TwinBuilder(test_user_id)
-        fact = MemoryFact(
-            entity_id=uuid.uuid4(),
-            attribute="name",
-            value="Alice",
-            confidence=0.95
-        )
+        fact = MemoryFact(entity_id=uuid.uuid4(), attribute="name", value="Alice", confidence=0.95)
         builder.add_fact(fact)
         profile = builder.build()
 
@@ -86,12 +84,7 @@ class TestTwinBuilder:
 
     def test_add_preference(self, test_user_id: UUID) -> None:
         builder = TwinBuilder(test_user_id)
-        pref = Preference(
-            domain="ui",
-            key="theme",
-            value="dark",
-            strength=0.9
-        )
+        pref = Preference(domain="ui", key="theme", value="dark", strength=0.9)
         builder.add_preference(pref)
         profile = builder.build()
 
@@ -100,16 +93,11 @@ class TestTwinBuilder:
 
     def test_add_entity_and_relationship(self, test_user_id: UUID) -> None:
         builder = TwinBuilder(test_user_id)
-        entity = EntityNode(
-            entity_type=EntityType.PERSON,
-            canonical_name="Bob"
-        )
+        entity = EntityNode(entity_type=EntityType.PERSON, canonical_name="Bob")
         builder.add_entity(entity)
 
         edge = RelationshipEdge(
-            from_entity=entity.entity_id,
-            to_entity=uuid.uuid4(),
-            relationship_type="friend_of"
+            from_entity=entity.entity_id, to_entity=uuid.uuid4(), relationship_type="friend_of"
         )
         builder.add_relationship(edge)
         profile = builder.build()
@@ -123,11 +111,13 @@ class TestTwinQueryEngine:
     def test_get_recent_episodes(self, empty_profile: DigitalTwinProfile) -> None:
         # Add test episodes
         for i in range(15):
-            empty_profile.episodic.episodes.append(EpisodicMemory(
-                interaction_type="chat",
-                content=f"Message {i}",
-                timestamp=datetime.datetime.utcnow() - datetime.timedelta(hours=i)
-            ))
+            empty_profile.episodic.episodes.append(
+                EpisodicMemory(
+                    interaction_type="chat",
+                    content=f"Message {i}",
+                    timestamp=datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=i),
+                )
+            )
         empty_profile.episodic.entry_count = 15
 
         engine = TwinQueryEngine(empty_profile)
@@ -228,7 +218,7 @@ class TestEntityResolver:
 class TestTemporalReasoner:
     def test_get_fact_at_time(self, empty_profile: DigitalTwinProfile) -> None:
         entity_id = uuid.uuid4()
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.UTC)
 
         # Old fact
         old_fact = MemoryFact(
@@ -236,7 +226,7 @@ class TestTemporalReasoner:
             attribute="location",
             value="New York",
             first_observed=now - datetime.timedelta(days=30),
-            last_observed=now - datetime.timedelta(days=10)
+            last_observed=now - datetime.timedelta(days=10),
         )
         # New fact
         new_fact = MemoryFact(
@@ -244,7 +234,7 @@ class TestTemporalReasoner:
             attribute="location",
             value="London",
             first_observed=now - datetime.timedelta(days=5),
-            last_observed=now
+            last_observed=now,
         )
 
         empty_profile.semantic.facts[old_fact.fact_id] = old_fact
@@ -253,7 +243,9 @@ class TestTemporalReasoner:
         reasoner = TemporalReasoner(empty_profile)
 
         # Check at 15 days ago - should get old fact
-        fact_15d = reasoner.get_fact_at_time(entity_id, "location", now - datetime.timedelta(days=15))
+        fact_15d = reasoner.get_fact_at_time(
+            entity_id, "location", now - datetime.timedelta(days=15)
+        )
         assert fact_15d is not None
         assert fact_15d.value == "New York"
 

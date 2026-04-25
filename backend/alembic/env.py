@@ -5,23 +5,23 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from infrastructure.config import settings
-
-# Load all models so Alembic can detect them for autogenerate
-from infrastructure.database import Base  # noqa: F401
 import domain.auth.models  # noqa: F401
+import domain.communication.models  # noqa: F401
+import domain.device.models  # noqa: F401
 import domain.memory.models  # noqa: F401
 import domain.memory.notebook_models  # noqa: F401
 
 # -- future phases will import here:
 import domain.orchestrator.models  # noqa: F401
 import domain.tools.models  # noqa: F401
-import domain.communication.models  # noqa: F401
-import domain.device.models  # noqa: F401
+from alembic import context
+from infrastructure.config import settings
+
+# Load all models so Alembic can detect them for autogenerate
+from infrastructure.database import Base  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

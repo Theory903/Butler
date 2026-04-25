@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import pickle
 from pathlib import Path
@@ -38,8 +37,8 @@ logger = structlog.get_logger(__name__)
 
 try:
     import torch
-    import numpy as np
     from pyturboquant import TurboQuantIndex
+
     _HAS_TURBOQUANT = True
 except ImportError:
     _HAS_TURBOQUANT = False
@@ -89,7 +88,9 @@ class TurboQuantColdStore:
                 self.load(snapshot_path)
                 logger.info("turboquant_snapshot_restored", path=snapshot_path, size=self.size)
             except Exception as exc:
-                logger.warning("turboquant_snapshot_load_failed", path=snapshot_path, error=str(exc))
+                logger.warning(
+                    "turboquant_snapshot_load_failed", path=snapshot_path, error=str(exc)
+                )
 
     # ── Write ─────────────────────────────────────────────────────────────────
 
@@ -115,6 +116,7 @@ class TurboQuantColdStore:
 
         if _HAS_TURBOQUANT:
             import numpy as _np
+
             if vector is not None:
                 arr = _np.array([vector] * len(ids), dtype=_np.float32)
             else:
@@ -168,7 +170,9 @@ class TurboQuantColdStore:
 
     async def recall(self, account_id: str, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """IColdStore.recall interface."""
-        return await self.search_async(query_text=query, k=top_k, filters={"account_id": account_id})
+        return await self.search_async(
+            query_text=query, k=top_k, filters={"account_id": account_id}
+        )
 
     def index(self, entry_id: str, embedding: list[float], payload: dict) -> None:
         """IColdStore.index interface."""
@@ -196,42 +200,50 @@ class TurboQuantColdStore:
         if _HAS_TURBOQUANT:
             if query_vector is None and query_text is not None:
                 import numpy as _np
+
                 query_vector = _hash_to_vector(query_text, self.dim)
             if query_vector is None:
                 return results
 
             import numpy as _np
+
             q = torch.tensor(
                 _np.array([query_vector], dtype=_np.float32),
                 dtype=torch.float32,
             )
             distances, indices = self._index.search(q, k=k)
-            for score, idx in zip(distances[0].tolist(), indices[0].tolist()):
+            for score, idx in zip(distances[0].tolist(), indices[0].tolist(), strict=False):
                 if 0 <= idx < len(self._ids):
                     meta = self._meta[idx]
                     if filters and not _matches_filters(meta, filters):
                         continue
-                    results.append({
-                        "id": self._ids[idx],
-                        "score": float(score),
-                        "metadata": meta,
-                        "content": self._text_store[idx] if idx < len(self._text_store) else None,
-                    })
+                    results.append(
+                        {
+                            "id": self._ids[idx],
+                            "score": float(score),
+                            "metadata": meta,
+                            "content": self._text_store[idx]
+                            if idx < len(self._text_store)
+                            else None,
+                        }
+                    )
         else:
             # Simulated: return all items as ranked hits (score decreasing)
             for i, (item_id, meta, text) in enumerate(
-                zip(self._ids, self._meta, self._text_store)
+                zip(self._ids, self._meta, self._text_store, strict=False)
             ):
                 if len(results) >= k:
                     break
                 if filters and not _matches_filters(meta, filters):
                     continue
-                results.append({
-                    "id": item_id,
-                    "score": max(0.0, 0.99 - i * 0.01),
-                    "metadata": meta,
-                    "content": text,
-                })
+                results.append(
+                    {
+                        "id": item_id,
+                        "score": max(0.0, 0.99 - i * 0.01),
+                        "metadata": meta,
+                        "content": text,
+                    }
+                )
 
         return results[:k]
 
@@ -254,14 +266,17 @@ class TurboQuantColdStore:
         try:
             # Metadata + text store
             with open(meta_path, "wb") as f:
-                pickle.dump({
-                    "ids": self._ids,
-                    "meta": self._meta,
-                    "text_store": self._text_store,
-                    "dim": self.dim,
-                    "bits": self.bits,
-                    "metric": self.metric,
-                }, f)
+                pickle.dump(
+                    {
+                        "ids": self._ids,
+                        "meta": self._meta,
+                        "text_store": self._text_store,
+                        "dim": self.dim,
+                        "bits": self.bits,
+                        "metric": self.metric,
+                    },
+                    f,
+                )
 
             # Index state
             if _HAS_TURBOQUANT and hasattr(self._index, "save"):
@@ -315,6 +330,7 @@ class TurboQuantColdStore:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _hash_to_vector(text: str, dim: int) -> list[float]:
     """Convert text to a deterministic pseudo-vector via SHA-256.
 
@@ -332,16 +348,13 @@ def _hash_to_vector(text: str, dim: int) -> list[float]:
 
 def _matches_filters(meta: dict, filters: dict) -> bool:
     """Simple equality filter for metadata fields."""
-    for key, value in filters.items():
-        if meta.get(key) != value:
-            return False
-    return True
+    return all(meta.get(key) == value for key, value in filters.items())
 
 
 def get_cold_store(
     dim: int = _DEFAULT_DIM,
     snapshot_path: str | None = None,
-) -> "TurboQuantColdStore":
+) -> TurboQuantColdStore:
     """Factory: returns TurboQuantColdStore if pyturboquant is available,
     otherwise falls back to the production-grade FaissColdStore.
 
@@ -353,4 +366,5 @@ def get_cold_store(
 
     logger.info("cold_store_backend_selected", backend="faiss")
     from services.memory.faiss_cold_store import FaissColdStore
+
     return FaissColdStore(dim=dim, snapshot_path=snapshot_path)

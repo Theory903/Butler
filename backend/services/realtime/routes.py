@@ -1,12 +1,10 @@
 """Realtime service - WebSocket and SSE streaming."""
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from typing import Dict, Set
-import asyncio
 
 router = APIRouter(prefix="/realtime", tags=["realtime"])
 
-active_connections: Dict[str, Set[WebSocket]] = {}
+active_connections: dict[str, set[WebSocket]] = {}
 
 
 @router.websocket("/ws/{session_id}")
@@ -30,6 +28,7 @@ async def sse_stream(session_id: str):
     async def event_generator():
         yield "data: connected\n\n"
         yield "data: session ready\n\n"
+
     return event_generator()
 
 

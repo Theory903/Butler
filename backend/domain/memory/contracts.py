@@ -1,32 +1,44 @@
 from abc import abstractmethod
-from typing import Any, List, Optional
+from typing import Any
+
 from pydantic import BaseModel
+
 from domain.base import DomainService
-from domain.memory.models import MemoryEntry, ConversationTurn
+from domain.memory.models import ConversationTurn, MemoryEntry
+
 
 class ContextPack(BaseModel):
     session_history: list
     relevant_memories: list
     preferences: list
     entities: list
-    summary_anchor: Optional[str] = None
+    summary_anchor: str | None = None
     context_token_budget: int
+
 
 class MemoryServiceContract(DomainService):
     @abstractmethod
-    async def store(self, account_id: str, memory_type: str, content: dict, **kwargs) -> MemoryEntry:
+    async def store(
+        self, account_id: str, memory_type: str, content: dict, **kwargs
+    ) -> MemoryEntry:
         """Store a new memory entry with embedding."""
 
     @abstractmethod
-    async def recall(self, account_id: str, query: str, memory_types: list = None, limit: int = 10) -> list[MemoryEntry]:
+    async def recall(
+        self, account_id: str, query: str, memory_types: list = None, limit: int = 10
+    ) -> list[MemoryEntry]:
         """Retrieve relevant memories using hybrid search."""
 
     @abstractmethod
-    async def store_turn(self, account_id: str, session_id: str, role: str, content: str, **kwargs) -> ConversationTurn:
+    async def store_turn(
+        self, account_id: str, session_id: str, role: str, content: str, **kwargs
+    ) -> ConversationTurn:
         """Store a conversation turn."""
 
     @abstractmethod
-    async def get_session_history(self, account_id: str, session_id: str, limit: int = 50) -> list[ConversationTurn]:
+    async def get_session_history(
+        self, account_id: str, session_id: str, limit: int = 50
+    ) -> list[ConversationTurn]:
         """Get conversation history for a session."""
 
     @abstractmethod
@@ -38,11 +50,14 @@ class MemoryServiceContract(DomainService):
         """Upsert entity facts with temporal versioning."""
 
     @abstractmethod
-    async def set_preference(self, account_id: str, key: str, value: str, confidence: float) -> MemoryEntry:
+    async def set_preference(
+        self, account_id: str, key: str, value: str, confidence: float
+    ) -> MemoryEntry:
         """Store or update user preference."""
 
 
 # ── Infrastructure-level contracts (keep domain layer clean) ──────────────────
+
 
 class IMemoryWriteStore(DomainService):
     """Abstraction over ButlerMemoryStore.
@@ -53,8 +68,13 @@ class IMemoryWriteStore(DomainService):
     """
 
     @abstractmethod
-    async def write(self, request: Any) -> Any:
-        """Dispatch a MemoryWriteRequest through the policy router."""
+    async def write(self, request: Any, tenant_id: str) -> Any:
+        """Dispatch a MemoryWriteRequest through the policy router.
+        
+        Args:
+            request: MemoryWriteRequest to write
+            tenant_id: Required tenant UUID for multi-tenant isolation
+        """
 
     @abstractmethod
     async def archive(self, account_id: str, entry_id: Any) -> None:
@@ -69,11 +89,11 @@ class IColdStore(DomainService):
     """
 
     @abstractmethod
-    async def recall(self, account_id: str, query: str, top_k: int = 5) -> List[Any]:
+    async def recall(self, account_id: str, query: str, top_k: int = 5) -> list[Any]:
         """Return ranked cold-tier memory results for a query."""
 
     @abstractmethod
-    def index(self, entry_id: str, embedding: List[float], payload: dict) -> None:
+    def index(self, entry_id: str, embedding: list[float], payload: dict) -> None:
         """Index a new embedding into the cold store."""
 
 
@@ -89,9 +109,9 @@ class IRetrievalEngine(DomainService):
         self,
         account_id: str,
         query: str,
-        memory_types: Optional[List[str]] = None,
+        memory_types: list[str] | None = None,
         limit: int = 20,
-    ) -> List[Any]:
+    ) -> list[Any]:
         """Return ScoredMemory results for a query."""
 
 
@@ -105,7 +125,9 @@ class IMemoryRecorder(DomainService):
     """
 
     @abstractmethod
-    async def store(self, account_id: str, memory_type: str, content: dict, **kwargs) -> MemoryEntry:
+    async def store(
+        self, account_id: str, memory_type: str, content: dict, **kwargs
+    ) -> MemoryEntry:
         """Store a new memory entry."""
 
     @abstractmethod

@@ -12,24 +12,25 @@ import enum
 import hashlib
 import hmac
 import uuid
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 import pydantic
-from pydantic import BaseModel, Field, validator
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
+from pydantic import BaseModel, Field, validator
 
 # Initialize tracer
 tracer = trace.get_tracer(__name__)
 
 
-class ConsentLevel(str, enum.Enum):
+class ConsentLevel(enum.StrEnum):
     """Explicit consent levels for training data.
 
     These are strictly ordered - higher levels include lower permissions.
     """
+
     NEVER_TRAIN = "never-train"
     PRIVATE_EVAL_ONLY = "private-eval-only"
     OPT_IN_TRAINING = "opt-in-training"
@@ -40,16 +41,18 @@ class ConsentLevel(str, enum.Enum):
         return self == ConsentLevel.OPT_IN_TRAINING
 
 
-class DataCategory(str, enum.Enum):
+class DataCategory(enum.StrEnum):
     """Data classification categories for anonymization."""
+
     PII = "pii"
     SENSITIVE = "sensitive"
     INTERNAL = "internal"
     PUBLIC = "public"
 
 
-class TrainingCandidateStatus(str, enum.Enum):
+class TrainingCandidateStatus(enum.StrEnum):
     """Status of training candidate through pipeline."""
+
     PENDING_CONSENT = "pending_consent"
     CONSENT_DENIED = "consent_denied"
     ANONYMIZING = "anonymizing"
@@ -65,10 +68,11 @@ class TrainingCandidateStatus(str, enum.Enum):
 @dataclass(frozen=True)
 class CircuitBreaker:
     """Circuit breaker for training resource protection."""
+
     failure_threshold: int = 5
     recovery_timeout: int = 300
     failure_count: int = 0
-    last_failure_time: Optional[datetime] = None
+    last_failure_time: datetime | None = None
     open: bool = False
 
     def record_failure(self) -> CircuitBreaker:
@@ -80,7 +84,7 @@ class CircuitBreaker:
             recovery_timeout=self.recovery_timeout,
             failure_count=new_count,
             last_failure_time=now,
-            open=is_open
+            open=is_open,
         )
 
     def record_success(self) -> CircuitBreaker:
@@ -89,7 +93,7 @@ class CircuitBreaker:
             recovery_timeout=self.recovery_timeout,
             failure_count=0,
             last_failure_time=None,
-            open=False
+            open=False,
         )
 
     def allow_request(self) -> bool:
@@ -106,18 +110,19 @@ class ConsentModel(BaseModel):
 
     SWE-5: Strict validation, no implicit consent defaults.
     """
+
     user_id: str = Field(..., description="Unique user identifier")
     consent_level: ConsentLevel = Field(..., description="Explicit consent level granted")
     granted_at: datetime = Field(default_factory=datetime.utcnow)
-    expires_at: Optional[datetime] = None
-    audit_trail: List[Dict[str, Any]] = Field(default_factory=list)
+    expires_at: datetime | None = None
+    audit_trail: list[dict[str, Any]] = Field(default_factory=list)
 
     class Config:
         frozen = True
         extra = pydantic.Extra.forbid
 
     @validator("expires_at")
-    def validate_expiry(cls, v: Optional[datetime]) -> Optional[datetime]:
+    def validate_expiry(cls, v: datetime | None) -> datetime | None:
         if v is not None and v <= datetime.utcnow():
             raise ValueError("Consent expiry must be in the future")
         return v
@@ -128,26 +133,25 @@ class ConsentModel(BaseModel):
 
     def allows_evaluation(self) -> bool:
         """Check if this consent allows private evaluation use."""
-        return self.consent_level in (
-            ConsentLevel.PRIVATE_EVAL_ONLY,
-            ConsentLevel.OPT_IN_TRAINING
-        )
+        return self.consent_level in (ConsentLevel.PRIVATE_EVAL_ONLY, ConsentLevel.OPT_IN_TRAINING)
 
     def with_audit_entry(self, action: str, actor: str, reason: str) -> ConsentModel:
         """Create new consent instance with audit trail entry."""
         new_trail = self.audit_trail.copy()
-        new_trail.append({
-            "timestamp": datetime.utcnow().isoformat(),
-            "action": action,
-            "actor": actor,
-            "reason": reason
-        })
+        new_trail.append(
+            {
+                "timestamp": datetime.utcnow().isoformat(),
+                "action": action,
+                "actor": actor,
+                "reason": reason,
+            }
+        )
         return ConsentModel(
             user_id=self.user_id,
             consent_level=self.consent_level,
             granted_at=self.granted_at,
             expires_at=self.expires_at,
-            audit_trail=new_trail
+            audit_trail=new_trail,
         )
 
 
@@ -158,7 +162,7 @@ class Anonymizer:
     and irreversible hashing for identifiers.
     """
 
-    PII_PATTERNS: Set[Tuple[str, str]] = {
+    PII_PATTERNS: set[tuple[str, str]] = {
         (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[EMAIL]"),
         (r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b", "[PHONE]"),
         (r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b", "[CREDIT_CARD]"),
@@ -175,6 +179,7 @@ class Anonymizer:
     def anonymize_text(self, text: str) -> str:
         """Anonymize text content by replacing PII patterns."""
         import re
+
         anonymized = text
         for pattern, replacement in self.PII_PATTERNS:
             anonymized = re.sub(pattern, replacement, anonymized, flags=re.IGNORECASE)
@@ -182,15 +187,12 @@ class Anonymizer:
 
     def hash_identifier(self, identifier: str) -> str:
         """Irreversibly hash identifier with per-instance salt."""
-        return hmac.new(
-            self._salt,
-            identifier.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
+        return hmac.new(self._salt, identifier.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def add_differential_noise(self, value: float, sensitivity: float = 1.0) -> float:
         """Add Laplacian noise for differential privacy guarantees."""
         import numpy as np
+
         scale = sensitivity / self.epsilon
         noise = np.random.laplace(0, scale)
         return value + float(noise)
@@ -210,27 +212,28 @@ class Anonymizer:
                     "anonymized_content": anonymized_text,
                     "hashed_user_id": hashed_user_id,
                     "status": TrainingCandidateStatus.ANONYMIZED,
-                    "anonymized_at": datetime.utcnow()
+                    "anonymized_at": datetime.utcnow(),
                 }
             )
 
 
 class TrainingCandidate(BaseModel):
     """Training candidate extracted from memory system."""
+
     candidate_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
     memory_id: str
     raw_content: str
-    anonymized_content: Optional[str] = None
-    hashed_user_id: Optional[str] = None
+    anonymized_content: str | None = None
+    hashed_user_id: str | None = None
     consent_level: ConsentLevel
     data_category: DataCategory
     status: TrainingCandidateStatus = TrainingCandidateStatus.PENDING_CONSENT
-    labels: Dict[str, float] = Field(default_factory=dict)
-    poisoning_score: Optional[float] = None
+    labels: dict[str, float] = Field(default_factory=dict)
+    poisoning_score: float | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    anonymized_at: Optional[datetime] = None
-    training_watermark: Optional[str] = None
+    anonymized_at: datetime | None = None
+    training_watermark: str | None = None
 
     class Config:
         extra = pydantic.Extra.forbid
@@ -246,12 +249,12 @@ class CandidateExtractor:
         self.consent_store = consent_store
 
     @tracer.start_as_current_span("candidate_extractor.extract_eligible")
-    def extract_eligible(self, since: datetime) -> List[TrainingCandidate]:
+    def extract_eligible(self, since: datetime) -> list[TrainingCandidate]:
         """Extract eligible training candidates created since timestamp."""
         span = trace.get_current_span()
 
         # Implementation would query memory store
-        candidates: List[TrainingCandidate] = []
+        candidates: list[TrainingCandidate] = []
 
         span.set_attribute("candidates.found", len(candidates))
 
@@ -270,23 +273,21 @@ class FeedbackLabeler:
     SWE-5: No engagement signals used for training - only explicit feedback.
     """
 
-    ALLOWED_LABELS: Set[str] = {
+    ALLOWED_LABELS: set[str] = {
         "explicit_positive",
         "explicit_negative",
         "correction_accepted",
         "correction_rejected",
         "helpful",
-        "not_helpful"
+        "not_helpful",
     }
 
     @tracer.start_as_current_span("feedback_labeler.label_candidate")
     def label_candidate(
-        self,
-        candidate: TrainingCandidate,
-        feedback_signals: Dict[str, Any]
+        self, candidate: TrainingCandidate, feedback_signals: dict[str, Any]
     ) -> TrainingCandidate:
         """Apply feedback labels to training candidate."""
-        labels: Dict[str, float] = {}
+        labels: dict[str, float] = {}
 
         for signal, value in feedback_signals.items():
             if signal in self.ALLOWED_LABELS:
@@ -306,7 +307,7 @@ class PoisoningGuard:
         self.threshold = threshold
 
     @tracer.start_as_current_span("poisoning_guard.scan_candidate")
-    def scan_candidate(self, candidate: TrainingCandidate) -> Tuple[bool, float]:
+    def scan_candidate(self, candidate: TrainingCandidate) -> tuple[bool, float]:
         """Scan candidate for poisoning signals.
 
         Returns: (is_safe, poisoning_score)
@@ -345,9 +346,7 @@ class OfflineTrainer:
     def generate_watermark(self, candidate_id: str) -> str:
         """Generate imperceptible training watermark for audit trail."""
         return hmac.new(
-            self._watermark_key,
-            candidate_id.encode("utf-8"),
-            hashlib.sha256
+            self._watermark_key, candidate_id.encode("utf-8"), hashlib.sha256
         ).hexdigest()[:16]
 
     @tracer.start_as_current_span("offline_trainer.process_candidate")
@@ -366,7 +365,7 @@ class OfflineTrainer:
             updated = candidate.copy(
                 update={
                     "training_watermark": watermark,
-                    "status": TrainingCandidateStatus.READY_FOR_TRAINING
+                    "status": TrainingCandidateStatus.READY_FOR_TRAINING,
                 }
             )
 
@@ -396,11 +395,11 @@ class TrainingPipeline:
     def __init__(
         self,
         consent_store: Any,
-        anonymizer: Optional[Anonymizer] = None,
-        extractor: Optional[CandidateExtractor] = None,
-        labeler: Optional[FeedbackLabeler] = None,
-        poisoning_guard: Optional[PoisoningGuard] = None,
-        trainer: Optional[OfflineTrainer] = None
+        anonymizer: Anonymizer | None = None,
+        extractor: CandidateExtractor | None = None,
+        labeler: FeedbackLabeler | None = None,
+        poisoning_guard: PoisoningGuard | None = None,
+        trainer: OfflineTrainer | None = None,
     ):
         self.anonymizer = anonymizer or Anonymizer()
         self.extractor = extractor or CandidateExtractor(consent_store)
@@ -409,7 +408,7 @@ class TrainingPipeline:
         self.trainer = trainer or OfflineTrainer()
 
     @tracer.start_as_current_span("training_pipeline.run")
-    def run(self, since: datetime) -> Dict[str, Any]:
+    def run(self, since: datetime) -> dict[str, Any]:
         """Run full pipeline for all candidates since timestamp."""
         span = trace.get_current_span()
 
@@ -448,7 +447,7 @@ class TrainingPipeline:
             "rejected_consent": rejected_consent,
             "rejected_poisoning": rejected_poisoning,
             "failed": failed,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
         }
 
         span.set_attributes(stats)

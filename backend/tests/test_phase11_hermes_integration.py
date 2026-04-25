@@ -34,6 +34,7 @@ import pytest
 # 1. Contracts — Protocol compliance
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestContracts:
     """Verify all domain protocols can be imported and are runtime_checkable."""
 
@@ -50,6 +51,7 @@ class TestContracts:
             ISkillsCatalog,
             IToolRegistry,
         )
+
         # If we got here, all protocols are importable
         assert ISessionStore is not None
         assert IToolRegistry is not None
@@ -66,11 +68,20 @@ class TestContracts:
         from domain.contracts import ISessionStore
 
         class FakeSessionStore:
-            async def append_turn(self, account_id, session_id, role, content, **kw): pass
-            async def get_history(self, account_id, session_id, **kw): return []
-            async def search(self, account_id, query, **kw): return []
-            async def delete_session(self, account_id, session_id): return 0
-            async def session_count(self, account_id, session_id): return 0
+            async def append_turn(self, account_id, session_id, role, content, **kw):
+                pass
+
+            async def get_history(self, account_id, session_id, **kw):
+                return []
+
+            async def search(self, account_id, query, **kw):
+                return []
+
+            async def delete_session(self, account_id, session_id):
+                return 0
+
+            async def session_count(self, account_id, session_id):
+                return 0
 
         # isinstance check works because @runtime_checkable
         assert isinstance(FakeSessionStore(), ISessionStore)
@@ -79,6 +90,7 @@ class TestContracts:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. ButlerSessionStore
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class TestButlerSessionStore:
     """Tests ButlerSessionStore without a live database.
@@ -89,16 +101,19 @@ class TestButlerSessionStore:
 
     def test_importable(self):
         from domain.memory.session_store import ButlerSessionStore
+
         store = ButlerSessionStore()
         assert store is not None
 
     def test_implements_isession_store(self):
         from domain.contracts import ISessionStore
         from domain.memory.session_store import ButlerSessionStore
+
         assert isinstance(ButlerSessionStore(), ISessionStore)
 
     def test_has_all_methods(self):
         from domain.memory.session_store import ButlerSessionStore
+
         store = ButlerSessionStore()
         assert callable(store.append_turn)
         assert callable(store.get_history)
@@ -140,6 +155,7 @@ class TestButlerSessionStore:
 # 3. ButlerToolRegistry
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestButlerToolRegistry:
     """Tests ButlerToolRegistry with a mock adapter — no Hermes import needed."""
 
@@ -151,7 +167,9 @@ class TestButlerToolRegistry:
             {"type": "function", "function": {"name": "web_search", "description": "Search"}},
         ]
         adapter.get_toolset_for_tool.side_effect = lambda n: {
-            "web_search": "web", "file_read": "files", "terminal": "terminal"
+            "web_search": "web",
+            "file_read": "files",
+            "terminal": "terminal",
         }.get(n)
         adapter.get_entry.return_value = None
         adapter.get_available_toolsets.return_value = {}
@@ -161,6 +179,7 @@ class TestButlerToolRegistry:
 
     def test_discover_delegates_to_adapter(self):
         from domain.tools.butler_tool_registry import ButlerToolRegistry
+
         adapter = self._make_mock_adapter()
         registry = ButlerToolRegistry(adapter=adapter)
         result = registry.discover()
@@ -169,6 +188,7 @@ class TestButlerToolRegistry:
 
     def test_get_schemas_returns_list(self):
         from domain.tools.butler_tool_registry import ButlerToolRegistry
+
         adapter = self._make_mock_adapter()
         registry = ButlerToolRegistry(adapter=adapter)
         schemas = registry.get_schemas()
@@ -178,6 +198,7 @@ class TestButlerToolRegistry:
 
     def test_capability_map_for_toolsets(self):
         from domain.tools.butler_tool_registry import ButlerToolRegistry
+
         adapter = self._make_mock_adapter()
         registry = ButlerToolRegistry(adapter=adapter)
         assert registry.get_capability_for_tool("web_search") == "WEB_SEARCH"
@@ -186,6 +207,7 @@ class TestButlerToolRegistry:
 
     def test_unknown_tool_returns_none_capability(self):
         from domain.tools.butler_tool_registry import ButlerToolRegistry
+
         adapter = self._make_mock_adapter()
         adapter.get_toolset_for_tool.return_value = None
         registry = ButlerToolRegistry(adapter=adapter)
@@ -196,6 +218,7 @@ class TestButlerToolRegistry:
         import json
 
         from domain.tools.butler_tool_registry import ButlerToolRegistry
+
         adapter = self._make_mock_adapter()
         adapter.get_entry.return_value = None
         registry = ButlerToolRegistry(adapter=adapter)
@@ -222,11 +245,13 @@ class TestButlerToolRegistry:
     def test_implements_itool_registry(self):
         from domain.contracts import IToolRegistry
         from domain.tools.butler_tool_registry import ButlerToolRegistry
+
         registry = ButlerToolRegistry(adapter=self._make_mock_adapter())
         assert isinstance(registry, IToolRegistry)
 
     def test_factory_returns_instance(self):
         from domain.tools.butler_tool_registry import make_default_tool_registry
+
         registry = make_default_tool_registry()
         assert registry is not None
 
@@ -235,11 +260,13 @@ class TestButlerToolRegistry:
 # 4. ButlerHookBus
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestButlerHookBus:
     """Tests ButlerHookBus with DI loaders — no filesystem dependency."""
 
     def test_builtin_loader_registers_3_events(self):
         from domain.hooks.hook_bus import BuiltinHookLoader
+
         pairs = BuiltinHookLoader().load()
         events = [event for event, _ in pairs]
         assert "butler:startup" in events
@@ -248,6 +275,7 @@ class TestButlerHookBus:
 
     def test_bus_loads_builtins(self):
         from domain.hooks.hook_bus import BuiltinHookLoader, ButlerHookBus
+
         bus = ButlerHookBus(loaders=[BuiltinHookLoader()])
         bus.load()
         assert "butler:startup" in bus.event_names()
@@ -255,6 +283,7 @@ class TestButlerHookBus:
 
     def test_load_is_idempotent(self):
         from domain.hooks.hook_bus import BuiltinHookLoader, ButlerHookBus
+
         bus = ButlerHookBus(loaders=[BuiltinHookLoader()])
         bus.load()
         bus.load()  # second call — should not double-register
@@ -264,11 +293,14 @@ class TestButlerHookBus:
     @pytest.mark.asyncio
     async def test_emit_fires_handler(self):
         from domain.hooks.hook_bus import ButlerHookBus
+
         fired = []
 
         class CapturingLoader:
             def load(self):
-                def handler(evt, ctx): fired.append(evt)
+                def handler(evt, ctx):
+                    fired.append(evt)
+
                 return [("butler:test:event", handler)]
 
         bus = ButlerHookBus(loaders=[CapturingLoader()])
@@ -279,11 +311,14 @@ class TestButlerHookBus:
     @pytest.mark.asyncio
     async def test_async_handler_awaited(self):
         from domain.hooks.hook_bus import ButlerHookBus
+
         fired = []
 
         class AsyncLoader:
             def load(self):
-                async def async_handler(evt, ctx): fired.append("async")
+                async def async_handler(evt, ctx):
+                    fired.append("async")
+
                 return [("butler:async:test", async_handler)]
 
         bus = ButlerHookBus(loaders=[AsyncLoader()])
@@ -298,7 +333,9 @@ class TestButlerHookBus:
 
         class BadLoader:
             def load(self):
-                def bad_handler(evt, ctx): raise RuntimeError("hook failed")
+                def bad_handler(evt, ctx):
+                    raise RuntimeError("hook failed")
+
                 return [("butler:bad:event", bad_handler)]
 
         bus = ButlerHookBus(loaders=[BadLoader()])
@@ -308,22 +345,24 @@ class TestButlerHookBus:
 
     def test_wildcard_matching(self):
         from domain.hooks.hook_bus import ButlerHookBus
+
         fired = []
 
         class WildcardLoader:
             def load(self):
-                def handler(evt, ctx): fired.append(evt)
+                def handler(evt, ctx):
+                    fired.append(evt)
+
                 return [("butler:command:*", handler)]
 
         bus = ButlerHookBus(loaders=[WildcardLoader()])
         bus.load()
-        asyncio.run(
-            bus.emit("butler:command:reset")
-        )
+        asyncio.run(bus.emit("butler:command:reset"))
         assert "butler:command:reset" in fired
 
     def test_register_programmatic(self):
         from domain.hooks.hook_bus import ButlerHookBus
+
         bus = ButlerHookBus(loaders=[])
         bus.load()
         bus.register("butler:custom", lambda e, c: None)
@@ -332,18 +371,21 @@ class TestButlerHookBus:
     def test_implements_ihook_bus(self):
         from domain.contracts import IHookBus
         from domain.hooks.hook_bus import ButlerHookBus
+
         bus = ButlerHookBus(loaders=[])
         assert isinstance(bus, IHookBus)
 
     def test_event_remap_loaded_from_hermes_dir(self):
         """FileSystemHookLoader with remap=True converts Hermes events."""
         from domain.hooks.hook_bus import FileSystemHookLoader
+
         loader = FileSystemHookLoader(Path("/nonexistent/path"), remap=True)
         # Non-existent dir returns empty list without error
         assert loader.load() == []
 
     def test_factory_returns_bus(self):
         from domain.hooks.hook_bus import make_default_hook_bus
+
         bus = make_default_hook_bus()
         assert bus is not None
 
@@ -352,6 +394,7 @@ class TestButlerHookBus:
 # 5. ButlerPluginBus
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestButlerPluginBus:
     """Tests ButlerPluginBus with injected mock loaders."""
 
@@ -359,13 +402,20 @@ class TestButlerPluginBus:
         class MockLoader:
             async def load(self):
                 return plugins
+
         return MockLoader()
 
     @pytest.mark.asyncio
     async def test_loads_plugins_from_injected_loader(self):
         from domain.plugins.plugin_bus import ButlerPlugin, ButlerPluginBus
-        mock = ButlerPlugin(name="test_plugin", plugin_type="memory",
-                            module_path="test", instance=object(), _available=True)
+
+        mock = ButlerPlugin(
+            name="test_plugin",
+            plugin_type="memory",
+            module_path="test",
+            instance=object(),
+            _available=True,
+        )
         bus = ButlerPluginBus(loaders=[self._make_loader([mock])])
         await bus.load_all()
         assert bus.get("test_plugin") is not None
@@ -374,22 +424,26 @@ class TestButlerPluginBus:
     @pytest.mark.asyncio
     async def test_load_all_is_idempotent(self):
         from domain.plugins.plugin_bus import ButlerPlugin, ButlerPluginBus
+
         count = []
+
         class CountingLoader:
             async def load(self):
                 count.append(1)
                 return [ButlerPlugin("p", "memory", "", object(), _available=True)]
+
         bus = ButlerPluginBus(loaders=[CountingLoader()])
         await bus.load_all()
         await bus.load_all()
-        assert len(count) == 1   # loaded only once
+        assert len(count) == 1  # loaded only once
 
     @pytest.mark.asyncio
     async def test_failed_loader_does_not_block_others(self):
         from domain.plugins.plugin_bus import ButlerPlugin, ButlerPluginBus
 
         class BadLoader:
-            async def load(self): raise RuntimeError("loader failed")
+            async def load(self):
+                raise RuntimeError("loader failed")
 
         class GoodLoader:
             async def load(self):
@@ -402,6 +456,7 @@ class TestButlerPluginBus:
     @pytest.mark.asyncio
     async def test_plugins_of_type_filter(self):
         from domain.plugins.plugin_bus import ButlerPlugin, ButlerPluginBus
+
         mem = ButlerPlugin("mem_p", "memory", "", object(), _available=True)
         ctx = ButlerPlugin("ctx_p", "context", "", object(), _available=True)
         bus = ButlerPluginBus(loaders=[self._make_loader([mem, ctx])])
@@ -412,6 +467,7 @@ class TestButlerPluginBus:
     @pytest.mark.asyncio
     async def test_register_programmatic(self):
         from domain.plugins.plugin_bus import ButlerPluginBus
+
         bus = ButlerPluginBus(loaders=[])
         await bus.load_all()
         bus.register("injected", object(), plugin_type="memory")
@@ -419,6 +475,7 @@ class TestButlerPluginBus:
 
     def test_factory_creates_default_bus(self):
         from domain.plugins.plugin_bus import make_default_plugin_bus
+
         bus = make_default_plugin_bus()
         assert bus is not None
         assert len(bus._loaders) == 2  # memory + context
@@ -428,22 +485,34 @@ class TestButlerPluginBus:
 # 6. ButlerSkillsCatalog
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestButlerSkillsCatalog:
     """Tests ButlerSkillsCatalog with mock sources and real fs scan fallback."""
 
     def _make_source(self, skills):
         from domain.skills.skills_catalog import ISkillsSource
+
         class MockSource(ISkillsSource):
-            def scan(self): return skills
+            def scan(self):
+                return skills
+
         return MockSource()
 
     def _make_skill(self, name="test_skill", domain="productivity"):
         from domain.skills.skills_catalog import Skill
-        return Skill(name=name, domain=domain, source="test",
-                     description="A test skill", version="1.0", path="/fake/path")
+
+        return Skill(
+            name=name,
+            domain=domain,
+            source="test",
+            description="A test skill",
+            version="1.0",
+            path="/fake/path",
+        )
 
     def test_scan_returns_dicts(self):
         from domain.skills.skills_catalog import ButlerSkillsCatalog
+
         source = self._make_source([self._make_skill()])
         catalog = ButlerSkillsCatalog(sources=[source])
         result = catalog.scan()
@@ -453,12 +522,15 @@ class TestButlerSkillsCatalog:
 
     def test_scan_is_idempotent(self):
         from domain.skills.skills_catalog import ButlerSkillsCatalog
+
         count = []
         from domain.skills.skills_catalog import ISkillsSource
+
         class CountingSource(ISkillsSource):
             def scan(self):
                 count.append(1)
                 return []
+
         catalog = ButlerSkillsCatalog(sources=[CountingSource()])
         catalog.scan()
         catalog.scan()
@@ -466,6 +538,7 @@ class TestButlerSkillsCatalog:
 
     def test_list_skills_domain_filter(self):
         from domain.skills.skills_catalog import ButlerSkillsCatalog
+
         skills = [
             self._make_skill("skill1", "productivity"),
             self._make_skill("skill2", "research"),
@@ -477,6 +550,7 @@ class TestButlerSkillsCatalog:
 
     def test_get_skill_found(self):
         from domain.skills.skills_catalog import ButlerSkillsCatalog
+
         catalog = ButlerSkillsCatalog(sources=[self._make_source([self._make_skill()])])
         skill = catalog.get_skill("test_skill")
         assert skill is not None
@@ -484,11 +558,13 @@ class TestButlerSkillsCatalog:
 
     def test_get_skill_not_found(self):
         from domain.skills.skills_catalog import ButlerSkillsCatalog
+
         catalog = ButlerSkillsCatalog(sources=[self._make_source([])])
         assert catalog.get_skill("nonexistent") is None
 
     def test_domains_returns_unique_sorted(self):
         from domain.skills.skills_catalog import ButlerSkillsCatalog
+
         skills = [
             self._make_skill("s1", "research"),
             self._make_skill("s2", "productivity"),
@@ -501,6 +577,7 @@ class TestButlerSkillsCatalog:
     def test_hermes_skills_dir_scanned_if_exists(self):
         """Real FS scan — returns empty list gracefully if dir has no skills."""
         from domain.skills.skills_catalog import HermesSkillsSource
+
         source = HermesSkillsSource()
         result = source.scan()
         # May be empty or have real skills — just check it's a list
@@ -508,6 +585,7 @@ class TestButlerSkillsCatalog:
 
     def test_factory_creates_catalog(self):
         from domain.skills.skills_catalog import make_default_skills_catalog
+
         catalog = make_default_skills_catalog()
         assert catalog is not None
         assert len(catalog._sources) == 2
@@ -517,11 +595,13 @@ class TestButlerSkillsCatalog:
 # 7. ButlerPlatformRegistry
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestButlerPlatformRegistry:
     """Tests PlatformRegistry with mock adapters — no real platform deps."""
 
     def _make_adapter(self, pid: str, available: bool = True):
         from domain.contracts import IPlatformAdapter
+
         adapter = MagicMock(spec=IPlatformAdapter)
         adapter.platform_id = pid
         adapter.max_message_length = 4096
@@ -531,6 +611,7 @@ class TestButlerPlatformRegistry:
 
     def test_register_and_get(self):
         from domain.gateway.platform_registry import ButlerPlatformRegistry
+
         registry = ButlerPlatformRegistry(adapters=[])
         adapter = self._make_adapter("telegram")
         registry.register(adapter)
@@ -538,12 +619,14 @@ class TestButlerPlatformRegistry:
 
     def test_all_adapters_returns_all(self):
         from domain.gateway.platform_registry import ButlerPlatformRegistry
+
         adapters = [self._make_adapter("telegram"), self._make_adapter("discord")]
         registry = ButlerPlatformRegistry(adapters=adapters)
         assert len(registry.all_adapters()) == 2
 
     def test_available_adapters_filters(self):
         from domain.gateway.platform_registry import ButlerPlatformRegistry
+
         adapters = [
             self._make_adapter("telegram", available=True),
             self._make_adapter("discord", available=False),
@@ -555,11 +638,13 @@ class TestButlerPlatformRegistry:
 
     def test_get_unknown_returns_none(self):
         from domain.gateway.platform_registry import ButlerPlatformRegistry
+
         registry = ButlerPlatformRegistry(adapters=[])
         assert registry.get("nonexistent") is None
 
     def test_status_dict_structure(self):
         from domain.gateway.platform_registry import ButlerPlatformRegistry
+
         registry = ButlerPlatformRegistry(adapters=[self._make_adapter("slack")])
         status = registry.status()
         assert "total" in status
@@ -568,6 +653,7 @@ class TestButlerPlatformRegistry:
 
     def test_factory_creates_19_adapters(self):
         from domain.gateway.platform_registry import make_default_platform_registry
+
         registry = make_default_platform_registry()
         # Should have all 19 platforms registered
         assert len(registry.all_adapters()) == 18
@@ -575,6 +661,7 @@ class TestButlerPlatformRegistry:
     def test_hermes_adapter_wrapper_lazy_load(self):
         """Lazy-loading a missing module should not raise — marks unavailable."""
         from domain.gateway.platform_registry import HermesPlatformAdapterWrapper
+
         wrapper = HermesPlatformAdapterWrapper(
             "nonexistent", "integrations.hermes.gateway.platforms.nonexistent_platform"
         )
@@ -586,11 +673,13 @@ class TestButlerPlatformRegistry:
 # 8. HermesACPBridge
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestHermesACPBridge:
     """Tests HermesACPBridge translator + lifecycle without running a real server."""
 
     def test_translator_converts_valid_event(self):
         from integrations.hermes.acp_adapter.butler_bridge import HermesACPv1Translator
+
         translator = HermesACPv1Translator()
         raw = {
             "type": "tool_approval_request",
@@ -608,12 +697,14 @@ class TestHermesACPBridge:
 
     def test_translator_rejects_unknown_event_type(self):
         from integrations.hermes.acp_adapter.butler_bridge import HermesACPv1Translator
+
         translator = HermesACPv1Translator()
         result = translator.to_butler_request({"type": "something_else"})
         assert result is None
 
     def test_translator_decision_to_hermes_response(self):
         from integrations.hermes.acp_adapter.butler_bridge import HermesACPv1Translator
+
         translator = HermesACPv1Translator()
         decision = {"request_id": "req_001", "approved": True, "reason": "ok"}
         response = translator.to_hermes_response(decision)
@@ -624,6 +715,7 @@ class TestHermesACPBridge:
     @pytest.mark.asyncio
     async def test_bridge_start_stop(self):
         from integrations.hermes.acp_adapter.butler_bridge import HermesACPBridge
+
         mock_server = MagicMock()
         bridge = HermesACPBridge(acp_server=mock_server)
         assert not bridge.is_running()
@@ -635,6 +727,7 @@ class TestHermesACPBridge:
 
     def test_factory_creates_bridge(self):
         from integrations.hermes.acp_adapter.butler_bridge import make_hermes_acp_bridge
+
         mock_server = MagicMock()
         bridge = make_hermes_acp_bridge(mock_server)
         assert bridge is not None
@@ -644,11 +737,13 @@ class TestHermesACPBridge:
 # 9. Butler CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestButlerCLI:
     """Tests ButlerCLIRunner and individual commands."""
 
     def _make_cli(self, commands=None):
         from cli.butler_cli import ButlerCLIRunner
+
         return ButlerCLIRunner(commands=commands or [])
 
     @pytest.mark.asyncio
@@ -670,7 +765,9 @@ class TestButlerCLI:
         class EchoCommand(ButlerCommand):
             name = "echo"
             help = "echo args"
-            async def run(self, args): return 0
+
+            async def run(self, args):
+                return 0
 
         cli = ButlerCLIRunner(commands=[EchoCommand()])
         code = await cli.run(["echo", "hello"])
@@ -683,7 +780,9 @@ class TestButlerCLI:
         class Cmd(ButlerCommand):
             name = "new_cmd"
             help = "a new command"
-            async def run(self, args): return 0
+
+            async def run(self, args):
+                return 0
 
         cli = ButlerCLIRunner(commands=[])
         cli.register(Cmd())
@@ -691,6 +790,7 @@ class TestButlerCLI:
 
     def test_factory_creates_7_commands(self):
         from cli.butler_cli import make_default_cli
+
         cli = make_default_cli()
         assert len(cli._commands) == 7
         expected = {"tools", "plugins", "skills", "platforms", "hooks", "health", "emit"}
@@ -701,22 +801,26 @@ class TestButlerCLI:
 # 10. Rebranding verification
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TestRebranding:
     """Verify no user-facing 'Hermes' identity leaks from Butler domain code."""
 
     def test_agent_backend_docstring_rebranded(self):
         import domain.orchestrator.hermes_agent_backend as mod
+
         assert "Butler Agent Backend" in mod.__doc__
 
     def test_error_map_renamed(self):
         """_ERROR_MAP should exist; _HERMES_ERROR_MAP should not."""
         import domain.orchestrator.hermes_agent_backend as mod
+
         assert hasattr(mod, "_ERROR_MAP")
         assert not hasattr(mod, "_HERMES_ERROR_MAP")
 
     def test_no_hermes_in_hook_bus_event_names(self):
         """All builtin event names use butler: prefix."""
         from domain.hooks.hook_bus import BuiltinHookLoader
+
         events = [e for e, _ in BuiltinHookLoader().load()]
         for e in events:
             assert e.startswith("butler:"), f"Event '{e}' doesn't use butler: prefix"
@@ -724,6 +828,7 @@ class TestRebranding:
     def test_tool_registry_capability_map_no_hermes_keys(self):
         """CapabilityFlag names are Butler-branded (uppercase)."""
         from domain.tools.butler_tool_registry import _TOOLSET_CAPABILITY_MAP
+
         for cap in _TOOLSET_CAPABILITY_MAP.values():
             if cap is not None:
                 assert cap == cap.upper(), f"Capability '{cap}' should be uppercase"
@@ -731,6 +836,7 @@ class TestRebranding:
     def test_skills_catalog_sources_tagged_hermes_correctly(self):
         """Skills from Hermes dirs are tagged source='hermes' (not hidden)."""
         from domain.skills.skills_catalog import HermesSkillsSource
+
         # Source tag is 'hermes' — this is the integration label, not an identity bleed
         source = HermesSkillsSource()
         skills = source.scan()
@@ -739,5 +845,6 @@ class TestRebranding:
 
     def test_butler_cli_banner_says_butler(self):
         from cli.butler_cli import ButlerCLIRunner
+
         assert "Butler" in ButlerCLIRunner.BANNER
         assert "Hermes" not in ButlerCLIRunner.BANNER

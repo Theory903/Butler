@@ -1,8 +1,7 @@
 """Communication service - push, email, SMS notifications."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import Optional
 
 router = APIRouter(prefix="/communication", tags=["communication"])
 
@@ -17,7 +16,7 @@ class PushRequest(BaseModel):
     user_id: str
     title: str
     body: str
-    device_token: Optional[str] = None
+    device_token: str | None = None
 
 
 class SMSRequest(BaseModel):

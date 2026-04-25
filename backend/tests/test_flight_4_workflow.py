@@ -19,6 +19,7 @@ def _assign_task_ids(db: AsyncMock) -> None:
     def add(obj):
         if isinstance(obj, Task) and getattr(obj, "id", None) is None:
             obj.id = uuid.uuid4()
+
     db.add.side_effect = add
 
 
@@ -33,7 +34,13 @@ async def test_workflow_dag_traversal():
     sm = MagicMock()
 
     node_a = DAGNode(id="node_a", kind=NodeKind.TASK, tool_name="action_a", next="node_b")
-    node_b = DAGNode(id="node_b", kind=NodeKind.TASK, tool_name="action_b", depends_on=["node_a"], next="terminal_success")
+    node_b = DAGNode(
+        id="node_b",
+        kind=NodeKind.TASK,
+        tool_name="action_b",
+        depends_on=["node_a"],
+        next="terminal_success",
+    )
     terminal = DAGNode(id="terminal_success", kind=NodeKind.SUCCESS)
     dag = WorkflowDAG(nodes=[node_a, node_b, terminal], start_at="node_a")
 
@@ -44,7 +51,12 @@ async def test_workflow_dag_traversal():
         mode="durable",
         status="active",
         plan_schema=dag.model_dump(),
-        state_snapshot={"completed_nodes": {}, "running_nodes": {}, "suspended_nodes": {}, "failed_nodes": {}},
+        state_snapshot={
+            "completed_nodes": {},
+            "running_nodes": {},
+            "suspended_nodes": {},
+            "failed_nodes": {},
+        },
     )
     db.execute = AsyncMock(return_value=_workflow_result(workflow))
 
@@ -111,7 +123,9 @@ async def test_signal_resumption():
             "current_node": "wait_node",
             "completed_nodes": {},
             "running_nodes": {},
-            "suspended_nodes": {"wait_node": {"kind": "approval", "signal_name": "approval_decision"}},
+            "suspended_nodes": {
+                "wait_node": {"kind": "approval", "signal_name": "approval_decision"}
+            },
             "failed_nodes": {},
         },
     )

@@ -6,8 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
-
 # ── Requests ──────────────────────────────────────────────────────────────────
+
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -26,10 +26,10 @@ class RefreshTokenRequest(BaseModel):
 
 class LogoutAllRequest(BaseModel):
     """Optional body — or can be called without body."""
-    pass
 
 
 # ── WebAuthn / Passkeys ───────────────────────────────────────────────────────
+
 
 class WebAuthnRegistrationVerifyRequest(BaseModel):
     challenge: str
@@ -46,6 +46,7 @@ class WebAuthnLoginVerifyRequest(BaseModel):
 
 
 # ── Responses ─────────────────────────────────────────────────────────────────
+
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -76,6 +77,7 @@ class IdentityContextResponse(BaseModel):
 
 # ── Phase 4: Multi-Account ────────────────────────────────────────────────────
 
+
 class CreateAccountRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
 
@@ -93,6 +95,7 @@ class SessionInfo(BaseModel):
 
 
 # ── Phase 5: Recovery & Lifecycle ─────────────────────────────────────────────
+
 
 class PasswordResetInitiateRequest(BaseModel):
     email: EmailStr

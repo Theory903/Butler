@@ -10,27 +10,20 @@ All fully mocked — no real Redis, no DB, no pyturboquant, no network.
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import tempfile
-import uuid
-import pytest
-from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from domain.memory.write_policy import (
-    MemoryWritePolicy,
     MemoryWriteRequest,
     StorageTier,
 )
-from services.memory.turboquant_store import TurboQuantColdStore, _hash_to_vector
 from services.memory.memory_store import ButlerMemoryStore
 from services.memory.session_store import ButlerSessionStore
-
+from services.memory.turboquant_store import TurboQuantColdStore
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_redis() -> AsyncMock:
     redis = AsyncMock()
@@ -56,26 +49,34 @@ def _make_cold_store(dim: int = 8) -> TurboQuantColdStore:
     return TurboQuantColdStore(dim=dim)
 
 
+def _make_embedder() -> AsyncMock:
+    embedder = AsyncMock()
+    embedder.embed = AsyncMock(return_value=[0.1] * 8)
+    embedder.embed_batch = AsyncMock(return_value=[[0.1] * 8])
+    return embedder
+
+
 def _make_memory_store(redis=None, db=None, cold=None) -> ButlerMemoryStore:
     return ButlerMemoryStore(
         db=db or _make_db(),
         redis=redis or _make_redis(),
+        embedder=_make_embedder(),
         cold_store=cold or _make_cold_store(),
     )
 
 
 def _req(**kwargs) -> MemoryWriteRequest:
-    defaults = dict(
-        memory_type="episode",
-        content="Test memory content",
-        account_id="00000000-0000-0000-0000-000000000001",
-        session_id="00000000-0000-0000-0000-000000000002",
-        importance=0.5,
-        age_days=0.0,
-        has_pii=False,
-        provenance="conversation",
-        metadata={},
-    )
+    defaults = {
+        "memory_type": "episode",
+        "content": "Test memory content",
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "session_id": "00000000-0000-0000-0000-000000000002",
+        "importance": 0.5,
+        "age_days": 0.0,
+        "has_pii": False,
+        "provenance": "conversation",
+        "metadata": {},
+    }
     defaults.update(kwargs)
     return MemoryWriteRequest(**defaults)
 
@@ -84,17 +85,25 @@ def _req(**kwargs) -> MemoryWriteRequest:
 # Test 14: TurboQuantColdStore — simulated mode
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestTurboQuantColdStore:
 
+class TestTurboQuantColdStore:
     def test_add_sync_increases_size(self):
         store = _make_cold_store()
         assert store.size == 0
-        store.index("id1", [0.1]*8, {"content": "hello world", "account_id": "00000000-0000-0000-0000-000000000001"})
+        store.index(
+            "id1",
+            [0.1] * 8,
+            {"content": "hello world", "account_id": "00000000-0000-0000-0000-000000000001"},
+        )
         assert store.size == 1
 
     def test_search_returns_results(self):
         store = _make_cold_store()
-        store.index("id1", [0.1]*8, {"content": "python", "account_id": "00000000-0000-0000-0000-000000000001"})
+        store.index(
+            "id1",
+            [0.1] * 8,
+            {"content": "python", "account_id": "00000000-0000-0000-0000-000000000001"},
+        )
         results = asyncio.run(store.recall("00000000-0000-0000-0000-000000000001", "python"))
         assert len(results) == 1
 
@@ -109,37 +118,49 @@ class TestTurboQuantColdStore:
 # Test 15: ButlerMemoryStore — tier routing and PII gate
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerMemoryStore:
 
+class TestButlerMemoryStore:
     def test_session_message_writes_hot(self):
         redis = _make_redis()
         store = _make_memory_store(redis=redis)
-        result = asyncio.run(store.write(_req(memory_type="session_message")))
+        result = asyncio.run(
+            store.write(_req(memory_type="session_message"), tenant_id="test-tenant")
+        )
         assert result.success
         assert StorageTier.HOT in result.tiers_written
 
     def test_pii_blocked_from_cold(self):
         cold = MagicMock()
         store = _make_memory_store(cold=cold)
-        result = asyncio.run(store.write(_req(
-            memory_type="episode",
-            age_days=45,
-            has_pii=True,
-        )))
+        result = asyncio.run(
+            store.write(
+                _req(
+                    memory_type="episode",
+                    age_days=45,
+                    has_pii=True,
+                ),
+                tenant_id="test-tenant",
+            )
+        )
         assert result.success
         assert StorageTier.COLD not in result.tiers_written
         cold.index.assert_not_called()
 
     @patch("services.ml.embeddings.EmbeddingService.embed", new_callable=AsyncMock)
     def test_non_pii_cold_allowed(self, mock_embed):
-        mock_embed.return_value = [0.1]*1536
+        mock_embed.return_value = [0.1] * 1536
         cold = MagicMock()
         store = _make_memory_store(cold=cold)
-        result = asyncio.run(store.write(_req(
-            memory_type="episode",
-            age_days=45,
-            has_pii=False,
-        )))
+        result = asyncio.run(
+            store.write(
+                _req(
+                    memory_type="episode",
+                    age_days=45,
+                    has_pii=False,
+                ),
+                tenant_id="test-tenant",
+            )
+        )
         assert result.success
         assert StorageTier.COLD in result.tiers_written
         cold.index.assert_called_once()
@@ -150,6 +171,7 @@ class TestButlerMemoryStore:
         store = _make_memory_store()
 
         from infrastructure.config import settings
+
         previous_backend = settings.VECTOR_STORE_BACKEND
         settings.VECTOR_STORE_BACKEND = "postgres"
 
@@ -160,7 +182,9 @@ class TestButlerMemoryStore:
 
         try:
             with patch("services.memory.memory_store.qdrant_client", BombQdrantClient()):
-                result = asyncio.run(store._write_warm(_req(memory_type="episode")))
+                result = asyncio.run(
+                    store._write_warm(_req(memory_type="episode"), tenant_id="test-tenant")
+                )
         finally:
             settings.VECTOR_STORE_BACKEND = previous_backend
 
@@ -174,11 +198,16 @@ class TestButlerMemoryStore:
         store = _make_memory_store(db=db)
 
         from infrastructure.config import settings
+
         previous_backend = settings.VECTOR_STORE_BACKEND
         settings.VECTOR_STORE_BACKEND = "postgres"
 
         try:
-            asyncio.run(store._write_struct(_req(memory_type="episode", content="vector me")))
+            asyncio.run(
+                store._write_struct(
+                    _req(memory_type="episode", content="vector me"), tenant_id="test-tenant"
+                )
+            )
         finally:
             settings.VECTOR_STORE_BACKEND = previous_backend
 
@@ -190,8 +219,8 @@ class TestButlerMemoryStore:
 # Test 16: ButlerSessionStore
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestButlerSessionStore:
 
+class TestButlerSessionStore:
     def _make_store(self, redis=None, cold=None) -> ButlerSessionStore:
         r = redis or _make_redis()
         c = cold or _make_cold_store()
@@ -212,6 +241,7 @@ class TestButlerSessionStore:
 
     def test_get_context_returns_context_pack(self):
         from domain.memory.contracts import ContextPack
+
         store = self._make_store()
         ctx = asyncio.run(store.get_context("python question"))
         assert isinstance(ctx, ContextPack)
@@ -225,9 +255,11 @@ class TestButlerSessionStore:
             memory_store=mem_store,
             redis=_make_redis(),
         )
-        asyncio.run(store.flush_to_long_term(
-            content="User asked about Python 3.13",
-            memory_type="episode",
-            importance=0.7,
-        ))
+        asyncio.run(
+            store.flush_to_long_term(
+                content="User asked about Python 3.13",
+                memory_type="episode",
+                importance=0.7,
+            )
+        )
         db.add.assert_called()

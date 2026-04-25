@@ -1,15 +1,20 @@
 """Auth service routes - login, register, sessions, JWKS."""
 
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
-from datetime import datetime, timezone, timedelta
-from typing import Optional
 import uuid
+from datetime import UTC, datetime, timedelta
 
-from services.auth.jwt import create_access_token, create_refresh_token, password_hasher, jwks_manager
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import select
+
 from domain.auth.models import Account, Identity, Session, TokenFamily
 from infrastructure.database import async_session_factory
-from sqlalchemy import select
+from services.auth.jwt import (
+    create_access_token,
+    create_refresh_token,
+    jwks_manager,
+    password_hasher,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -53,7 +58,7 @@ async def register(req: RegisterRequest):
             account_id=account.id,
             auth_method="password",
             assurance_level="AAL1",
-            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+            expires_at=datetime.now(UTC) + timedelta(days=30),
         )
         session.add(session_obj)
         await session.flush()
@@ -88,7 +93,7 @@ async def login(req: LoginRequest):
             account_id=account.id,
             auth_method="password",
             assurance_level="AAL1",
-            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+            expires_at=datetime.now(UTC) + timedelta(days=30),
         )
         session.add(session_obj)
         await session.flush()
@@ -107,6 +112,7 @@ async def login(req: LoginRequest):
 async def refresh(refresh_token: str):
     try:
         from services.auth.jwt import jwks_manager
+
         payload = jwks_manager.verify_token(refresh_token)
         account_id = payload["sub"]
         token_family_id = payload.get("fam")
@@ -116,7 +122,7 @@ async def refresh(refresh_token: str):
         new_refresh = create_refresh_token(account_id, token_family_id or str(uuid.uuid4()))
 
         return TokenResponse(access_token=access_token, refresh_token=new_refresh)
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
 

@@ -1,19 +1,20 @@
 """Canvas Render - Rich chat UI rendering like OpenCLAW."""
 
 from __future__ import annotations
-from typing import Any, Optional
+
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
+from typing import Any
 
 
-class CanvasSurface(str, Enum):
+class CanvasSurface(StrEnum):
     ASSISTANT_MESSAGE = "assistant_message"
     USER_MESSAGE = "user_message"
     TOOL_RESULT = "tool_result"
     SYSTEM_MESSAGE = "system_message"
 
 
-class CanvasRenderType(str, Enum):
+class CanvasRenderType(StrEnum):
     URL = "url"
     IMAGE = "image"
     VIDEO = "video"
@@ -33,23 +34,23 @@ class CanvasPreview:
     kind: str = "canvas"
     surface: CanvasSurface = CanvasSurface.ASSISTANT_MESSAGE
     render: CanvasRenderType = CanvasRenderType.URL
-    title: Optional[str] = None
-    preferred_height: Optional[int] = None
-    url: Optional[str] = None
-    view_id: Optional[str] = None
-    class_name: Optional[str] = None
-    style: Optional[str] = None
+    title: str | None = None
+    preferred_height: int | None = None
+    url: str | None = None
+    view_id: str | None = None
+    class_name: str | None = None
+    style: str | None = None
 
 
-@dataclass 
+@dataclass
 class CanvasRender:
     @staticmethod
     def parse_url_metadata(url: str) -> dict[str, Any]:
         from urllib.parse import urlparse
+
         parsed = urlparse(url)
         domain = parsed.netloc
-        path = parsed.path
-        
+
         previews = {
             "youtube": {"render": "video", "domain": "youtube.com"},
             "vimeo": {"render": "video", "domain": "vimeo.com"},
@@ -57,15 +58,15 @@ class CanvasRender:
             "figma": {"render": "design", "domain": "figma.com"},
             "maps": {"render": "map", "domain": "google.com/maps"},
         }
-        
+
         for name, config in previews.items():
             if config["domain"] in domain:
                 return {"render": config["render"], "title": name.title()}
-        
+
         return {"render": "url", "title": domain}
-    
+
     @staticmethod
-    def render_url(url: str, title: Optional[str] = None) -> CanvasPreview:
+    def render_url(url: str, title: str | None = None) -> CanvasPreview:
         """Render URL as rich preview."""
         metadata = CanvasRender.parse_url_metadata(url)
         return CanvasPreview(
@@ -74,9 +75,9 @@ class CanvasRender:
             title=title or metadata.get("title", url),
             url=url,
         )
-    
+
     @staticmethod
-    def render_image(url: str, alt: str = "", width: Optional[int] = None) -> CanvasPreview:
+    def render_image(url: str, alt: str = "", width: int | None = None) -> CanvasPreview:
         return CanvasPreview(
             surface=CanvasSurface.ASSISTANT_MESSAGE,
             render=CanvasRenderType.IMAGE,
@@ -84,7 +85,7 @@ class CanvasRender:
             url=url,
             preferred_height=width,
         )
-    
+
     @staticmethod
     def render_code(code: str, language: str = "python") -> dict[str, Any]:
         return {
@@ -93,7 +94,7 @@ class CanvasRender:
             "code": code,
             "surface": CanvasSurface.TOOL_RESULT,
         }
-    
+
     @staticmethod
     def render_table(headers: list[str], rows: list[list[str]]) -> dict[str, Any]:
         return {
@@ -102,7 +103,7 @@ class CanvasRender:
             "rows": rows,
             "surface": CanvasSurface.TOOL_RESULT,
         }
-    
+
     @staticmethod
     def render_markdown(content: str) -> dict[str, Any]:
         return {
@@ -121,40 +122,41 @@ class ToolContent:
         success = result.get("success", True)
         output = result.get("output", "")
         error = result.get("error")
-        
+
         content = {
             "tool": tool_name,
             "success": success,
             "output": output,
         }
-        
+
         if error:
             content["error"] = error
             content["render"] = "error"
         elif output:
             content["render"] = "result"
-        
+
         if "url" in output:
             content["preview"] = CanvasRender.render_url(output)
-        
+
         return content
-    
+
     @staticmethod
     def format_action_result(action: dict[str, Any]) -> str:
         action_type = action.get("type", "")
         result = action.get("result", {})
-        
+
         if action_type == "search":
             return f"🔍 Found {result.get('count', 0)} results"
-        elif action_type == "write":
+        if action_type == "write":
             return f"✍️ Wrote {result.get('lines', 0)} lines"
-        elif action_type == "execute":
+        if action_type == "execute":
             return f"⚡ Executed: {result.get('command', '')}"
-        elif action_type == "browse":
+        if action_type == "browse":
             return f"🌐 Visited: {result.get('url', '')}"
-        
+
         return f"✅ {action_type}"
 
 
 from typing import Union
+
 Union = Union

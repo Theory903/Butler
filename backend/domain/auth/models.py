@@ -12,7 +12,7 @@ These models own the persistence for:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -32,7 +32,7 @@ from infrastructure.database import Base
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Principal(Base):
@@ -40,9 +40,7 @@ class Principal(Base):
 
     __tablename__ = "principals"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(254), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(
@@ -56,10 +54,10 @@ class Principal(Base):
     )
 
     # Relationships
-    accounts: Mapped[list["Account"]] = relationship(
+    accounts: Mapped[list[Account]] = relationship(
         "Account", back_populates="principal", cascade="all, delete-orphan"
     )
-    identities: Mapped[list["Identity"]] = relationship(
+    identities: Mapped[list[Identity]] = relationship(
         "Identity", back_populates="principal", cascade="all, delete-orphan"
     )
 
@@ -72,9 +70,7 @@ class Account(Base):
 
     __tablename__ = "accounts"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     principal_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("principals.id", ondelete="CASCADE"), nullable=False
     )
@@ -84,8 +80,8 @@ class Account(Base):
         DateTime(timezone=True), nullable=False, default=_now
     )
 
-    principal: Mapped["Principal"] = relationship("Principal", back_populates="accounts")
-    sessions: Mapped[list["Session"]] = relationship(
+    principal: Mapped[Principal] = relationship("Principal", back_populates="accounts")
+    sessions: Mapped[list[Session]] = relationship(
         "Session", back_populates="account", cascade="all, delete-orphan"
     )
 
@@ -105,9 +101,7 @@ class Identity(Base):
         UniqueConstraint("identity_type", "identifier", name="uq_identities_type_identifier"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     principal_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("principals.id", ondelete="CASCADE"), nullable=False
     )
@@ -116,9 +110,7 @@ class Identity(Base):
     password_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
     external_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     metadata_: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
-    verified_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
@@ -126,7 +118,7 @@ class Identity(Base):
         DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
     )
 
-    principal: Mapped["Principal"] = relationship("Principal", back_populates="identities")
+    principal: Mapped[Principal] = relationship("Principal", back_populates="identities")
 
     def __repr__(self) -> str:
         return f"<Identity {self.identity_type}:{self.identifier!r}>"
@@ -137,9 +129,7 @@ class PasskeyCredential(Base):
 
     __tablename__ = "passkey_credentials"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     principal_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("principals.id", ondelete="CASCADE"), nullable=False
     )
@@ -150,23 +140,20 @@ class PasskeyCredential(Base):
     device_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     backup_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     backup_state: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    last_used_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
 
-    principal: Mapped["Principal"] = relationship("Principal")
+    principal: Mapped[Principal] = relationship("Principal")
+
 
 class Session(Base):
     """Auth session — device-bound, assurance-levelled, expiry-tracked."""
 
     __tablename__ = "sessions"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     principal_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("principals.id", ondelete="CASCADE"), nullable=False
     )
@@ -182,38 +169,35 @@ class Session(Base):
     client_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     risk_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False, default=0.0)
     workflow_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    
+
     # Timeouts
     idle_timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
 
-    principal: Mapped["Principal"] = relationship("Principal")
-    account: Mapped["Account"] = relationship("Account", back_populates="sessions")
-    token_families: Mapped[list["TokenFamily"]] = relationship(
+    principal: Mapped[Principal] = relationship("Principal")
+    account: Mapped[Account] = relationship("Account", back_populates="sessions")
+    token_families: Mapped[list[TokenFamily]] = relationship(
         "TokenFamily", back_populates="session", cascade="all, delete-orphan"
     )
 
     @property
     def is_active(self) -> bool:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if self.revoked_at or now > self.expires_at:
             return False
-        
+
         # Idle timeout check
-        if self.idle_timeout and (now - self.last_seen_at).total_seconds() > self.idle_timeout:
-            return False
-            
-        return True
+        return not (
+            self.idle_timeout and (now - self.last_seen_at).total_seconds() > self.idle_timeout
+        )
 
 
 class TokenFamily(Base):
@@ -221,28 +205,24 @@ class TokenFamily(Base):
 
     __tablename__ = "refresh_token_families"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
     )
-    
+
     # Lineage tracking
     parent_token_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lineage_root: Mapped[str | None] = mapped_column(String(128), nullable=True)
     revoked_branch_root: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    
+
     rotation_counter: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    invalidated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     invalidation_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
 
-    session: Mapped["Session"] = relationship("Session", back_populates="token_families")
+    session: Mapped[Session] = relationship("Session", back_populates="token_families")
 
     @property
     def is_valid(self) -> bool:
@@ -254,11 +234,12 @@ class VoiceProfile(Base):
 
     __tablename__ = "voice_profiles"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     principal_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("principals.id", ondelete="CASCADE"), nullable=False, unique=True
+        UUID(as_uuid=True),
+        ForeignKey("principals.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
     )
     embedding: Mapped[dict] = mapped_column(JSON, nullable=False)  # List[float] stored as JSON
     sample_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -267,7 +248,7 @@ class VoiceProfile(Base):
         DateTime(timezone=True), nullable=False, default=_now
     )
 
-    principal: Mapped["Principal"] = relationship("Principal")
+    principal: Mapped[Principal] = relationship("Principal")
 
 
 class OAuthClient(Base):
@@ -275,16 +256,14 @@ class OAuthClient(Base):
 
     __tablename__ = "oauth_clients"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     client_id: Mapped[str] = mapped_column(String(48), unique=True, index=True)
     client_secret: Mapped[str | None] = mapped_column(String(120))
     client_name: Mapped[str] = mapped_column(String(120), nullable=False)
     redirect_uris: Mapped[str] = mapped_column(Text, nullable=False)  # Space-separated
-    grant_types: Mapped[str] = mapped_column(Text, nullable=False)   # Space-separated
-    response_types: Mapped[str] = mapped_column(Text, nullable=False) # Space-separated
-    scope: Mapped[str] = mapped_column(Text, nullable=False)          # Space-separated
+    grant_types: Mapped[str] = mapped_column(Text, nullable=False)  # Space-separated
+    response_types: Mapped[str] = mapped_column(Text, nullable=False)  # Space-separated
+    scope: Mapped[str] = mapped_column(Text, nullable=False)  # Space-separated
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     def __repr__(self) -> str:
@@ -296,9 +275,7 @@ class OAuthCode(Base):
 
     __tablename__ = "oauth_codes"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     code: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
     client_id: Mapped[str] = mapped_column(String(48), index=True, nullable=False)
     redirect_uri: Mapped[str | None] = mapped_column(Text)
@@ -309,12 +286,12 @@ class OAuthCode(Base):
     # PKCE
     code_challenge: Mapped[str | None] = mapped_column(String(128))
     code_challenge_method: Mapped[str | None] = mapped_column(String(48))
-    
+
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     def is_expired(self) -> bool:
-        return datetime.now(timezone.utc) > self.expires_at
+        return datetime.now(UTC) > self.expires_at
 
     def __repr__(self) -> str:
         return f"<OAuthCode code={self.code!r}>"
@@ -328,9 +305,7 @@ class RecoveryCode(Base):
 
     __tablename__ = "recovery_codes"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     principal_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("principals.id", ondelete="CASCADE"), nullable=False
     )
@@ -339,7 +314,7 @@ class RecoveryCode(Base):
     invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-    principal: Mapped["Principal"] = relationship("Principal")
+    principal: Mapped[Principal] = relationship("Principal")
 
     @property
     def is_valid(self) -> bool:
@@ -354,9 +329,7 @@ class PasswordResetToken(Base):
 
     __tablename__ = "password_reset_tokens"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     principal_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("principals.id", ondelete="CASCADE"), nullable=False
     )
@@ -365,10 +338,10 @@ class PasswordResetToken(Base):
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-    principal: Mapped["Principal"] = relationship("Principal")
+    principal: Mapped[Principal] = relationship("Principal")
 
     def is_expired(self) -> bool:
-        return datetime.now(timezone.utc) > self.expires_at
+        return datetime.now(UTC) > self.expires_at
 
     def is_valid(self) -> bool:
         return self.used_at is None and not self.is_expired()

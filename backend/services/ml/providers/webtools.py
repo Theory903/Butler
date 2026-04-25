@@ -1,11 +1,11 @@
 """Web Tools — SearXNG, Webhooks."""
 
 from __future__ import annotations
-import os
-import re
+
 import json
-from typing import Optional, Any, AsyncGenerator
+import os
 from abc import ABC, abstractmethod
+from typing import Any
 
 import httpx
 import structlog
@@ -88,7 +88,7 @@ class SearXNGProvider(BaseWebTool):
     def __init__(
         self,
         base_url: str = "http://localhost:8888",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
     ):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key or os.environ.get("SEARXNG_API_KEY")
@@ -134,7 +134,7 @@ class SearXNGProvider(BaseWebTool):
 class FirecrawlProvider(BaseWebTool):
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         base_url: str = "https://api.firecrawl.dev",
     ):
         self._api_key = api_key or os.environ.get("FIRECRAWL_API_KEY")
@@ -167,7 +167,7 @@ class FirecrawlProvider(BaseWebTool):
 
 
 class WebhookProvider(BaseWebTool):
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: str | None = None):
         self._api_key = api_key or os.environ.get("WEBHOOK_API_KEY")
         self._client = httpx.AsyncClient(timeout=_TIMEOUT)
 
