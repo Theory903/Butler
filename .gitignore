@@ -47,15 +47,12 @@ logs/
 ## Ref/External Research (License Review Required)
 # Contents in .ref/ may be AGPL-licensed and require legal review before use
 # Do not commit external code without licensing approval
-/ref/
+.ref/
 
 ## Documentation Build
 site/
-.publi[c]/
+.public/
 *.md.bak
-# Saved plan file (do not commit)
-docs/plans/2026-04-19-butler-ai-os-reference-harvest-plan.md
-docs/03-reference/system/reference-harvest-map.md
 
 ## Database
 *.db
@@ -84,6 +81,9 @@ temp/
 
 ## Cache
 .cache/
-.node_modules/
+node_modules/
 .npm/
 .eslintcache
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
