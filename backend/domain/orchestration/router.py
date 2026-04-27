@@ -110,11 +110,10 @@ class OperationRouter:
 
         if request.operation_type == OperationType.TOOL_CALL:
             return "tool_executor", admission
-        elif request.operation_type == OperationType.WORKFLOW_EXECUTION:
+        if request.operation_type == OperationType.WORKFLOW_EXECUTION:
             return "workflow_engine", admission
-        elif request.operation_type == OperationType.MEMORY_WRITE:
+        if request.operation_type == OperationType.MEMORY_WRITE:
             return "memory_writer", admission
-        elif request.operation_type == OperationType.MEMORY_READ:
+        if request.operation_type == OperationType.MEMORY_READ:
             return "memory_reader", admission
-        else:
-            return "chat_handler", admission
+        return "chat_handler", admission

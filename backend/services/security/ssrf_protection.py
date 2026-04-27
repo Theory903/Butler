@@ -11,7 +11,6 @@ Blocks requests to:
 from __future__ import annotations
 
 import ipaddress
-from typing import Any
 
 import structlog
 

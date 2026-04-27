@@ -11,7 +11,9 @@ import os
 import socket
 from urllib.parse import urlparse
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Hostnames that should always be blocked regardless of IP resolution
 _BLOCKED_HOSTNAMES = frozenset(

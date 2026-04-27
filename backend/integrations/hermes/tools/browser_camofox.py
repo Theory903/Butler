@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import os
 import threading
 import uuid
@@ -36,7 +35,9 @@ from hermes_cli.config import load_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration

@@ -6,15 +6,15 @@ Phase A.1 acceptance test:
 - Assert tool call → executor → audit log
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from langchain_core.messages import HumanMessage
 
-from domain.ml.contracts import ReasoningRequest, ReasoningResponse, ReasoningTier
 from domain.memory.contracts import MemoryServiceContract
+from domain.ml.contracts import ReasoningResponse, ReasoningTier
 from domain.tools.hermes_compiler import ButlerToolSpec, RiskTier
-from langchain.agent import ButlerAgentBuilder, create_agent
+from langchain.agent import ButlerAgentBuilder
 
 
 @pytest.mark.asyncio

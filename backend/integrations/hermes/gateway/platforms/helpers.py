@@ -7,7 +7,6 @@ and thread participation tracking.
 
 import asyncio
 import json
-import logging
 import re
 import time
 from pathlib import Path
@@ -16,7 +15,9 @@ from typing import TYPE_CHECKING, Dict, Optional
 if TYPE_CHECKING:
     from gateway.platforms.base import BasePlatformAdapter, MessageEvent
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ─── Message Deduplication ────────────────────────────────────────────────────

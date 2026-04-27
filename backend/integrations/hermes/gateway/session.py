@@ -9,7 +9,6 @@ Handles:
 """
 
 import hashlib
-import logging
 import os
 import json
 import threading
@@ -19,7 +18,9 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _now() -> datetime:

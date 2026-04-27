@@ -9,11 +9,11 @@ exposes query APIs by category/risk/permission.
 
 from __future__ import annotations
 
-import structlog
 from collections import Counter
 from typing import Any
 
-from langchain_core.tools import BaseTool, ToolInputSchema
+import structlog
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
 from domain.tools.adapters import (
@@ -27,7 +27,8 @@ from domain.tools.adapters import (
     ServiceToolAdapter,
     ToolAdapter,
 )
-from domain.tools.spec import ApprovalMode, RiskTier, ToolSpec as DomainToolSpec
+from domain.tools.spec import ApprovalMode, RiskTier
+from domain.tools.spec import ToolSpec as DomainToolSpec
 
 logger = structlog.get_logger(__name__)
 
@@ -37,7 +38,7 @@ class LegacyToolSpec(BaseModel):
 
     name: str
     description: str
-    args_schema: type[ToolInputSchema] | None = None
+    args_schema: type[BaseModel] | None = None
     risk_tier: int = 0
     approval_mode: str = "auto"
     required_permissions: list[str] = []
@@ -247,9 +248,7 @@ class ToolRegistry:
 
         # Validate tenant scope requirement for non-L0 tools
         if spec.risk_tier != RiskTier.L0 and not spec.tenant_scope_required:
-            raise ValueError(
-                f"Tenant scope required for {spec.risk_tier} tools"
-            )
+            raise ValueError(f"Tenant scope required for {spec.risk_tier} tools")
 
     @classmethod
     def get_tool(cls, name: str) -> BaseTool | None:
@@ -319,11 +318,7 @@ class ToolRegistry:
         """
         if not cls._compiled:
             cls.compile()
-        return [
-            spec
-            for spec in cls._specs.values()
-            if permission in spec.required_permissions
-        ]
+        return [spec for spec in cls._specs.values() if permission in spec.required_permissions]
 
     @classmethod
     def all_tools(cls) -> list[BaseTool]:

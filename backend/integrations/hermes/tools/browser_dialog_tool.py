@@ -16,13 +16,14 @@ design.
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any, Dict, Optional
 
 from tools.browser_supervisor import SUPERVISOR_REGISTRY
 from tools.registry import registry
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {

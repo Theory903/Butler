@@ -9,7 +9,6 @@ HERMES_HOME root.
 """
 
 import json
-import logging
 import os
 import shutil
 import sqlite3
@@ -23,7 +22,9 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

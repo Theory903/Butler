@@ -22,7 +22,6 @@ Never touches: ~/.hermes/logs/ or any system directory.
 from __future__ import annotations
 
 import json
-import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,7 +37,9 @@ except Exception:  # pragma: no cover — plugin may load before constants resol
         return Path(val).resolve() if val else (Path.home() / ".hermes").resolve()
 
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

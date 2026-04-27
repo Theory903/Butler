@@ -10,7 +10,9 @@ from typing import Any
 from ..agent.loop import ButlerExecutionContext, ButlerUnifiedAgentLoop
 from .state import ButlerGraphState
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerGraphCompiler:

@@ -29,7 +29,6 @@ Usage:
         --env.terminal_backend modal
 """
 
-import logging
 import sys
 import time
 from pathlib import Path
@@ -50,7 +49,9 @@ from integrations.hermes.environments.agent_loop import AgentResult
 from integrations.hermes.environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig
 from integrations.hermes.environments.tool_context import ToolContext
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class HermesSweEnvConfig(HermesAgentEnvConfig):

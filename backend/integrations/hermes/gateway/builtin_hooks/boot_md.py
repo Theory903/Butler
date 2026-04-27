@@ -17,10 +17,11 @@ startup. If nothing needs attention, it replies with [SILENT] to
 suppress delivery.
 """
 
-import logging
 import threading
 
-logger = logging.getLogger("hooks.boot-md")
+import structlog
+
+logger = structlog.get_logger("hooks.boot-md")
 
 from hermes_constants import get_hermes_home
 HERMES_HOME = get_hermes_home()

@@ -223,7 +223,7 @@ class TestRedisAbstractions:
         """Test Redis key construction with namespace prefix."""
         namespace = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
         prefix = namespace.to_redis_prefix()
-        
+
         # Simulate key construction
         cache_key = f"{prefix}:cache:session_123"
         assert cache_key == "butler:tenant:tenant_1:account:account_1:cache:session_123"
@@ -232,10 +232,10 @@ class TestRedisAbstractions:
         """Test that different namespaces produce different keys."""
         namespace1 = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
         namespace2 = TenantNamespace(tenant_id="tenant_2", account_id="account_1")
-        
+
         key1 = f"{namespace1.to_redis_prefix()}:cache:session_123"
         key2 = f"{namespace2.to_redis_prefix()}:cache:session_123"
-        
+
         assert key1 != key2
         assert "tenant_1" in key1
         assert "tenant_2" in key2
@@ -243,17 +243,17 @@ class TestRedisAbstractions:
     def test_redis_key_same_namespace(self):
         """Test that same namespace produces same keys."""
         namespace = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
-        
+
         key1 = f"{namespace.to_redis_prefix()}:cache:session_123"
         key2 = f"{namespace.to_redis_prefix()}:cache:session_123"
-        
+
         assert key1 == key2
 
     def test_redis_key_with_multiple_components(self):
         """Test Redis key with multiple components."""
         namespace = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
         prefix = namespace.to_redis_prefix()
-        
+
         # Complex key with multiple components
         key = f"{prefix}:workflow:task_456:step_789"
         assert key == "butler:tenant:tenant_1:account:account_1:workflow:task_456:step_789"
@@ -266,10 +266,10 @@ class TestDatabaseSchema:
         """Test that different namespaces produce different schemas."""
         namespace1 = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
         namespace2 = TenantNamespace(tenant_id="tenant_2", account_id="account_1")
-        
+
         schema1 = namespace1.to_db_schema()
         schema2 = namespace2.to_db_schema()
-        
+
         assert schema1 != schema2
         assert "tenant_tenant_1" in schema1
         assert "tenant_tenant_2" in schema2
@@ -277,10 +277,10 @@ class TestDatabaseSchema:
     def test_schema_same_namespace(self):
         """Test that same namespace produces same schema."""
         namespace = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
-        
+
         schema1 = namespace.to_db_schema()
         schema2 = namespace.to_db_schema()
-        
+
         assert schema1 == schema2
 
     def test_schema_with_special_chars(self):
@@ -300,7 +300,7 @@ class TestLogPrefix:
         """Test that log prefix hashes tenant_id."""
         namespace = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
         prefix = namespace.to_log_prefix()
-        
+
         # Verify tenant_id is not in the prefix
         assert "tenant_1" not in prefix
         assert "tenant" not in prefix
@@ -309,7 +309,7 @@ class TestLogPrefix:
         """Test that log prefix hashes account_id."""
         namespace = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
         prefix = namespace.to_log_prefix()
-        
+
         # Verify account_id is not in the prefix
         assert "account_1" not in prefix
         assert "account" not in prefix
@@ -318,21 +318,21 @@ class TestLogPrefix:
         """Test that log prefix hash is 8 characters."""
         namespace = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
         prefix = namespace.to_log_prefix()
-        
+
         # Extract tenant hash (between t_ and _a_)
         tenant_hash = prefix.split("_")[1]
         account_hash = prefix.split("_")[3]
-        
+
         assert len(tenant_hash) == 8
         assert len(account_hash) == 8
 
     def test_log_prefix_deterministic(self):
         """Test that log prefix is deterministic for same input."""
         namespace = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
-        
+
         # Generate multiple times
         prefixes = [namespace.to_log_prefix() for _ in range(10)]
-        
+
         # All should be the same
         assert all(p == prefixes[0] for p in prefixes)
 
@@ -340,10 +340,10 @@ class TestLogPrefix:
         """Test that log prefix collisions are unlikely."""
         namespace1 = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
         namespace2 = TenantNamespace(tenant_id="tenant_2", account_id="account_2")
-        
+
         prefix1 = namespace1.to_log_prefix()
         prefix2 = namespace2.to_log_prefix()
-        
+
         # Should be different for different inputs
         assert prefix1 != prefix2
 
@@ -371,7 +371,9 @@ class TestErrorHandling:
         """Test enforcer with None namespace."""
         enforcer = TenantNamespaceEnforcer()
         with pytest.raises(AttributeError):
-            enforcer.check_access(None, TenantNamespace(tenant_id="tenant_1", account_id="account_1"))  # type: ignore
+            enforcer.check_access(
+                None, TenantNamespace(tenant_id="tenant_1", account_id="account_1")
+            )  # type: ignore
 
     def test_enforce_namespace_with_none(self):
         """Test enforcing None namespace."""
@@ -383,11 +385,11 @@ class TestErrorHandling:
         """Test TenantNamespace with very long IDs."""
         long_tenant_id = "a" * 1000
         long_account_id = "b" * 1000
-        
+
         namespace = TenantNamespace(tenant_id=long_tenant_id, account_id=long_account_id)
         assert namespace.tenant_id == long_tenant_id
         assert namespace.account_id == long_account_id
-        
+
         # Redis prefix should handle long IDs
         prefix = namespace.to_redis_prefix()
         assert long_tenant_id in prefix
@@ -401,7 +403,7 @@ class TestErrorHandling:
         )
         assert namespace.tenant_id == "tenant_1_日本語"
         assert namespace.account_id == "account_1_中文"
-        
+
         # Redis prefix should handle unicode
         prefix = namespace.to_redis_prefix()
         assert "tenant_1_日本語" in prefix
@@ -419,17 +421,17 @@ class TestIntegrationScenarios:
             account_id="account_1",
             region="us-east-1",
         )
-        
+
         # Enforce namespace
         enforcer = TenantNamespaceEnforcer()
         enforced = enforcer.enforce_namespace(namespace)
         assert enforced is namespace
-        
+
         # Generate prefixes
         redis_prefix = namespace.to_redis_prefix()
         db_schema = namespace.to_db_schema()
         log_prefix = namespace.to_log_prefix()
-        
+
         # Verify all prefixes are generated
         assert redis_prefix == "butler:tenant:tenant_1:account:account_1"
         assert db_schema == "tenant_tenant_1_account_account_1"
@@ -438,12 +440,12 @@ class TestIntegrationScenarios:
     def test_multi_tenant_isolation(self):
         """Test isolation between multiple tenants."""
         enforcer = TenantNamespaceEnforcer(allow_cross_tenant=False)
-        
+
         # Create multiple namespaces
         tenant1_account1 = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
         tenant1_account2 = TenantNamespace(tenant_id="tenant_1", account_id="account_2")
         tenant2_account1 = TenantNamespace(tenant_id="tenant_2", account_id="account_1")
-        
+
         # Check access patterns
         assert enforcer.check_access(tenant1_account1, tenant1_account2) is True
         assert enforcer.check_access(tenant1_account1, tenant2_account1) is False
@@ -452,39 +454,37 @@ class TestIntegrationScenarios:
     def test_cross_tenant_with_permission(self):
         """Test cross-tenant access with explicit permission."""
         enforcer = TenantNamespaceEnforcer(allow_cross_tenant=True)
-        
+
         tenant1 = TenantNamespace(tenant_id="tenant_1", account_id="account_1")
         tenant2 = TenantNamespace(tenant_id="tenant_2", account_id="account_1")
-        
+
         # Cross-tenant access should be allowed
         assert enforcer.check_access(tenant1, tenant2) is True
 
     def test_redis_key_collision_prevention(self):
         """Test that Redis keys don't collide across namespaces."""
         namespaces = [
-            TenantNamespace(tenant_id=f"tenant_{i}", account_id=f"account_{i}")
-            for i in range(100)
+            TenantNamespace(tenant_id=f"tenant_{i}", account_id=f"account_{i}") for i in range(100)
         ]
-        
+
         keys = set()
         for namespace in namespaces:
             key = f"{namespace.to_redis_prefix()}:cache:session_123"
             keys.add(key)
-        
+
         # All keys should be unique
         assert len(keys) == 100
 
     def test_log_prefix_uniqueness(self):
         """Test that log prefixes are unique for different namespaces."""
         namespaces = [
-            TenantNamespace(tenant_id=f"tenant_{i}", account_id=f"account_{i}")
-            for i in range(100)
+            TenantNamespace(tenant_id=f"tenant_{i}", account_id=f"account_{i}") for i in range(100)
         ]
-        
+
         prefixes = set()
         for namespace in namespaces:
             prefix = namespace.to_log_prefix()
             prefixes.add(prefix)
-        
+
         # All prefixes should be unique (very high probability)
         assert len(prefixes) == 100

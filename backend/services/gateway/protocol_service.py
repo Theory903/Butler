@@ -1,12 +1,11 @@
-import logging
 import time
 import uuid
 from typing import Any
 
+import structlog
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-import structlog
 from api.schemas.mercury import ConnectParams, MercuryEvent, MercuryRequest, MercuryResponse
 from services.auth.jwt import get_jwks_manager
 

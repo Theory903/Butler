@@ -5,7 +5,9 @@ from infrastructure.config import settings
 
 from .models import DiarizationResult, SpeakerSegment
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class SpeakerDiarization:

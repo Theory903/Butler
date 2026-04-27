@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import httpx
 
 from .base import BaseChannel, ChannelConfig, ChannelKind, ChannelMessage
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class TelegramChannel(BaseChannel):
@@ -25,7 +26,9 @@ class TelegramChannel(BaseChannel):
     async def connect(self) -> None:
         if not self._config.token:
             raise ValueError("Telegram token is required")
-        self._http = httpx.AsyncClient(base_url=f"{self.BASE_URL}/bot{self._config.token}", timeout=30)
+        self._http = httpx.AsyncClient(
+            base_url=f"{self.BASE_URL}/bot{self._config.token}", timeout=30
+        )
         self._connected = True
         logger.info("telegram_channel_connected")
 

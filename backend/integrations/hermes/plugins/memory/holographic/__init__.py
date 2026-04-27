@@ -18,7 +18,6 @@ Config in $HERMES_HOME/config.yaml (profile-scoped):
 from __future__ import annotations
 
 import json
-import logging
 import re
 from typing import Any, Dict, List
 
@@ -27,7 +26,9 @@ from tools.registry import tool_error
 from .store import MemoryStore
 from .retrieval import FactRetriever
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

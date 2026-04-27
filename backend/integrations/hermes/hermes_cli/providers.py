@@ -19,13 +19,14 @@ Other modules import from this file.  No parallel registries.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils import base_url_host_matches, base_url_hostname
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # -- Hermes overlay ----------------------------------------------------------

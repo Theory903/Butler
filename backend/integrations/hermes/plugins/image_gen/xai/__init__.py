@@ -17,7 +17,6 @@ Selection precedence (first hit wins):
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,7 +32,9 @@ from agent.image_gen_provider import (
 )
 from tools.xai_http import hermes_xai_user_agent
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Model catalog

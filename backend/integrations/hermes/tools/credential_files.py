@@ -20,13 +20,14 @@ creation time and before each command (for resync on Modal).
 
 from __future__ import annotations
 
-import logging
 import os
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Dict, List
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Session-scoped list of credential files to mount.
 # Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.

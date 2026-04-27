@@ -6,7 +6,9 @@ Phase E.2: Plugin manager for lifecycle and hot-reload coordination.
 import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerPluginManager:

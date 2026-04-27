@@ -9,10 +9,7 @@ Tests verify semantic routing works with:
 - Indirect phrasing
 """
 
-import asyncio
-
 import pytest
-
 from butler_core.ml.routing import RoutingDecision
 from butler_core.ml.semantic_router import SemanticCategory, SemanticEmbeddingRouter
 
@@ -31,7 +28,7 @@ class MockEmbeddingProvider:
             # This is a simplified mock for testing purposes
             vector = [0.0] * 384
             for i, char in enumerate(text_lower[:384]):
-                vector[i] = (ord(char) / 255.0)
+                vector[i] = ord(char) / 255.0
             self.embeddings[text_lower] = vector
         return self.embeddings[text_lower]
 
@@ -229,9 +226,7 @@ async def test_custom_categories():
             examples=("This is a test", "Testing the system"),
         ),
     )
-    router = SemanticEmbeddingRouter(
-        embedding_provider=provider, categories=custom_categories
-    )
+    router = SemanticEmbeddingRouter(embedding_provider=provider, categories=custom_categories)
     await router.initialize()
 
     result = await router.route("This is a test")

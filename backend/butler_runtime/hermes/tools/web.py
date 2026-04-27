@@ -10,7 +10,9 @@ from urllib.parse import urlparse
 
 import httpx
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerHermesWebTools:
@@ -66,11 +68,11 @@ class ButlerHermesWebTools:
         except Exception:
             return False
 
-    async def web_search(self, query: str, num_results: int = 5) -> dict[str, Any]:
+    async def web_search(self, input: str, num_results: int = 5) -> dict[str, Any]:
         """Search the web for information.
 
         Args:
-            query: Search query
+            input: Search query
             num_results: Number of results to return
 
         Returns:
@@ -83,10 +85,10 @@ class ButlerHermesWebTools:
             # Stub implementation - in production, integrate with search API
             # For now, return a placeholder response
             return {
-                "query": query,
+                "query": input,
                 "results": [
                     {
-                        "title": f"Search result for: {query}",
+                        "title": f"Search result for: {input}",
                         "url": "https://example.com",
                         "snippet": "This is a placeholder search result. Integrate with a real search API in production.",
                     }
@@ -96,9 +98,9 @@ class ButlerHermesWebTools:
             }
 
         except Exception as e:
-            logger.exception(f"Web search failed for query '{query}': {e}")
+            logger.exception(f"Web search failed for query '{input}': {e}")
             return {
-                "query": query,
+                "query": input,
                 "results": [],
                 "error": str(e),
             }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import lru_cache
 from threading import RLock
@@ -106,10 +106,10 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
         kind=ProviderKind.LLM,
         module="services.ml.providers.llm",
         class_name="GoogleGeminiProvider",
-        default_model="gemini-3.1-pro",
+        default_model="gemma-4-26b-a4b-it",
         max_context=1000000,
         cost_per_1k_tokens=0.0035,
-        api_key_env="GOOGLE_API_KEY",
+        api_key_env="GEMINI_API_KEY",
     ),
     "ollama": ProviderSpec(
         name="ollama",
@@ -412,6 +412,7 @@ class ModelRegistry(IModelRegistry):
 
     def get_active_model(self, name: str) -> ModelEntry | None:
         normalized = name.strip()
+        normalized_lower = normalized.lower()
 
         # Check if it's a model ID that matches a provider's default model
         for item in self._models.values():
@@ -424,7 +425,7 @@ class ModelRegistry(IModelRegistry):
             for item in self._models.values():
                 if item.version == normalized and item.status == "active":
                     return item
-            
+
             # If not found, try treating first part as provider name
             provider_name, _ = normalized.split("/", 1)
             normalized_provider = provider_name.strip().lower()
@@ -437,11 +438,25 @@ class ModelRegistry(IModelRegistry):
         if entry and entry.status == "active":
             return entry
 
-        normalized_provider = normalized.lower()
+        if normalized_lower.startswith("gemini-") or normalized_lower.startswith("gemma-"):
+            google_entry = self._active_provider_entry("google")
+            if google_entry is not None:
+                return replace(google_entry, version=normalized)
+            groq_entry = self._active_provider_entry("groq")
+            if groq_entry is not None:
+                return replace(groq_entry, version="qwen/qwen3-32b")
+
+        provider_entry = self._active_provider_entry(normalized_lower)
+        if provider_entry is not None:
+            return provider_entry
+
+        return None
+
+    def _active_provider_entry(self, provider_name: str) -> ModelEntry | None:
+        normalized_provider = provider_name.strip().lower()
         for item in self._models.values():
             if item.provider == normalized_provider and item.status == "active":
                 return item
-
         return None
 
     def get_active_by_tier(self, tier: ReasoningTier) -> list[ModelEntry]:

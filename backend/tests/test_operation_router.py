@@ -9,6 +9,7 @@ Tests cover:
 """
 
 import dataclasses
+
 import pytest
 
 from domain.orchestration.router import (

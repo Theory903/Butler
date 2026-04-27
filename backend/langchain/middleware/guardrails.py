@@ -9,13 +9,14 @@ import logging
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 from services.security.redaction import RedactionService
 from services.security.safety import ContentGuard
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerGuardrailsMiddleware(ButlerBaseMiddleware):
@@ -74,12 +75,11 @@ class ButlerGuardrailsMiddleware(ButlerBaseMiddleware):
                                 error=f"Content blocked: {safety_result.get('reason')}",
                                 metadata={"safety_result": safety_result},
                             )
-                        else:
-                            logger.warning(
-                                "unsafe_input_logged",
-                                reason=safety_result.get("reason"),
-                                categories=safety_result.get("categories"),
-                            )
+                        logger.warning(
+                            "unsafe_input_logged",
+                            reason=safety_result.get("reason"),
+                            categories=safety_result.get("categories"),
+                        )
                 except Exception as exc:
                     logger.warning("safety_check_failed", error=str(exc))
 
@@ -127,12 +127,11 @@ class ButlerGuardrailsMiddleware(ButlerBaseMiddleware):
                                 error=f"Output blocked: {safety_result.get('reason')}",
                                 metadata={"safety_result": safety_result},
                             )
-                        else:
-                            logger.warning(
-                                "unsafe_output_logged",
-                                reason=safety_result.get("reason"),
-                                categories=safety_result.get("categories"),
-                            )
+                        logger.warning(
+                            "unsafe_output_logged",
+                            reason=safety_result.get("reason"),
+                            categories=safety_result.get("categories"),
+                        )
                 except Exception as exc:
                     logger.warning("output_safety_check_failed", error=str(exc))
 

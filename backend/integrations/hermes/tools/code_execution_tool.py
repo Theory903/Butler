@@ -31,7 +31,6 @@ Remote execution additionally requires Python 3 in the terminal backend.
 import base64
 import functools
 import json
-import logging
 import os
 import platform
 import shlex
@@ -48,7 +47,9 @@ _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
 # Availability gate: UDS requires a POSIX OS
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 SANDBOX_AVAILABLE = sys.platform != "win32"
 

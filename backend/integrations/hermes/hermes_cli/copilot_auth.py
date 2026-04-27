@@ -19,7 +19,6 @@ Credential search order (matching Copilot CLI behaviour):
 from __future__ import annotations
 
 import json
-import logging
 import os
 import shutil
 import subprocess
@@ -27,7 +26,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # OAuth device code flow constants (same client ID as opencode/Copilot CLI)
 COPILOT_OAUTH_CLIENT_ID = "Ov23li8tweQw6odWQebz"

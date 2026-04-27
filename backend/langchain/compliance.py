@@ -5,11 +5,13 @@ Provides compliance checking, privacy controls, and audit logging.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ComplianceLevel(str, Enum):
@@ -57,7 +59,7 @@ class AuditLogEntry:
     """An audit log entry."""
 
     entry_id: str
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     event_type: str = ""
     account_id: str = ""
     session_id: str = ""
@@ -155,7 +157,7 @@ class ButlerComplianceChecker:
             "compliant": True,
             "violations": [],
             "warnings": [],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         rules_to_check = rules or [r.rule_type for r in self._rules.values() if r.enabled]
@@ -176,7 +178,9 @@ class ButlerComplianceChecker:
         logger.info("compliance_check_completed", compliant=results["compliant"])
         return results
 
-    def _check_rule(self, rule: ComplianceRule, data: str | dict[str, Any]) -> dict[str, Any] | None:
+    def _check_rule(
+        self, rule: ComplianceRule, data: str | dict[str, Any]
+    ) -> dict[str, Any] | None:
         """Check a specific rule.
 
         Args:
@@ -188,11 +192,11 @@ class ButlerComplianceChecker:
         """
         if rule.rule_type == ComplianceCheck.PII_DETECTION:
             return self._check_pii(data)
-        elif rule.rule_type == ComplianceCheck.DATA_RETENTION:
+        if rule.rule_type == ComplianceCheck.DATA_RETENTION:
             return self._check_data_retention(data)
-        elif rule.rule_type == ComplianceCheck.ACCESS_CONTROL:
+        if rule.rule_type == ComplianceCheck.ACCESS_CONTROL:
             return self._check_access_control(data)
-        elif rule.rule_type == ComplianceCheck.AUDIT_LOGGING:
+        if rule.rule_type == ComplianceCheck.AUDIT_LOGGING:
             return self._check_audit_logging(data)
         return None
 
@@ -216,6 +220,7 @@ class ButlerComplianceChecker:
         }
 
         import re
+
         for pii_type, pattern in pii_patterns.items():
             if re.search(pattern, data_str):
                 return {
@@ -355,11 +360,11 @@ class ButlerPrivacyController:
         """
         if level == PrivacyLevel.PUBLIC:
             return data
-        elif level == PrivacyLevel.INTERNAL:
+        if level == PrivacyLevel.INTERNAL:
             return "[INTERNAL DATA]"
-        elif level == PrivacyLevel.CONFIDENTIAL:
+        if level == PrivacyLevel.CONFIDENTIAL:
             return "[CONFIDENTIAL DATA]"
-        elif level == PrivacyLevel.RESTRICTED:
+        if level == PrivacyLevel.RESTRICTED:
             return "[RESTRICTED DATA]"
 
         return data
@@ -422,6 +427,7 @@ class ButlerAuditLogger:
             Entry ID
         """
         import uuid
+
         entry_id = str(uuid.uuid4())
 
         entry = AuditLogEntry(
@@ -480,9 +486,9 @@ class ButlerAuditLogger:
         """
         if format == "json":
             import json
+
             return json.dumps([self._entry_to_dict(l) for l in self._logs], indent=2)
-        else:
-            return [self._entry_to_dict(l) for l in self._logs]
+        return [self._entry_to_dict(l) for l in self._logs]
 
     def _entry_to_dict(self, entry: AuditLogEntry) -> dict[str, Any]:
         """Convert entry to dictionary.
@@ -597,7 +603,7 @@ class ButlerCompliancePrivacy:
                 "total_logs": len(self._audit._logs),
                 "recent_logs": len(self._audit.get_logs(limit=10)),
             },
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
     def export_all(self) -> dict[str, Any]:
@@ -618,5 +624,5 @@ class ButlerCompliancePrivacy:
             ],
             "privacy_levels": {k: v.value for k, v in self._privacy._data_privacy.items()},
             "audit_logs": self._audit.export_logs(format="dict"),
-            "export_timestamp": datetime.now(timezone.utc).isoformat(),
+            "export_timestamp": datetime.now(UTC).isoformat(),
         }

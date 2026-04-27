@@ -22,14 +22,15 @@ The manifest lives at ~/.hermes/skills/.bundled_manifest.
 """
 
 import hashlib
-import logging
 import os
 import shutil
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Tuple
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 HERMES_HOME = get_hermes_home()

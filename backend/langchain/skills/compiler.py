@@ -4,11 +4,12 @@ Phase E.1: Compiles skill definitions into Hermes tool specs.
 Uses Butler's HermesCompiler to convert skill definitions into ButlerToolSpec.
 """
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -50,7 +51,7 @@ class ButlerSkillCompiler:
             skill: Skill definition to register
         """
         self._skills[skill.name] = skill
-        logger.info("skill_registered", skill_name=skill.name, category=skill.category)
+        logger.bind(skill_name=skill.name, category=skill.category).info("skill_registered")
 
     def compile_skill(self, skill_name: str) -> dict[str, Any] | None:
         """Compile a skill to Hermes tool spec.
@@ -63,7 +64,7 @@ class ButlerSkillCompiler:
         """
         skill = self._skills.get(skill_name)
         if not skill:
-            logger.warning("skill_not_found", skill_name=skill_name)
+            logger.bind(skill_name=skill_name).warning("skill_not_found")
             return None
 
         # Convert skill to HermesToolDef format
@@ -84,10 +85,10 @@ class ButlerSkillCompiler:
 
                 tool_def = HermesToolDef(**hermes_def)
                 compiled = self._hermes_compiler.compile(tool_def)
-                logger.info("skill_compiled", skill_name=skill_name)
+                logger.bind(skill_name=skill_name).info("skill_compiled")
                 return compiled
-            except Exception as e:
-                logger.exception("skill_compile_failed", skill_name=skill_name)
+            except Exception:
+                logger.bind(skill_name=skill_name).exception("skill_compile_failed")
                 return None
 
         # Fallback: return the HermesToolDef directly

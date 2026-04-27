@@ -78,7 +78,9 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 
 from tools.registry import registry, tool_error
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).

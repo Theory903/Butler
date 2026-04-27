@@ -340,7 +340,9 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
 
     return resolved
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same

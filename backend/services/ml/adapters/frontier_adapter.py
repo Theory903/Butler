@@ -7,7 +7,9 @@ import httpx
 
 from services.security.egress_policy import EgressDecision, EgressPolicy
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class FrontierAdapter:

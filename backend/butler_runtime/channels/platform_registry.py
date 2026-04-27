@@ -8,7 +8,9 @@ from typing import Any
 
 from .adapter import ButlerHermesGatewayAdapter
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class HermesPlatformSpec:

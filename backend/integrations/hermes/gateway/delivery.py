@@ -8,7 +8,6 @@ Routes messages to the appropriate destination based on:
 - Local (always saved to files)
 """
 
-import logging
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -16,7 +15,9 @@ from typing import Dict, List, Optional, Any
 
 from hermes_cli.config import get_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 MAX_PLATFORM_OUTPUT = 4000
 TRUNCATED_VISIBLE = 3800

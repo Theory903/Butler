@@ -6,13 +6,14 @@ implementations instead of Hermes dependencies.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
-def get_time(tz: Optional[str] = None) -> dict:
+def get_time(tz: str | None = None) -> dict:
     """Get the current time, optionally in a specific timezone.
 
     Args:
@@ -29,7 +30,7 @@ def get_time(tz: Optional[str] = None) -> dict:
             tzinfo = ZoneInfo(tz)
             now = datetime.now(tzinfo)
         else:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
         return {
             "current_time": now.isoformat(),
@@ -41,12 +42,12 @@ def get_time(tz: Optional[str] = None) -> dict:
         logger.error(f"Failed to get time: {exc}")
         return {
             "error": f"Failed to get time: {exc}",
-            "current_time": datetime.now(timezone.utc).isoformat(),
+            "current_time": datetime.now(UTC).isoformat(),
             "timezone": "UTC",
         }
 
 
-def get_date(tz: Optional[str] = None) -> dict:
+def get_date(tz: str | None = None) -> dict:
     """Get the current date, optionally in a specific timezone.
 
     Args:
@@ -63,7 +64,7 @@ def get_date(tz: Optional[str] = None) -> dict:
             tzinfo = ZoneInfo(tz)
             now = datetime.now(tzinfo)
         else:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
         return {
             "current_date": now.date().isoformat(),
@@ -77,6 +78,6 @@ def get_date(tz: Optional[str] = None) -> dict:
         logger.error(f"Failed to get date: {exc}")
         return {
             "error": f"Failed to get date: {exc}",
-            "current_date": datetime.now(timezone.utc).date().isoformat(),
+            "current_date": datetime.now(UTC).date().isoformat(),
             "timezone": "UTC",
         }

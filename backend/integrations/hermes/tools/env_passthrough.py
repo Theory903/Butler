@@ -19,11 +19,12 @@ Both ``code_execution_tool.py`` and ``tools/environments/local.py`` consult
 
 from __future__ import annotations
 
-import logging
 from contextvars import ContextVar
 from typing import Iterable
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Session-scoped set of env var names that should pass through to sandboxes.
 # Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.

@@ -121,13 +121,13 @@ class HermesRegistryAdapter:
     def get_all_tool_names(self) -> list[str]:
         if not self._ok():
             return []
-        return self._reg.list_names() if hasattr(self._reg, 'list_names') else []
+        return self._reg.list_names() if hasattr(self._reg, "list_names") else []
 
     def get_definitions(self, names: set[str], quiet: bool) -> list[dict]:
         if not self._ok():
             return []
         try:
-            if not hasattr(self._reg, 'get'):
+            if not hasattr(self._reg, "get"):
                 return []
             specs = [self._reg.get(name) for name in names if self._reg.get(name)]
             return [
@@ -145,7 +145,7 @@ class HermesRegistryAdapter:
 
     def get_toolset_for_tool(self, name: str) -> str | None:
         # Map tool names to toolsets based on the capability map
-        if not self._ok() or not hasattr(self._reg, 'get'):
+        if not self._ok() or not hasattr(self._reg, "get"):
             return None
         spec = self._reg.get(name)
         if spec and spec.tags:
@@ -155,7 +155,7 @@ class HermesRegistryAdapter:
         return None
 
     def get_entry(self, name: str) -> Any | None:
-        if not self._ok() or not hasattr(self._reg, 'get'):
+        if not self._ok() or not hasattr(self._reg, "get"):
             return None
         return self._reg.get(name)
 
@@ -165,9 +165,7 @@ class HermesRegistryAdapter:
     def get_toolset_requirements(self) -> dict[str, dict]:
         # Return toolset requirements based on capability flags
         return {
-            toolset: {"capability": cap}
-            for toolset, cap in _TOOLSET_CAPABILITY_MAP.items()
-            if cap
+            toolset: {"capability": cap} for toolset, cap in _TOOLSET_CAPABILITY_MAP.items() if cap
         }
 
     def get_emoji(self, name: str, default: str = "⚡") -> str:

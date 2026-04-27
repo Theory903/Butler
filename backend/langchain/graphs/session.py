@@ -7,7 +7,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -51,17 +53,23 @@ class SessionGraph:
         """Convert graph to dictionary."""
         return {
             "session_id": self.session_id,
-            "nodes": {nid: {
-                "type": n.type,
-                "content": n.content,
-                "metadata": n.metadata,
-            } for nid, n in self.nodes.items()},
-            "edges": [{
-                "from": e.from_node,
-                "to": e.to_node,
-                "type": e.edge_type,
-                "metadata": e.metadata,
-            } for e in self.edges],
+            "nodes": {
+                nid: {
+                    "type": n.type,
+                    "content": n.content,
+                    "metadata": n.metadata,
+                }
+                for nid, n in self.nodes.items()
+            },
+            "edges": [
+                {
+                    "from": e.from_node,
+                    "to": e.to_node,
+                    "type": e.edge_type,
+                    "metadata": e.metadata,
+                }
+                for e in self.edges
+            ],
             "metadata": self.metadata,
         }
 
@@ -123,7 +131,9 @@ class SessionGraphBuilder:
         node = SessionNode(node_id=message_id, type="agent_response", content=content)
         graph.add_node(node)
 
-    def add_tool_call(self, session_id: str, call_id: str, tool_name: str, args: dict[str, Any]) -> None:
+    def add_tool_call(
+        self, session_id: str, call_id: str, tool_name: str, args: dict[str, Any]
+    ) -> None:
         """Add a tool call node.
 
         Args:
@@ -144,7 +154,9 @@ class SessionGraphBuilder:
         )
         graph.add_node(node)
 
-    def add_edge(self, session_id: str, from_id: str, to_id: str, edge_type: str = "default") -> None:
+    def add_edge(
+        self, session_id: str, from_id: str, to_id: str, edge_type: str = "default"
+    ) -> None:
         """Add an edge between nodes.
 
         Args:

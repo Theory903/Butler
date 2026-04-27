@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .base import BaseChannel, ChannelConfig, ChannelKind, ChannelMessage
+from .base import BaseChannel, ChannelConfig, ChannelMessage
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class SlackChannel(BaseChannel):

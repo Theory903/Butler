@@ -13,7 +13,6 @@ Supports multiple self-built apps under one gateway instance, scoped by
 from __future__ import annotations
 
 import asyncio
-import logging
 import socket as _socket
 import time
 from typing import Any, Dict, List, Optional
@@ -39,7 +38,9 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.platforms.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8645

@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lark SDK helpers (lazy-imported)

@@ -3,11 +3,12 @@
 Phase K: Integrations catalog for managing external service integrations.
 """
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

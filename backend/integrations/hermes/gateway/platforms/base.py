@@ -21,7 +21,9 @@ from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def utf16_len(s: str) -> int:

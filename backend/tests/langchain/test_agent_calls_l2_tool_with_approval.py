@@ -6,13 +6,14 @@ Phase A.2 acceptance test:
 - Audit log records execution
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from domain.tools.hermes_compiler import ButlerToolSpec, RiskTier
-from domain.tools.contracts import ToolResult
-from langchain.agent import ButlerAgentBuilder, create_agent
+import pytest
 from langchain_core.messages import HumanMessage
+
+from domain.tools.contracts import ToolResult
+from domain.tools.hermes_compiler import ButlerToolSpec, RiskTier
+from langchain.agent import ButlerAgentBuilder
 
 
 @pytest.mark.asyncio
@@ -188,7 +189,7 @@ async def test_l2_tool_blocked_without_approval():
 @pytest.mark.asyncio
 async def test_hermes_tool_uses_executor_not_direct():
     """Test that ButlerHermesTool routes through ToolExecutor, not direct Hermes."""
-    from langchain.hermes_tools import ButlerHermesTool, build_single_butler_hermes_tool
+    from langchain.hermes_tools import build_single_butler_hermes_tool
 
     # Mock ToolExecutor
     mock_tool_executor = AsyncMock()
@@ -236,7 +237,7 @@ async def test_hermes_tool_uses_executor_not_direct():
 @pytest.mark.asyncio
 async def test_hermes_tool_requires_executor():
     """Test that ButlerHermesTool raises error without ToolExecutor."""
-    from langchain.hermes_tools import ButlerHermesTool, build_single_butler_hermes_tool
+    from langchain.hermes_tools import build_single_butler_hermes_tool
 
     # Mock Hermes spec
     mock_spec = MagicMock()

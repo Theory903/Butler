@@ -12,7 +12,7 @@ Tests cover:
 """
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -320,10 +320,12 @@ class TestRedisArtifact:
     async def test_list(self):
         """Test listing artifacts."""
         mock_redis = AsyncMock()
+
         # scan_iter returns an async iterator
         async def mock_scan_iter(**kwargs):
             for key in [b"ns:artifact:artifact1", b"ns:artifact:artifact2"]:
                 yield key
+
         mock_redis.scan_iter = mock_scan_iter
 
         artifact = RedisArtifact(redis=mock_redis)
@@ -335,9 +337,11 @@ class TestRedisArtifact:
     async def test_list_empty(self):
         """Test listing artifacts when empty."""
         mock_redis = AsyncMock()
+
         async def mock_scan_iter(**kwargs):
             return
             yield  # Never reached
+
         mock_redis.scan_iter = mock_scan_iter
 
         artifact = RedisArtifact(redis=mock_redis)
@@ -498,9 +502,11 @@ class TestEdgeCases:
     async def test_artifact_list_string_keys(self):
         """Test artifact list with string keys from Redis."""
         mock_redis = AsyncMock()
+
         async def mock_scan_iter(**kwargs):
             for key in ["ns:artifact:artifact1", "ns:artifact:artifact2"]:
                 yield key
+
         mock_redis.scan_iter = mock_scan_iter
 
         artifact = RedisArtifact(redis=mock_redis)
@@ -624,9 +630,11 @@ class TestIntegrationScenarios:
         """Test full artifact lifecycle: store, retrieve, list, delete."""
         mock_redis = AsyncMock()
         mock_redis.get.return_value = b"artifact_data"
+
         async def mock_scan_iter(**kwargs):
             for key in [b"ns:artifact:artifact_id"]:
                 yield key
+
         mock_redis.scan_iter = mock_scan_iter
 
         artifact = RedisArtifact(redis=mock_redis)

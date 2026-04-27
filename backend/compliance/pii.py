@@ -5,10 +5,11 @@ Phase L: PII detection and redaction for privacy compliance.
 
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -35,11 +36,11 @@ class PIIDetector:
     def __init__(self):
         """Initialize the PII detector."""
         self._patterns = {
-            "email": r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
-            "phone": r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',
-            "ssn": r'\b\d{3}-\d{2}-\d{4}\b',
-            "credit_card": r'\b(?:\d[ -]*?){13,16}\b',
-            "ip_address": r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b',
+            "email": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+            "phone": r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b",
+            "ssn": r"\b\d{3}-\d{2}-\d{4}\b",
+            "credit_card": r"\b(?:\d[ -]*?){13,16}\b",
+            "ip_address": r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b",
         }
 
     def detect_pii(self, text: str) -> list[PIIEntity]:
@@ -150,5 +151,4 @@ class PIIRedactor:
             username, domain = value.split("@")
             masked_username = username[:2] + self._redaction_char * (len(username) - 2)
             return f"{masked_username}@{domain}"
-        else:
-            return value[:visible_chars] + self._redaction_char * (len(value) - visible_chars)
+        return value[:visible_chars] + self._redaction_char * (len(value) - visible_chars)

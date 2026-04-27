@@ -1,6 +1,5 @@
 """Browser Use cloud browser provider."""
 
-import logging
 import os
 import threading
 import uuid
@@ -12,7 +11,9 @@ from tools.browser_providers.base import CloudBrowserProvider
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 _pending_create_keys: Dict[str, str] = {}
 _pending_create_keys_lock = threading.Lock()
 

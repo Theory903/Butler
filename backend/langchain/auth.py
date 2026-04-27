@@ -7,7 +7,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -170,7 +172,11 @@ class ButlerConnectionManager:
             connection: Butler connection
         """
         self._connections[connection.connection_id] = connection
-        logger.info("connection_registered", connection_id=connection.connection_id, service=connection.service_name)
+        logger.info(
+            "connection_registered",
+            connection_id=connection.connection_id,
+            service=connection.service_name,
+        )
 
     def unregister_connection(self, connection_id: str) -> None:
         """Unregister a connection.
@@ -202,10 +208,7 @@ class ButlerConnectionManager:
         Returns:
             List of connections
         """
-        return [
-            conn for conn in self._connections.values()
-            if conn.service_name == service_name
-        ]
+        return [conn for conn in self._connections.values() if conn.service_name == service_name]
 
     def get_active_connection(self, connection_id: str) -> Any | None:
         """Get an active connection instance.
@@ -363,9 +366,7 @@ class ButlerAuthMiddleware:
         if not self._auth_context.is_authenticated():
             logger.warning("auth_failed_not_authenticated", session_id=context.session_id)
             return MiddlewareResult(
-                success=False,
-                should_continue=False,
-                error="Authentication required"
+                success=False, should_continue=False, error="Authentication required"
             )
 
         # Check tenant/account access
@@ -377,21 +378,21 @@ class ButlerAuthMiddleware:
                 account_id=context.account_id,
             )
             return MiddlewareResult(
-                success=False,
-                should_continue=False,
-                error="Access denied: tenant/account mismatch"
+                success=False, should_continue=False, error="Access denied: tenant/account mismatch"
             )
 
         # Inject identity into context
         identity = self._auth_context.get_identity()
         if identity:
-            context.metadata.update({
-                "account_id": identity.account_id,
-                "user_id": identity.user_id,
-                "tenant_id": identity.tenant_id,
-                "roles": identity.roles,
-                "permissions": identity.permissions,
-            })
+            context.metadata.update(
+                {
+                    "account_id": identity.account_id,
+                    "user_id": identity.user_id,
+                    "tenant_id": identity.tenant_id,
+                    "roles": identity.roles,
+                    "permissions": identity.permissions,
+                }
+            )
 
         logger.info(
             "auth_success",
@@ -419,8 +420,7 @@ class ButlerAuthMiddleware:
 
         if hook == MiddlewareOrder.PRE_MODEL:
             return await self.pre_model(context)
-        else:
-            return MiddlewareResult(success=True, should_continue=True)
+        return MiddlewareResult(success=True, should_continue=True)
 
     # Legacy methods for backward compatibility
     def authenticate(self, token: str) -> bool:

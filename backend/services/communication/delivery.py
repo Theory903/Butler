@@ -220,9 +220,10 @@ class DeliveryService:
         # 1. Dedup by provider_event_id
         if provider_event_id:
             # Use tenant-scoped key if tenant_id is available
-            tenant_id = getattr(self, 'tenant_id', None)
+            tenant_id = getattr(self, "tenant_id", None)
             if tenant_id:
                 from services.tenant.namespace import get_tenant_namespace
+
                 namespace = get_tenant_namespace(tenant_id)
                 dedup_key = f"{namespace.prefix}:webhook:seen:{provider}:{provider_event_id}"
             else:

@@ -10,7 +10,6 @@ downloading from PR #4588 (YuhangLin).
 
 import asyncio
 import json
-import logging
 import os
 import re
 import uuid
@@ -32,7 +31,9 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import strip_markdown
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants

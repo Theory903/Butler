@@ -13,13 +13,14 @@ it before subsequent attempts, we eliminate the amplification effect.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import tempfile
 import time
 from typing import Any, Mapping, Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _STATE_SUBDIR = "rate_limits"
 _STATE_FILENAME = "nous.json"

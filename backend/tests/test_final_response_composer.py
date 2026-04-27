@@ -106,9 +106,7 @@ def test_compose_from_tool_result_with_locale():
         safe_to_quote=True,
     )
 
-    response = FinalResponseComposer.compose_from_tool_result(
-        envelope, locale="en", timezone="UTC"
-    )
+    response = FinalResponseComposer.compose_from_tool_result(envelope, locale="en", timezone="UTC")
     # Locale handling is a TODO, so just verify it doesn't crash
     assert isinstance(response, str)
 

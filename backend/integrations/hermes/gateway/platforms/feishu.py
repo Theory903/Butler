@@ -52,7 +52,6 @@ import hashlib
 import hmac
 import itertools
 import json
-import logging
 import mimetypes
 import os
 import re
@@ -142,7 +141,9 @@ from gateway.platforms.base import (
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Regex patterns

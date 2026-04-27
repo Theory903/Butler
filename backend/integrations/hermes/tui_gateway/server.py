@@ -2,7 +2,6 @@ import atexit
 import concurrent.futures
 import copy
 import json
-import logging
 import os
 import queue
 import subprocess
@@ -16,7 +15,9 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(

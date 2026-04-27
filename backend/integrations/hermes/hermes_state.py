@@ -15,7 +15,6 @@ Key design decisions:
 """
 
 import json
-import logging
 import random
 import re
 import sqlite3
@@ -25,7 +24,9 @@ from pathlib import Path
 from integrations.hermes.hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 T = TypeVar("T")
 

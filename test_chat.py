@@ -14,6 +14,34 @@ from typing import Dict, Any, Optional
 BASE_URL = "http://localhost:8000"
 API_V1_PREFIX = "/api/v1"
 
+def test_login():
+    """Test login and get authentication token."""
+    print("=== Testing Login ===")
+    
+    url = f"{BASE_URL}{API_V1_PREFIX}/auth/login"
+    
+    payload = {
+        "email": "test@example.com",
+        "password": "test123"
+    }
+    
+    try:
+        response = requests.post(url, json=payload)
+        print(f"Status Code: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            token = data.get("access_token")
+            print(f"Login successful, got token")
+            return token
+        else:
+            print(f"Error: {response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return None
+
 def test_synchronous_chat():
     """Test the synchronous chat endpoint."""
     print("=== Testing Synchronous Chat ===")
@@ -24,7 +52,7 @@ def test_synchronous_chat():
     session_id = str(uuid.uuid4())
     
     payload = {
-        "message": "Hello Butler! This is a test message.",
+        "message": "what is the time",
         "session_id": session_id,
         "stream": False,
         "attachments": [],
@@ -32,8 +60,18 @@ def test_synchronous_chat():
         "mode": "auto"
     }
     
+    # Get token first
+    token = test_login()
+    if not token:
+        print("Failed to get authentication token")
+        return None
+    
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
+    
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, headers=headers)
         print(f"Status Code: {response.status_code}")
         
         if response.status_code == 200:

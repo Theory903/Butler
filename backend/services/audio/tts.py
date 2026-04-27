@@ -4,7 +4,9 @@ from infrastructure.config import settings
 
 from .models import AudioModelProxy, TTSResult
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class TTSManager:

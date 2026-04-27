@@ -5,7 +5,9 @@ from typing import Any
 
 from .base import BaseProvider, ProviderConfig, ProviderType
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class OpenRouterProvider(BaseProvider):

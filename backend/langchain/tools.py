@@ -12,12 +12,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from langchain_core.tools import BaseTool, StructuredTool
+import structlog
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel, create_model
 
-import structlog
-
-from domain.tools.spec import ToolSpec as DomainToolSpec, RiskTier, ApprovalMode
+from domain.tools.hermes_compiler import ButlerToolSpec, RiskTier
 from langchain.runtime import ButlerToolContext
 
 logger = structlog.get_logger(__name__)
@@ -34,7 +33,7 @@ class ButlerLangChainTool(BaseTool):
     - Preserves tenant/account/session context
     """
 
-    spec: DomainToolSpec | None = None
+    spec: ButlerToolSpec | None = None
     tool_context: ButlerToolContext | None = None
     tool_executor: Any | None = None
     direct_implementation: Any | None = None
@@ -45,7 +44,7 @@ class ButlerLangChainTool(BaseTool):
 
     def __init__(
         self,
-        spec: DomainToolSpec | None = None,
+        spec: ButlerToolSpec | None = None,
         tool_context: ButlerToolContext | None = None,
         tool_executor: Any | None = None,
         direct_implementation: Any | None = None,
@@ -65,12 +64,14 @@ class ButlerLangChainTool(BaseTool):
         self.tool_context = tool_context
         self.tool_executor = tool_executor
         self.direct_implementation = direct_implementation
-        
+
         # Only set name/description/schema if spec is provided
         if spec is not None:
             self.name = spec.canonical_name
             # Prefer real description; fall back to name if missing.
-            self.description = (spec.description or spec.name) if hasattr(spec, "description") else spec.name
+            self.description = (
+                (spec.description or spec.name) if hasattr(spec, "description") else spec.name
+            )
 
             # Build Pydantic schema from input_schema if available
             if spec.input_schema:
@@ -123,7 +124,9 @@ class ButlerLangChainTool(BaseTool):
     async def _arun(self, **kwargs: Any) -> Any:
         """Async execution with hybrid governance based on RiskTier."""
         if self.spec is None:
-            raise RuntimeError("ButlerLangChainTool.spec is not initialized. Tool must be created via ButlerToolFactory.")
+            raise RuntimeError(
+                "ButlerLangChainTool.spec is not initialized. Tool must be created via ButlerToolFactory."
+            )
 
         # Check if tool is enabled
         if not self.spec.enabled:
@@ -136,15 +139,18 @@ class ButlerLangChainTool(BaseTool):
         # Hybrid governance: L0/L1 direct, L2/L3/L4 through ToolExecutor
         if self.spec.risk_tier in (RiskTier.L0, RiskTier.L1):
             return await self._execute_direct(**kwargs)
-        else:
-            return await self._execute_with_governance(**kwargs)
+        return await self._execute_with_governance(**kwargs)
 
     async def _execute_direct(self, **kwargs: Any) -> Any:
         """Direct execution for L0/L1 tools with audit logging."""
         if self.spec is None:
-            raise RuntimeError("ButlerLangChainTool.spec is not initialized. Tool must be created via ButlerToolFactory.")
+            raise RuntimeError(
+                "ButlerLangChainTool.spec is not initialized. Tool must be created via ButlerToolFactory."
+            )
         if self.tool_context is None:
-            raise RuntimeError("ButlerLangChainTool.tool_context is not initialized. Tool must be created via ButlerToolFactory.")
+            raise RuntimeError(
+                "ButlerLangChainTool.tool_context is not initialized. Tool must be created via ButlerToolFactory."
+            )
 
         if self.direct_implementation is None:
             logger.warning(
@@ -152,7 +158,9 @@ class ButlerLangChainTool(BaseTool):
                 tool_name=self.spec.canonical_name,
                 risk_tier=self.spec.risk_tier.value,
             )
-            raise RuntimeError(f"No direct implementation for L0/L1 tool: {self.spec.canonical_name}")
+            raise RuntimeError(
+                f"No direct implementation for L0/L1 tool: {self.spec.canonical_name}"
+            )
 
         try:
             result = await self._call_direct(**kwargs)
@@ -180,9 +188,13 @@ class ButlerLangChainTool(BaseTool):
     async def _execute_with_governance(self, **kwargs: Any) -> Any:
         """Execution through ToolExecutor for L2/L3/L4 tools with full governance."""
         if self.spec is None:
-            raise RuntimeError("ButlerLangChainTool.spec is not initialized. Tool must be created via ButlerToolFactory.")
+            raise RuntimeError(
+                "ButlerLangChainTool.spec is not initialized. Tool must be created via ButlerToolFactory."
+            )
         if self.tool_context is None:
-            raise RuntimeError("ButlerLangChainTool.tool_context is not initialized. Tool must be created via ButlerToolFactory.")
+            raise RuntimeError(
+                "ButlerLangChainTool.tool_context is not initialized. Tool must be created via ButlerToolFactory."
+            )
 
         if self.tool_executor is None:
             logger.error(
@@ -195,9 +207,10 @@ class ButlerLangChainTool(BaseTool):
         try:
             # For L2/L3/L4, route through ToolExecutor.execute_canonical
             # This handles approval checks, sandboxing, and full audit trail
-            from services.tools.executor import ToolExecutionRequest
-            from domain.runtime.context import RuntimeContext
             import uuid
+
+            from domain.runtime.context import RuntimeContext
+            from services.tools.executor import ToolExecutionRequest
 
             # Build RuntimeContext for canonical execution
             context = RuntimeContext.create(
@@ -232,8 +245,7 @@ class ButlerLangChainTool(BaseTool):
         """Call the direct implementation function."""
         if asyncio.iscoroutinefunction(self.direct_implementation):
             return await self.direct_implementation(**kwargs)
-        else:
-            return self.direct_implementation(**kwargs)
+        return self.direct_implementation(**kwargs)
 
 
 class ButlerToolFactory:
@@ -248,7 +260,7 @@ class ButlerToolFactory:
 
     @staticmethod
     def create_tool(
-        spec: DomainToolSpec,
+        spec: ButlerToolSpec,
         tool_context: ButlerToolContext,
         tool_executor: Any | None = None,
         direct_implementation: Any | None = None,
@@ -256,7 +268,7 @@ class ButlerToolFactory:
         """Create a LangChain tool from canonical ToolSpec.
 
         Args:
-            spec: Canonical ToolSpec from domain/tools/spec.py
+            spec: Canonical ButlerToolSpec from domain/tools/hermes_compiler.py
             tool_context: ButlerToolContext for context propagation
             tool_executor: Butler's ToolExecutor for L2/L3/L4 governance
             direct_implementation: Direct function for L0/L1 tools
@@ -273,7 +285,7 @@ class ButlerToolFactory:
 
     @staticmethod
     def create_tools_from_specs(
-        specs: list[DomainToolSpec],
+        specs: list[ButlerToolSpec],
         tool_context: ButlerToolContext,
         tool_executor: Any | None = None,
         direct_implementations: dict[str, Any] | None = None,
@@ -297,7 +309,21 @@ class ButlerToolFactory:
                 logger.debug("skipping_disabled_tool", tool_name=spec.canonical_name)
                 continue
 
+            # Skip blocked tools
+            if hasattr(spec, "blocked") and spec.blocked:
+                logger.debug("skipping_blocked_tool", tool_name=spec.canonical_name, block_reason=spec.block_reason)
+                continue
+
             direct_impl = direct_implementations.get(spec.canonical_name)
+            logger.info(
+                "tool_direct_impl_lookup",
+                tool_name=spec.canonical_name,
+                risk_tier=spec.risk_tier.value if hasattr(spec, "risk_tier") else "unknown",
+                has_direct_impl=direct_impl is not None,
+                available_direct_impls=list(direct_implementations.keys())
+                if direct_implementations
+                else [],
+            )
             tool = ButlerToolFactory.create_tool(
                 spec=spec,
                 tool_context=tool_context,
@@ -317,9 +343,9 @@ class ButlerToolFactory:
 
     @staticmethod
     def filter_by_risk_tier(
-        specs: list[DomainToolSpec],
+        specs: list[ButlerToolSpec],
         max_tier: RiskTier = RiskTier.L3,
-    ) -> list[DomainToolSpec]:
+    ) -> list[ButlerToolSpec]:
         """Filter specs by maximum risk tier.
 
         Args:
@@ -329,20 +355,27 @@ class ButlerToolFactory:
         Returns:
             Filtered list of canonical ToolSpec instances
         """
-        tier_order = {RiskTier.L0: 0, RiskTier.L1: 1, RiskTier.L2: 2, RiskTier.L3: 3, RiskTier.L4: 4}
+        tier_order = {
+            RiskTier.L0: 0,
+            RiskTier.L1: 1,
+            RiskTier.L2: 2,
+            RiskTier.L3: 3,
+            RiskTier.L4: 4,
+        }
         max_level = tier_order.get(max_tier, 3)
 
         return [
-            spec for spec in specs
+            spec
+            for spec in specs
             if spec.enabled and tier_order.get(spec.risk_tier, 0) <= max_level
         ]
 
     @staticmethod
     def filter_by_visibility(
-        specs: list[DomainToolSpec],
+        specs: list[ButlerToolSpec],
         account_tier: str = "free",
         channel: str = "api",
-    ) -> list[DomainToolSpec]:
+    ) -> list[ButlerToolSpec]:
         """Filter specs by visibility rules.
 
         Args:

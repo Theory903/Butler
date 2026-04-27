@@ -5,12 +5,13 @@ Uses the same lazy-import + BaseRequest pattern as feishu_comment.py.
 """
 
 import json
-import logging
 import threading
 
 from tools.registry import registry, tool_error, tool_result
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Thread-local storage for the lark client injected by feishu_comment handler.
 _local = threading.local()

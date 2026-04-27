@@ -6,9 +6,10 @@ Phase I: AB testing using statistical analysis.
 import logging
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid4
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -176,23 +177,27 @@ class ButlerABTesting:
             if values:
                 import statistics
 
-                results["variants"].append({
-                    "variant_id": variant.variant_id,
-                    "name": variant.name,
-                    "count": len(values),
-                    "mean": statistics.mean(values),
-                    "median": statistics.median(values),
-                    "stddev": statistics.stdev(values) if len(values) > 1 else 0,
-                })
+                results["variants"].append(
+                    {
+                        "variant_id": variant.variant_id,
+                        "name": variant.name,
+                        "count": len(values),
+                        "mean": statistics.mean(values),
+                        "median": statistics.median(values),
+                        "stddev": statistics.stdev(values) if len(values) > 1 else 0,
+                    }
+                )
             else:
-                results["variants"].append({
-                    "variant_id": variant.variant_id,
-                    "name": variant.name,
-                    "count": 0,
-                    "mean": 0,
-                    "median": 0,
-                    "stddev": 0,
-                })
+                results["variants"].append(
+                    {
+                        "variant_id": variant.variant_id,
+                        "name": variant.name,
+                        "count": 0,
+                        "mean": 0,
+                        "median": 0,
+                        "stddev": 0,
+                    }
+                )
 
         return results
 

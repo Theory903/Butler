@@ -12,7 +12,6 @@ import asyncio
 import concurrent.futures
 import contextvars
 import json
-import logging
 import os
 import subprocess
 import sys
@@ -38,7 +37,9 @@ from hermes_constants import get_hermes_home
 from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:

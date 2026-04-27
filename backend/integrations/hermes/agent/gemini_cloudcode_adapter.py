@@ -29,7 +29,6 @@ reverse-engineered from the opencode-gemini-auth and clawdbot implementations.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import time
 import uuid
@@ -48,7 +47,9 @@ from agent.google_code_assist import (
     resolve_project_context,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # =============================================================================

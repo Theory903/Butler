@@ -10,7 +10,6 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import json
-import logging
 import os
 import re
 import time
@@ -46,7 +45,9 @@ from gateway.platforms.base import (
 )
 
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

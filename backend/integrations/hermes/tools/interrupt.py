@@ -18,7 +18,9 @@ import logging
 import os
 import threading
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in
 # tools/environments/base.py.  Enables per-call logging of set/check so the

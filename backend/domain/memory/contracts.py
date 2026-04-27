@@ -70,7 +70,7 @@ class IMemoryWriteStore(DomainService):
     @abstractmethod
     async def write(self, request: Any, tenant_id: str) -> Any:
         """Dispatch a MemoryWriteRequest through the policy router.
-        
+
         Args:
             request: MemoryWriteRequest to write
             tenant_id: Required tenant UUID for multi-tenant isolation

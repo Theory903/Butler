@@ -53,8 +53,12 @@ class SessionComponent(BaseModel):
     session_id: str = Field(..., description="Session identifier")
     user_id: str = Field(..., description="User identifier")
     tenant_id: str = Field(..., description="Tenant identifier")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="Session creation time")
-    updated_at: datetime = Field(default_factory=datetime.utcnow, description="Session last update time")
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow, description="Session creation time"
+    )
+    updated_at: datetime = Field(
+        default_factory=datetime.utcnow, description="Session last update time"
+    )
     messages: list[MessageComponent] = Field(default_factory=list, description="Session messages")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 

@@ -9,7 +9,6 @@ thread while the event loop lives on the main thread).
 
 import asyncio
 import json
-import logging
 from collections import deque
 from typing import Any, Callable, Deque, Dict
 
@@ -21,7 +20,9 @@ from .tools import (
     make_tool_call_id,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _send_update(

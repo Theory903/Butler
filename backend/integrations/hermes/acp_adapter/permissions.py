@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Callable
 
@@ -12,7 +11,9 @@ from acp.schema import (
     PermissionOption,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Maps ACP PermissionOptionKind -> hermes approval result strings
 _KIND_TO_HERMES = {

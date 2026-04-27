@@ -8,7 +8,9 @@ from pathlib import Path
 
 from .registry import ButlerSkillSpec, ButlerSkillsRegistry
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerSkillsManager:

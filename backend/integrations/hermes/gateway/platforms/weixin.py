@@ -16,7 +16,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import logging
 import mimetypes
 import os
 import re
@@ -30,7 +29,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 try:
     import aiohttp

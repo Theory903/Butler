@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class MiddlewareOrder(str, Enum):
@@ -86,15 +88,14 @@ class ButlerBaseMiddleware(ABC):
         try:
             if hook == MiddlewareOrder.PRE_MODEL:
                 return await self.pre_model(context)
-            elif hook == MiddlewareOrder.POST_MODEL:
+            if hook == MiddlewareOrder.POST_MODEL:
                 return await self.post_model(context)
-            elif hook == MiddlewareOrder.PRE_TOOL:
+            if hook == MiddlewareOrder.PRE_TOOL:
                 return await self.pre_tool(context)
-            elif hook == MiddlewareOrder.POST_TOOL:
+            if hook == MiddlewareOrder.POST_TOOL:
                 return await self.post_tool(context)
-            else:
-                logger.warning("unknown_middleware_hook", hook=hook)
-                return MiddlewareResult(success=True, should_continue=True)
+            logger.warning("unknown_middleware_hook", hook=hook)
+            return MiddlewareResult(success=True, should_continue=True)
         except Exception as exc:
             logger.exception("middleware_execution_failed", hook=hook, exc=str(exc))
             return MiddlewareResult(

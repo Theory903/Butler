@@ -8,7 +8,9 @@ from typing import Any
 
 from domain.ml.contracts import FeatureStoreContract, FeatureVector
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class SignalSanitizer:

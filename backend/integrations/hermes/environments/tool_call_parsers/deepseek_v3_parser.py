@@ -15,7 +15,6 @@ Fixes Issue #989: Support for multiple simultaneous tool calls.
 
 import re
 import uuid
-import logging
 from typing import List, Optional, Tuple
 
 from openai.types.chat.chat_completion_message_tool_call import (
@@ -25,7 +24,9 @@ from openai.types.chat.chat_completion_message_tool_call import (
 
 from integrations.hermes.environments.tool_call_parsers import ParseResult, ToolCallParser, register_parser
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 @register_parser("deepseek_v3")
 class DeepSeekV3ToolCallParser(ToolCallParser):

@@ -9,7 +9,9 @@ from core.deps import get_orchestrator_service as _get_orchestrator
 from domain.orchestrator.meeting_telemetry import meeting_telemetry
 from infrastructure.database import async_session_factory
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/v1/voice", tags=["voice", "realtime"])
 
 

@@ -19,6 +19,10 @@ import sys
 from pathlib import Path
 from hermes_constants import get_hermes_home
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 
 # Methods clients send as periodic liveness probes. They are not part of the
 # ACP schema, so the acp router correctly returns JSON-RPC -32601 to the
@@ -101,7 +105,6 @@ def main() -> None:
     _setup_logging()
     _load_env()
 
-    logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")
 
     # Ensure the project root is on sys.path so ``from run_agent import AIAgent`` works

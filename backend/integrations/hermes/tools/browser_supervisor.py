@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -31,7 +30,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import websockets
 from websockets.asyncio.client import ClientConnection
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ── Config defaults ───────────────────────────────────────────────────────────

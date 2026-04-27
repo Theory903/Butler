@@ -46,7 +46,6 @@ import contextlib
 import hashlib
 import http.server
 import json
-import logging
 import os
 import secrets
 import socket
@@ -62,7 +61,9 @@ from typing import Any, Dict, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # =============================================================================

@@ -8,7 +8,9 @@ from domain.memory.models import KnowledgeEntity
 from domain.ml.contracts import IReasoningRuntime
 from services.memory.knowledge_repo_contract import KnowledgeRepoContract
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class EntityResolutionEngine:

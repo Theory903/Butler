@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 

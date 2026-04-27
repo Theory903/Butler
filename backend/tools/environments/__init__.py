@@ -17,6 +17,7 @@ from integrations.hermes.tools.environments.base import (
     _ThreadedProcessHandle,
     get_sandbox_dir,
     set_activity_callback,
+    touch_activity_if_due,
 )
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "_ThreadedProcessHandle",
     "get_sandbox_dir",
     "set_activity_callback",
+    "touch_activity_if_due",
     "_get_activity_callback",
     "_pipe_stdin",
     "_popen_bash",

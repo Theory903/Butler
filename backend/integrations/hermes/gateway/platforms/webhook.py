@@ -30,7 +30,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-import logging
 import re
 import subprocess
 import time
@@ -52,7 +51,9 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from domain.policy.capability_flags import TrustLevel
 from services.orchestrator.subagent_runtime import (
     BudgetEnforcer,
     BudgetExceededError,
@@ -19,7 +20,6 @@ from services.orchestrator.subagent_runtime import (
     SubAgentProfile,
     TrustBoundaryViolationError,
 )
-from domain.policy.capability_flags import TrustLevel
 
 
 @pytest.fixture
@@ -61,10 +61,7 @@ class TestRuntimeClass:
         assert RuntimeClass.REMOTE_PEER.isolation_level == 3
         assert RuntimeClass.HUMAN_GATE.isolation_level == 4
 
-        assert (
-            RuntimeClass.IN_PROCESS.isolation_level
-            < RuntimeClass.SANDBOX.isolation_level
-        )
+        assert RuntimeClass.IN_PROCESS.isolation_level < RuntimeClass.SANDBOX.isolation_level
 
 
 class TestSubAgentProfile:
@@ -88,7 +85,9 @@ class TestSubAgentProfile:
 
     def test_in_process_trust_requirement(self) -> None:
         """Test in-process runtime requires minimum trust level."""
-        with pytest.raises(ValueError, match="in-process execution requires trust level >= VERIFIED_USER"):
+        with pytest.raises(
+            ValueError, match="in-process execution requires trust level >= VERIFIED_USER"
+        ):
             SubAgentProfile(
                 parent_agent_id="parent:test",
                 session_id="session:test",

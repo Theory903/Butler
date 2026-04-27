@@ -163,6 +163,11 @@ class OpenAICompatibleProvider(BaseReasoningHTTPProvider):
             f"{self._base_url}/{path.lstrip('/')}{separator}{self._api_key_query_param}={api_key}"
         )
 
+    def _safe_url_for_log(self, url: str) -> str:
+        if self._api_key_query_param is None:
+            return url
+        return str(httpx.URL(url).copy_set_param(self._api_key_query_param, "[REDACTED]"))
+
     def _payload(self, request: ReasoningRequest, *, stream: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._extract_model(request, self._default_model),
@@ -184,14 +189,18 @@ class OpenAICompatibleProvider(BaseReasoningHTTPProvider):
                     formatted_tools.append(tool)
                 else:
                     # Wrap in OpenAI function calling format
-                    formatted_tools.append({
-                        "type": "function",
-                        "function": {
-                            "name": tool.get("name"),
-                            "description": tool.get("description", ""),
-                            "parameters": tool.get("parameters", {"type": "object", "properties": {}}),
-                        },
-                    })
+                    formatted_tools.append(
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": tool.get("name"),
+                                "description": tool.get("description", ""),
+                                "parameters": tool.get(
+                                    "parameters", {"type": "object", "properties": {}}
+                                ),
+                            },
+                        }
+                    )
             payload["tools"] = formatted_tools
 
         if request.system_prompt:
@@ -207,12 +216,25 @@ class OpenAICompatibleProvider(BaseReasoningHTTPProvider):
         logger.debug(
             "provider_generate_request",
             provider=self.provider_name,
-            url=url,
+            url=self._safe_url_for_log(url),
             payload=payload,
         )
 
         response = await self._client.post(url, json=payload, headers=self._headers())
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as err:
+            logger.warning(
+                "provider_generate_http_error",
+                provider=self.provider_name,
+                status_code=response.status_code,
+                url=self._safe_url_for_log(str(response.url)),
+                response_body=response.text[:2000],
+            )
+            raise RuntimeError(
+                f"{self.provider_name} provider returned HTTP {response.status_code}: "
+                f"{response.text[:1000]}"
+            ) from err
         data = response.json()
 
         latency_ms = round((time.monotonic() - started_at) * 1000, 1)
@@ -315,6 +337,7 @@ class GroqProvider(OpenAICompatibleProvider):
         model: str | None = None,
     ) -> None:
         from infrastructure.config import settings
+
         default_model = model or settings.DEFAULT_MODEL
         super().__init__(
             api_key=api_key or os.environ.get("GROQ_API_KEY"),
@@ -394,13 +417,12 @@ class GoogleGeminiProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai",
-        model: str = "gemini-2.0-flash",
+        model: str = "gemma-4-26b-a4b-it",
     ) -> None:
         super().__init__(
-            api_key=api_key or os.environ.get("GOOGLE_API_KEY"),
+            api_key=api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"),
             base_url=base_url,
             default_model=model,
-            api_key_query_param="key",
         )
 
 

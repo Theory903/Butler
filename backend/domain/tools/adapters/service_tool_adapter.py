@@ -30,7 +30,7 @@ from __future__ import annotations
 from typing import Any
 
 from domain.tools.adapters import DiscoveredTool, ToolAdapter
-from domain.tools.spec import ApprovalMode, RiskTier, ToolSpec
+from domain.tools.spec import ApprovalMode, ToolSpec
 
 
 class ServiceToolAdapter(ToolAdapter):
@@ -119,7 +119,7 @@ class ServiceToolAdapter(ToolAdapter):
                 owner=category,
                 category=category,
             )
-        elif category in ["calendar", "communication"]:
+        if category in ["calendar", "communication"]:
             # L2: write/communication operations
             return ToolSpec.l2_write(
                 name=name,
@@ -130,7 +130,7 @@ class ServiceToolAdapter(ToolAdapter):
                 required_permissions=frozenset([f"{category}:write"]),
                 approval_mode=ApprovalMode.IMPLICIT,
             )
-        elif category in ["code", "browser", "device"]:
+        if category in ["code", "browser", "device"]:
             # L3: code execution, device control
             return ToolSpec.l3_destructive(
                 name=name,
@@ -140,15 +140,14 @@ class ServiceToolAdapter(ToolAdapter):
                 category=category,
                 required_permissions=frozenset([f"{category}:execute"]),
             )
-        else:
-            # Default to L1 for unknown categories
-            return ToolSpec.l1_readonly(
-                name=name,
-                canonical_name=f"service.{name}",
-                description=description,
-                owner=category,
-                category=category,
-            )
+        # Default to L1 for unknown categories
+        return ToolSpec.l1_readonly(
+            name=name,
+            canonical_name=f"service.{name}",
+            description=description,
+            owner=category,
+            category=category,
+        )
 
     def bind_executor(self, spec: ToolSpec) -> Any:
         """Bind executor to the tool spec.

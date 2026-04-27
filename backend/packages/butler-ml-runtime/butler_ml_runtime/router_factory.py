@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 
 from butler_core.ml.semantic_router import SemanticEmbeddingRouter
+
 from butler_ml_runtime.providers.disabled import DisabledEmbeddingProvider
 from butler_ml_runtime.providers.remote import RemoteEmbeddingProvider
 from butler_ml_runtime.providers.sentence_transformers_cpu import (

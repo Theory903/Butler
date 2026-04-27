@@ -45,5 +45,7 @@ class KnowledgeRepoContract(DomainService):
         """Traverse the graph to find related entities."""
 
     @abstractmethod
-    async def resolve_identity(self, account_id: UUID, name: str, tenant_id: UUID | None = None) -> KnowledgeEntity | None:
+    async def resolve_identity(
+        self, account_id: UUID, name: str, tenant_id: UUID | None = None
+    ) -> KnowledgeEntity | None:
         """Resolve a name (or alias) to a canonical KnowledgeEntity."""

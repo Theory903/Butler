@@ -52,11 +52,7 @@ class FallbackChain:
     def get_routing_order(self, health_checks: dict[str, ProviderHealth]) -> list[str]:
         """Get ordered list of providers based on health."""
         providers = [self.primary_provider] + list(self.fallback_providers)
-        available = [
-            p
-            for p in providers
-            if p in health_checks and health_checks[p].is_available()
-        ]
+        available = [p for p in providers if p in health_checks and health_checks[p].is_available()]
         return available[: self.max_retries + 1]
 
     def has_fallback(self) -> bool:

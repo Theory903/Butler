@@ -55,7 +55,6 @@ from __future__ import annotations
 
 import difflib
 import json
-import logging
 import os
 import re
 import shlex
@@ -77,7 +76,9 @@ except ImportError:  # pragma: no cover
 
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 300

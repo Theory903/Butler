@@ -6,13 +6,32 @@ Provides FastAPI endpoints for agent execution and management.
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+
+def _tool_call_get(tc: Any, key: str, default: Any = None) -> Any:
+    """Safely extract a value from a tool call, supporting both dict-style and object-style.
+
+    Args:
+        tc: Tool call (dict with keys like "name", "args", "id" or object with attributes)
+        key: Key to extract (e.g., "name", "args", "id")
+        default: Default value if key not found
+
+    Returns:
+        The extracted value or default
+    """
+    if isinstance(tc, dict):
+        return tc.get(key, default)
+    return getattr(tc, key, default)
 
 
 # Request/Response Schemas
+
 
 class AgentCreateRequest(BaseModel):
     """Request to create an agent."""
@@ -97,8 +116,8 @@ class ButlerAgentServer:
         async def create_agent(request: AgentCreateRequest) -> dict[str, str]:
             """Create a new agent session."""
             try:
-                from langchain.agent import create_agent
                 from domain.tools.hermes_compiler import ButlerToolSpec
+                from langchain.agent import create_agent
 
                 # Get tool specs (mock for now)
                 tool_specs: list[ButlerToolSpec] = []
@@ -115,7 +134,9 @@ class ButlerAgentServer:
                     user_id=request.user_id,
                     preferred_model=request.preferred_model,
                     system_prompt=request.system_prompt,
-                    checkpoint_config={"connection_string": ""} if request.enable_checkpointing else None,
+                    checkpoint_config={"connection_string": ""}
+                    if request.enable_checkpointing
+                    else None,
                     middleware_registry=self._middleware_registry,
                     memory_service=self._memory_service,
                 )
@@ -162,7 +183,7 @@ class ButlerAgentServer:
 
                     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
                         tool_calls = [
-                            {"name": tc.name, "args": tc.args}
+                            {"name": _tool_call_get(tc, "name"), "args": _tool_call_get(tc, "args")}
                             for tc in last_message.tool_calls
                         ]
 
@@ -299,6 +320,7 @@ class ButlerAgentRuntime:
             Agent ID
         """
         import uuid
+
         agent_id = str(uuid.uuid4())
 
         self._running_agents[agent_id] = {

@@ -16,14 +16,14 @@ Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 from __future__ import annotations
 
 import asyncio
-import logging
-import queue
 import re
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-logger = logging.getLogger("gateway.stream_consumer")
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Sentinel to signal the stream is complete
 _DONE = object()

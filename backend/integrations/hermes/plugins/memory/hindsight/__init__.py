@@ -28,7 +28,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
-import logging
 import os
 import threading
 
@@ -39,7 +38,9 @@ from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"

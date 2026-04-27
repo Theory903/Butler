@@ -24,7 +24,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-import logging
 import os
 import socket as _socket
 import re
@@ -47,7 +46,9 @@ from gateway.platforms.base import (
     is_network_accessible,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Default settings
 DEFAULT_HOST = "127.0.0.1"

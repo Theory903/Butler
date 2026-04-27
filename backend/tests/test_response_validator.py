@@ -2,7 +2,7 @@
 
 import pytest
 
-from domain.runtime.response_validator import ResponseValidator, ResponseValidationError
+from domain.runtime.response_validator import ResponseValidationError, ResponseValidator
 
 
 def test_validate_user_facing_response_safe():
@@ -45,7 +45,7 @@ def test_validate_user_facing_response_langchain_human_message():
 
 def test_validate_user_facing_response_stack_trace():
     """Test validation rejects stack traces."""
-    unsafe_response = "Traceback (most recent call last):\n  File \"test.py\", line 1"
+    unsafe_response = 'Traceback (most recent call last):\n  File "test.py", line 1'
     with pytest.raises(ResponseValidationError) as exc_info:
         ResponseValidator.validate_user_facing_response(unsafe_response)
     assert "Stack trace" in str(exc_info.value)
@@ -145,7 +145,7 @@ def test_sanitize_user_facing_response_safe():
 
 def test_sanitize_user_facing_response_stack_trace():
     """Test sanitization removes stack traces."""
-    unsafe_response = "Error: Traceback (most recent call last):\n  File \"test.py\", line 1\nError"
+    unsafe_response = 'Error: Traceback (most recent call last):\n  File "test.py", line 1\nError'
     sanitized = ResponseValidator.sanitize_user_facing_response(unsafe_response)
     assert "[system error details removed]" in sanitized
     assert "Traceback" not in sanitized

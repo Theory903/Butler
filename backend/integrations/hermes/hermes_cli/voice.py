@@ -21,7 +21,6 @@ Two usage modes are exposed:
 
 from __future__ import annotations
 
-import logging
 import os
 import sys
 import threading
@@ -34,7 +33,9 @@ from tools.voice_mode import (
     transcribe_recording,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _debug(msg: str) -> None:

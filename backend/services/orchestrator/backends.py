@@ -1,3 +1,18 @@
+"""Butler agent backends.
+
+Three execution strategies, one interface contract:
+
+  ButlerDeterministicExecutor  – pre-planned tool call, zero LLM reasoning.
+  HermesAgentBackend           – single-step local reasoning + optional tool.
+  LangGraphAgentBackendAdapter – full multi-step graph runtime.
+
+Select at startup via the BUTLER_AGENT_RUNTIME environment variable:
+  "langgraph"  (default) → LangGraphAgentBackendAdapter
+  "legacy"               → HermesAgentBackend
+Any other value is treated as an invalid flag, logged as a warning, and falls
+back to "langgraph".
+"""
+
 from __future__ import annotations
 
 import json
@@ -6,7 +21,7 @@ import re
 import time
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -18,15 +33,24 @@ from domain.tools.hermes_compiler import ButlerToolSpec
 
 logger = structlog.get_logger(__name__)
 
-# Feature flag for agent runtime: "legacy" (HermesAgentBackend) or "langgraph" (LangGraphAgentBackend)
-BUTLER_AGENT_RUNTIME = os.getenv("BUTLER_AGENT_RUNTIME", "langgraph").lower()
+# ---------------------------------------------------------------------------
+# Feature flag
+# ---------------------------------------------------------------------------
+
+BUTLER_AGENT_RUNTIME: Final[str] = os.getenv("BUTLER_AGENT_RUNTIME", "langgraph").lower()
+_VALID_RUNTIMES: Final[frozenset[str]] = frozenset({"langgraph", "legacy"})
+
+
+# ---------------------------------------------------------------------------
+# Shared data structures
+# ---------------------------------------------------------------------------
 
 
 class AgentDecision(BaseModel):
-    """Structured single-step agent decision.
+    """Structured single-step agent decision returned by the LLM.
 
-    This keeps the local Hermes bridge simple and deterministic enough to be safe,
-    without dragging you back into regex soup as a life philosophy.
+    ``extra="forbid"`` ensures unexpected fields from a misbehaving model
+    surface immediately rather than being silently discarded.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -38,42 +62,66 @@ class AgentDecision(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class NormalizedMessage:
+    """Immutable, normalised view of a single conversation turn."""
+
     role: str
     content: str
 
 
+# ---------------------------------------------------------------------------
+# ButlerDeterministicExecutor
+# ---------------------------------------------------------------------------
+
+
 class ButlerDeterministicExecutor:
-    """Executes a directly planned tool call without LLM reasoning."""
+    """Executes a pre-planned tool call without LLM reasoning.
+
+    The tool to call is resolved from, in order:
+      1. ``ctx.task.tool_name`` + ``ctx.task.input_data``
+      2. The first non-terminal step in ``ctx.workflow.plan_schema``
+    """
 
     def __init__(self, tools_service: Any) -> None:
         self._tools = tools_service
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     async def execute(self, ctx: ExecutionContext) -> dict[str, Any]:
         started_at = time.monotonic()
         action, params = self._resolve_action_and_params(ctx)
+
         if not action:
+            logger.warning(
+                "deterministic_executor_no_action",
+                task_id=str(ctx.task.id),
+                session_id=ctx.session_id,
+            )
             return {
                 "content": "No executable deterministic step was found.",
                 "actions": [],
-                "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "requires_approval": False,
+                "duration_ms": _elapsed_ms(started_at),
             }
 
-        bound_logger = logger.bind(
+        bound = logger.bind(
             executor="deterministic",
             action=action,
             task_id=str(ctx.task.id),
             session_id=ctx.session_id,
         )
-        bound_logger.info("deterministic_execution_start")
+        bound.info("deterministic_execution_start")
 
         spec = self._resolve_tool_spec(action)
         if spec is not None and spec.approval_mode in {"explicit", "critical"}:
-            from services.orchestrator.executor import ApprovalRequired
+            from services.orchestrator.executor import ApprovalRequired  # local to avoid circular
 
             raise ApprovalRequired(
                 approval_type="tool_execution",
                 description=(
-                    f"Approve tool '{spec.name}' ({spec.risk_tier.value}, {spec.approval_mode})"
+                    f"Approve tool '{spec.name}' "
+                    f"({spec.risk_tier.value}, {spec.approval_mode})"
                 ),
                 risk_tier=spec.risk_tier.value,
                 tool_name=spec.name,
@@ -88,44 +136,43 @@ class ButlerDeterministicExecutor:
             session_id=ctx.session_id,
         )
 
-        payload = self._result_to_dict(result)
-        content = payload.get("data")
-        if isinstance(content, dict):
-            for key in ("content", "text", "message"):
-                value = content.get(key)
-                if isinstance(value, str) and value.strip():
-                    content = value
-                    break
-        if content is None:
-            content = payload.get("content")
-        if content is None:
-            content = json.dumps(payload, ensure_ascii=False, default=str)
+        payload = _result_to_dict(result)
+        content = _extract_content(payload)
 
+        bound.info("deterministic_execution_complete", duration_ms=_elapsed_ms(started_at))
         return {
-            "content": str(content),
+            "content": content,
             "actions": [payload],
             "requires_approval": False,
-            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "duration_ms": _elapsed_ms(started_at),
         }
 
-    def _resolve_action_and_params(self, ctx: ExecutionContext) -> tuple[str, dict[str, Any]]:
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_action_and_params(
+        self, ctx: ExecutionContext
+    ) -> tuple[str, dict[str, Any]]:
         task_tool_name = str(getattr(ctx.task, "tool_name", "") or "").strip()
         task_input_data = getattr(ctx.task, "input_data", {})
-        if task_tool_name:
-            return task_tool_name, task_input_data if isinstance(task_input_data, dict) else {}
 
-        plan = getattr(ctx.workflow, "plan_schema", {}) or {}
-        steps = plan.get("steps", [])
+        if task_tool_name:
+            params = task_input_data if isinstance(task_input_data, dict) else {}
+            return task_tool_name, params
+
+        plan: dict[str, Any] = getattr(ctx.workflow, "plan_schema", {}) or {}
+        steps: list[Any] = plan.get("steps", [])
 
         if not isinstance(steps, list) or not steps:
             return "", {}
 
-        executable_step = self._first_executable_step(steps)
-        if executable_step is None:
+        step = self._first_executable_step(steps)
+        if step is None:
             return "", {}
 
-        action = str(executable_step.get("action", "")).strip()
-        params = executable_step.get("params", {})
+        action = str(step.get("action", "")).strip()
+        params = step.get("params", {})
         if not isinstance(params, dict):
             params = {}
         return action, params
@@ -134,40 +181,50 @@ class ButlerDeterministicExecutor:
         specs = getattr(self._tools, "_specs", None)
         if not isinstance(specs, dict):
             return None
-
         spec = specs.get(action)
-        if isinstance(spec, ButlerToolSpec):
-            return spec
-        return None
+        return spec if isinstance(spec, ButlerToolSpec) else None
 
-    def _first_executable_step(self, steps: list[dict[str, Any]]) -> dict[str, Any] | None:
+    @staticmethod
+    def _first_executable_step(
+        steps: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        _terminal = frozenset({"respond", "reply", "final"})
         for step in steps:
             if not isinstance(step, dict):
                 continue
             action = str(step.get("action", "")).strip().lower()
-            if action and action not in {"respond", "reply", "final"}:
+            if action and action not in _terminal:
                 return step
         return None
 
-    def _result_to_dict(self, result: Any) -> dict[str, Any]:
-        if hasattr(result, "model_dump"):
-            return dict(result.model_dump())
-        if hasattr(result, "dict"):
-            return dict(result.dict())
-        if isinstance(result, dict):
-            return dict(result)
-        return {"data": result}
+
+# ---------------------------------------------------------------------------
+# HermesAgentBackend
+# ---------------------------------------------------------------------------
 
 
 class HermesAgentBackend:
     """Single-step local agent backend.
 
     Flow:
-    1. Normalize context messages
-    2. Ask reasoning runtime for one structured decision
-    3. Optionally execute one tool
-    4. Return final text
+      1. Normalise context messages.
+      2. Ask the reasoning runtime for one structured ``AgentDecision``.
+      3. Optionally execute one tool.
+      4. Stream the final text in fixed-size chunks, then emit a final event.
     """
+
+    _SYSTEM_SUFFIX: Final[str] = (
+        "You are Butler's local agent backend.\n"
+        "You may either answer directly or call exactly one tool.\n"
+        "Return JSON only with this schema:\n"
+        "{\n"
+        '  "response": "assistant reply or short explanation",\n'
+        '  "tool_name": "optional tool name or null",\n'
+        '  "tool_params": {}\n'
+        "}\n"
+        "Do not invent tool names.\n"
+        "If no tool is needed, set tool_name to null."
+    )
 
     def __init__(
         self,
@@ -185,7 +242,12 @@ class HermesAgentBackend:
         self._default_tier = default_tier
         self._stream_chunk_size = stream_chunk_size
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     async def run(self, ctx: ExecutionContext) -> dict[str, Any]:
+        """Non-streaming execution.  Drains run_streaming and returns a dict."""
         started_at = time.monotonic()
         content_parts: list[str] = []
         final_content: str | None = None
@@ -196,21 +258,21 @@ class HermesAgentBackend:
                 if token:
                     content_parts.append(token)
             elif isinstance(event, StreamFinalEvent):
-                final_payload_content = str(event.payload.get("content", "") or "")
-                if final_payload_content:
-                    final_content = final_payload_content
+                candidate = str(event.payload.get("content", "") or "")
+                if candidate:
+                    final_content = candidate
 
         content = final_content if final_content is not None else "".join(content_parts)
-
         return {
             "content": content,
             "actions": [],
-            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "duration_ms": _elapsed_ms(started_at),
         }
 
     async def run_streaming(self, ctx: ExecutionContext) -> AsyncGenerator[ButlerEvent]:
+        """Streaming execution — yields token events then a final event."""
         started_at = time.monotonic()
-        bound_logger = logger.bind(
+        bound = logger.bind(
             backend="hermes_agent",
             task_id=str(ctx.task.id),
             session_id=ctx.session_id,
@@ -221,7 +283,7 @@ class HermesAgentBackend:
         messages = self._normalize_messages(getattr(ctx, "messages", []) or [])
         prompt = self._build_prompt(ctx=ctx, messages=messages)
 
-        bound_logger.info(
+        bound.info(
             "agent_reasoning_start",
             message_count=len(messages),
             tool_count=len(getattr(ctx, "toolset", []) or []),
@@ -232,8 +294,10 @@ class HermesAgentBackend:
 
         final_content = decision.response.strip()
         if decision.tool_name:
-            tool_output = await self._execute_tool_from_decision(ctx=ctx, decision=decision)
-            final_content = f"{final_content}\n\n{tool_output}" if final_content else tool_output
+            tool_output = await self._execute_tool(ctx=ctx, decision=decision)
+            final_content = (
+                f"{final_content}\n\n{tool_output}" if final_content else tool_output
+            )
 
         for chunk in self._chunk_text(final_content):
             yield StreamTokenEvent(
@@ -251,29 +315,21 @@ class HermesAgentBackend:
             trace_id=ctx.trace_id,
             payload={
                 "content": final_content,
-                "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "duration_ms": _elapsed_ms(started_at),
             },
         )
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
     async def _decide(self, *, ctx: ExecutionContext, prompt: str) -> AgentDecision:
         request = ReasoningRequest(
             prompt=prompt,
-            system_prompt=(
-                f"{ctx.system_prompt}\n\n"
-                "You are Butler's local agent backend.\n"
-                "You may either answer directly or call exactly one tool.\n"
-                "Return JSON only with this schema:\n"
-                "{\n"
-                '  "response": "assistant reply or short explanation",\n'
-                '  "tool_name": "optional tool name or null",\n'
-                '  "tool_params": {}\n'
-                "}\n"
-                "Do not invent tool names.\n"
-                "If no tool is needed, set tool_name to null."
-            ).strip(),
+            system_prompt=f"{ctx.system_prompt}\n\n{self._SYSTEM_SUFFIX}",
             max_tokens=800,
             temperature=0.2,
-            preferred_model=ctx.model if getattr(ctx, "model", None) else None,
+            preferred_model=getattr(ctx, "model", None) or None,
             preferred_tier=self._default_tier,
             response_format="json",
             metadata={
@@ -290,7 +346,7 @@ class HermesAgentBackend:
         )
         return self._parse_decision(response.content)
 
-    async def _execute_tool_from_decision(
+    async def _execute_tool(
         self,
         *,
         ctx: ExecutionContext,
@@ -300,13 +356,12 @@ class HermesAgentBackend:
         if not tool_name:
             return ""
 
-        bound_logger = logger.bind(
+        logger.bind(
             backend="hermes_agent",
             tool_name=tool_name,
             task_id=str(ctx.task.id),
             session_id=ctx.session_id,
-        )
-        bound_logger.info("agent_tool_execution_start")
+        ).info("agent_tool_execution_start")
 
         result = await self._tools.execute(
             tool_name=tool_name,
@@ -317,14 +372,8 @@ class HermesAgentBackend:
             session_id=ctx.session_id,
         )
 
-        payload = self._result_to_dict(result)
-        content = payload.get("data")
-        if content is None:
-            content = payload.get("content")
-        if content is None:
-            content = json.dumps(payload, ensure_ascii=False, default=str)
-
-        return str(content)
+        payload = _result_to_dict(result)
+        return _extract_content(payload)
 
     def _build_prompt(
         self,
@@ -332,103 +381,92 @@ class HermesAgentBackend:
         ctx: ExecutionContext,
         messages: Sequence[NormalizedMessage],
     ) -> str:
-        tool_lines: list[str] = []
-        for tool in getattr(ctx, "toolset", []) or []:
-            name = str(getattr(tool, "name", "")).strip()
-            description = str(getattr(tool, "description", "")).strip()
-            if name:
-                tool_lines.append(f"- {name}: {description}")
-
-        history_lines = [f"{msg.role}: {msg.content}" for msg in messages if msg.content]
+        tool_lines = [
+            f"- {str(getattr(t, 'name', '')).strip()}: "
+            f"{str(getattr(t, 'description', '')).strip()}"
+            for t in (getattr(ctx, "toolset", []) or [])
+            if str(getattr(t, "name", "")).strip()
+        ]
+        history_lines = [
+            f"{m.role}: {m.content}" for m in messages if m.content
+        ]
 
         return (
             "Current conversation context:\n"
-            f"{chr(10).join(history_lines) if history_lines else '(no messages)'}\n\n"
+            f"{chr(10).join(history_lines) or '(no messages)'}\n\n"
             "Available tools:\n"
-            f"{chr(10).join(tool_lines) if tool_lines else '(no tools)'}"
+            f"{chr(10).join(tool_lines) or '(no tools)'}"
         )
 
-    def _normalize_messages(self, raw_messages: Sequence[Any]) -> list[NormalizedMessage]:
+    @staticmethod
+    def _normalize_messages(raw_messages: Sequence[Any]) -> list[NormalizedMessage]:
         normalized: list[NormalizedMessage] = []
-
         for item in raw_messages:
-            role: str | None = None
-            content: str | None = None
-
             if isinstance(item, dict):
-                role = item.get("role")
-                content = item.get("content")
+                role, content = item.get("role"), item.get("content")
             else:
-                role = getattr(item, "role", None)
-                content = getattr(item, "content", None)
+                role, content = getattr(item, "role", None), getattr(item, "content", None)
 
             role_text = str(role or "").strip() or "user"
             content_text = str(content or "").strip()
             if content_text:
                 normalized.append(NormalizedMessage(role=role_text, content=content_text))
-
         return normalized
 
-    def _parse_decision(self, raw: str) -> AgentDecision:
+    @staticmethod
+    def _parse_decision(raw: str) -> AgentDecision:
         text = (raw or "").strip()
 
+        # Build a de-duped list of parse candidates, best-first.
         candidates: list[str] = []
-        if text:
-            candidates.append(text)
+        seen: set[str] = set()
 
+        def _add(candidate: str) -> None:
+            c = candidate.strip()
+            if c and c not in seen:
+                seen.add(c)
+                candidates.append(c)
+
+        _add(text)
+
+        # Strip markdown code fences if present.
         if text.startswith("```"):
             lines = text.splitlines()
             if len(lines) >= 3:
-                unfenced = "\n".join(lines[1:-1]).strip()
-                if unfenced:
-                    candidates.append(unfenced)
+                _add("\n".join(lines[1:-1]))
 
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            candidates.append(match.group())
+        # Extract first JSON object as a fallback.
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            _add(m.group())
 
         last_error: Exception | None = None
-        seen: set[str] = set()
-
         for candidate in candidates:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
             try:
                 return AgentDecision.model_validate_json(candidate)
-            except ValidationError as exc:
-                last_error = exc
-            except json.JSONDecodeError as exc:
-                last_error = exc
-            except ValueError as exc:
+            except (ValidationError, json.JSONDecodeError, ValueError) as exc:
                 last_error = exc
 
-        logger.warning("agent_decision_parse_failed", error=str(last_error))
-        return AgentDecision(response=text or "I'm here to help.", tool_name=None, tool_params={})
+        logger.warning("agent_decision_parse_failed", error=str(last_error), raw_length=len(text))
+        return AgentDecision(response=text or "I'm here to help.", tool_name=None)
 
     def _chunk_text(self, text: str) -> list[str]:
         if not text:
             return []
-        return [
-            text[i : i + self._stream_chunk_size]
-            for i in range(0, len(text), self._stream_chunk_size)
-        ]
+        size = self._stream_chunk_size
+        return [text[i : i + size] for i in range(0, len(text), size)]
 
-    def _result_to_dict(self, result: Any) -> dict[str, Any]:
-        if hasattr(result, "model_dump"):
-            return dict(result.model_dump())
-        if hasattr(result, "dict"):
-            return dict(result.dict())
-        if isinstance(result, dict):
-            return dict(result)
-        return {"data": result}
+
+# ---------------------------------------------------------------------------
+# LangGraphAgentBackendAdapter
+# ---------------------------------------------------------------------------
 
 
 class LangGraphAgentBackendAdapter:
-    """Adapter for LangGraphAgentBackend to match Butler backend interface.
+    """Wraps LangGraphAgentBackend with the Butler backend interface.
 
-    This adapter wraps LangGraphAgentBackend to provide the same interface
-    as HermesAgentBackend for seamless switching via feature flag.
+    The inner backend is imported lazily so the rest of the codebase is not
+    broken when the optional langgraph dependencies are absent.
     """
 
     def __init__(
@@ -442,112 +480,89 @@ class LangGraphAgentBackendAdapter:
         default_tier: ReasoningTier = ReasoningTier.T2,
         stream_chunk_size: int = 64,
     ) -> None:
-        """Initialize the LangGraph backend adapter.
-
-        Args:
-            ml_runtime: Butler's MLRuntimeManager
-            tools_service: Butler's tools service
-            tool_specs: List of ButlerToolSpec
-            tool_executor: Butler's ToolExecutor for L2/L3 governance
-            direct_implementations: Dict mapping tool name to direct implementation
-            checkpoint_config: Optional checkpoint configuration
-            default_tier: Default reasoning tier (matches Hermes backend)
-            stream_chunk_size: Stream chunk size (matches Hermes backend)
-        """
         if stream_chunk_size <= 0:
             raise ValueError("stream_chunk_size must be greater than 0")
 
         self._ml = ml_runtime
         self._tools = tools_service
-        self._tool_specs = tool_specs or []
+        self._tool_specs: list[ButlerToolSpec] = tool_specs or []
         self._tool_executor = tool_executor
-        self._direct_implementations = direct_implementations or {}
+        self._direct_implementations: dict[str, Any] = direct_implementations or {}
         self._checkpoint_config = checkpoint_config
         self._default_tier = default_tier
         self._stream_chunk_size = stream_chunk_size
 
-        # Lazy import to avoid circular dependency
         self._backend: Any = None
+        self._AgentRequest: Any = None  # set when backend is loaded
 
-    def _get_backend(self) -> Any:
-        """Lazy load LangGraphAgentBackend."""
-        if self._backend is None:
-            try:
-                from langchain.backend import LangGraphAgentBackend, AgentRequest
-
-                self._backend = LangGraphAgentBackend(
-                    runtime_manager=self._ml,
-                    tool_specs=self._tool_specs,
-                    tool_executor=self._tool_executor,
-                    direct_implementations=self._direct_implementations,
-                    checkpoint_config=self._checkpoint_config,
-                    default_tier=self._default_tier,
-                    stream_chunk_size=self._stream_chunk_size,
-                )
-                self._AgentRequest = AgentRequest
-            except ImportError as exc:
-                logger.error("langgraph_backend_import_failed", error=str(exc))
-                raise RuntimeError(
-                    "LangGraph backend requested but dependencies not available. "
-                    "Install langchain, langgraph, and langgraph-checkpoint-postgres."
-                ) from exc
-        return self._backend
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     async def run(self, ctx: ExecutionContext) -> dict[str, Any]:
-        """Execute agent request synchronously."""
-        backend = self._get_backend()
-
-        # Build conversation history (normalize like Hermes does)
-        conversation_history = self._normalize_messages(getattr(ctx, "messages", []) or [])
-
-        # Extract message from task
-        task_input = getattr(ctx.task, "input", None) if hasattr(ctx, "task") else None
-        if task_input:
-            message = str(task_input)
-        else:
-            # Fallback to last user message
-            last_user_msg = [m for m in conversation_history if m.get("role") == "user"][-1:] if conversation_history else []
-            message = last_user_msg[0].get("content", "") if last_user_msg else ""
-
-        request = self._AgentRequest(
-            message=message,
-            tenant_id=ctx.tenant_id,
-            account_id=ctx.account_id,
+        logger.info(
+            "langgraph_adapter_run",
+            task_id=str(ctx.task.id) if hasattr(ctx, "task") else None,
             session_id=ctx.session_id,
-            trace_id=ctx.trace_id,
-            user_id=getattr(ctx, "user_id", None),
-            system_prompt=ctx.system_prompt,
-            preferred_model=getattr(ctx, "model", None),
-            preferred_tier=self._default_tier,
-            conversation_history=conversation_history,
-            metadata={"task_id": str(ctx.task.id)} if hasattr(ctx, "task") else {},
+            message_count=len(getattr(ctx, "messages", [])),
         )
 
-        response = await backend.run(request)
+        request = self._build_request(ctx)
+        response = await self._get_backend().run(request)
 
         return {
-            "content": response.content,
+            "content": response.content or "",
             "actions": response.tool_calls or [],
-            "duration_ms": response.usage.get("duration_ms", 0) if response.usage else 0,
+            "duration_ms": (response.usage or {}).get("duration_ms", 0),
         }
 
     async def run_streaming(self, ctx: ExecutionContext) -> AsyncGenerator[ButlerEvent]:
-        """Execute agent request with streaming."""
-        backend = self._get_backend()
+        request = self._build_request(ctx)
+        async for event in self._get_backend().run_streaming(request):
+            yield event
 
-        # Build conversation history (normalize like Hermes does)
-        conversation_history = self._normalize_messages(getattr(ctx, "messages", []) or [])
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
-        # Extract message from task
+    def _get_backend(self) -> Any:
+        if self._backend is not None:
+            return self._backend
+
+        try:
+            from langchain.backend import AgentRequest, LangGraphAgentBackend
+        except ImportError as exc:
+            logger.error("langgraph_backend_import_failed", error=str(exc))
+            raise RuntimeError(
+                "LangGraph backend requested but dependencies are unavailable. "
+                "Install langchain, langgraph, and langgraph-checkpoint-postgres."
+            ) from exc
+
+        self._AgentRequest = AgentRequest
+        self._backend = LangGraphAgentBackend(
+            runtime_manager=self._ml,
+            tool_specs=self._tool_specs,
+            tool_executor=self._tool_executor,
+            direct_implementations=self._direct_implementations,
+            checkpoint_config=self._checkpoint_config,
+            default_tier=self._default_tier,
+            stream_chunk_size=self._stream_chunk_size,
+        )
+        return self._backend
+
+    def _build_request(self, ctx: ExecutionContext) -> Any:
+        history = _normalize_messages_as_dicts(getattr(ctx, "messages", []) or [])
+
         task_input = getattr(ctx.task, "input", None) if hasattr(ctx, "task") else None
         if task_input:
             message = str(task_input)
         else:
-            # Fallback to last user message
-            last_user_msg = [m for m in conversation_history if m.get("role") == "user"][-1:] if conversation_history else []
-            message = last_user_msg[0].get("content", "") if last_user_msg else ""
+            last_user = next(
+                (m for m in reversed(history) if m.get("role") == "user"), None
+            )
+            message = (last_user or {}).get("content", "")
 
-        request = self._AgentRequest(
+        return self._AgentRequest(
             message=message,
             tenant_id=ctx.tenant_id,
             account_id=ctx.account_id,
@@ -557,100 +572,126 @@ class LangGraphAgentBackendAdapter:
             system_prompt=ctx.system_prompt,
             preferred_model=getattr(ctx, "model", None),
             preferred_tier=self._default_tier,
-            conversation_history=conversation_history,
+            conversation_history=history,
             metadata={"task_id": str(ctx.task.id)} if hasattr(ctx, "task") else {},
         )
 
-        async for event in backend.run_streaming(request):
-            yield event
 
-    def _normalize_messages(self, raw_messages: Sequence[Any]) -> list[dict[str, Any]]:
-        """Normalize messages from ExecutionContext to conversation history format.
+# ---------------------------------------------------------------------------
+# Module-level helpers (shared across classes)
+# ---------------------------------------------------------------------------
 
-        Matches Hermes backend's _normalize_messages behavior.
-        """
-        normalized: list[dict[str, Any]] = []
 
-        for item in raw_messages:
-            role: str | None = None
-            content: str | None = None
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.monotonic() - started_at) * 1000)
 
-            if isinstance(item, dict):
-                role = item.get("role")
-                content = item.get("content")
-            else:
-                role = getattr(item, "role", None)
-                content = getattr(item, "content", None)
 
-            role_text = str(role or "").strip() or "user"
-            content_text = str(content or "").strip()
-            if content_text:
-                normalized.append({"role": role_text, "content": content_text})
+def _result_to_dict(result: Any) -> dict[str, Any]:
+    if hasattr(result, "model_dump"):
+        return dict(result.model_dump())
+    if hasattr(result, "dict"):
+        return dict(result.dict())
+    if isinstance(result, dict):
+        return dict(result)
+    return {"data": result}
 
-        return normalized
+
+def _extract_content(payload: dict[str, Any]) -> str:
+    """Pull the most meaningful string out of a tool result payload."""
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for key in ("content", "text", "message"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+
+    for key in ("content", "data"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _normalize_messages_as_dicts(raw_messages: Sequence[Any]) -> list[dict[str, Any]]:
+    """Normalise messages to plain dicts (used by the LangGraph adapter)."""
+    normalized: list[dict[str, Any]] = []
+    for item in raw_messages:
+        if isinstance(item, dict):
+            role, content = item.get("role"), item.get("content")
+        else:
+            role, content = getattr(item, "role", None), getattr(item, "content", None)
+
+        role_text = str(role or "").strip() or "user"
+        content_text = str(content or "").strip()
+        if content_text:
+            normalized.append({"role": role_text, "content": content_text})
+    return normalized
+
+
+# ---------------------------------------------------------------------------
+# Public factory
+# ---------------------------------------------------------------------------
 
 
 def create_agent_backend(
-    ml_runtime: IReasoningRuntime,
+    ml_runtime: Any,
     tools_service: Any,
-    tool_specs: list[ButlerToolSpec] | None = None,
+    tool_specs: list[ButlerToolSpec],
     tool_executor: Any | None = None,
     direct_implementations: dict[str, Any] | None = None,
     checkpoint_config: dict[str, Any] | None = None,
     default_tier: ReasoningTier = ReasoningTier.T2,
     stream_chunk_size: int = 64,
-) -> Any:
-    """Factory function to create agent backend based on feature flag.
+) -> HermesAgentBackend | LangGraphAgentBackendAdapter:
+    """Factory — selects the backend from ``BUTLER_AGENT_RUNTIME``.
 
     Args:
-        ml_runtime: Butler's MLRuntimeManager
-        tools_service: Butler's tools service
-        tool_specs: List of ButlerToolSpec (for LangGraph backend)
-        tool_executor: Butler's ToolExecutor (for LangGraph backend)
-        direct_implementations: Dict mapping tool name to direct implementation (for LangGraph)
-        checkpoint_config: Optional checkpoint configuration (for LangGraph)
-        default_tier: Default reasoning tier (for both backends)
-        stream_chunk_size: Stream chunk size (for both backends)
+        ml_runtime:             Butler's MLRuntimeManager.
+        tools_service:          Butler's tools service.
+        tool_specs:             ButlerToolSpec list (LangGraph only).
+        tool_executor:          ToolExecutor for L2/L3 governance (LangGraph only).
+        direct_implementations: Tool name → callable mapping (LangGraph only).
+        checkpoint_config:      Optional checkpoint config (LangGraph only).
+        default_tier:           Default reasoning tier.
+        stream_chunk_size:      Token chunk size for streaming.
 
     Returns:
-        Agent backend instance (HermesAgentBackend or LangGraphAgentBackendAdapter)
+        HermesAgentBackend | LangGraphAgentBackendAdapter
     """
+    if BUTLER_AGENT_RUNTIME not in _VALID_RUNTIMES:
+        logger.warning(
+            "invalid_agent_backend_flag",
+            flag=BUTLER_AGENT_RUNTIME,
+            valid=sorted(_VALID_RUNTIMES),
+            fallback="langgraph",
+        )
+
     logger.info(
         "agent_backend_selection",
         backend=BUTLER_AGENT_RUNTIME,
+        tool_specs_count=len(tool_specs),
+        direct_implementations_count=len(direct_implementations or {}),
     )
 
-    if BUTLER_AGENT_RUNTIME == "langgraph":
-        return LangGraphAgentBackendAdapter(
-            ml_runtime=ml_runtime,
-            tools_service=tools_service,
-            tool_specs=tool_specs,
-            tool_executor=tool_executor,
-            direct_implementations=direct_implementations,
-            checkpoint_config=checkpoint_config,
-            default_tier=default_tier,
-            stream_chunk_size=stream_chunk_size,
-        )
-    elif BUTLER_AGENT_RUNTIME == "legacy":
+    # Shared kwargs for the LangGraph adapter.
+    langgraph_kwargs: dict[str, Any] = dict(
+        ml_runtime=ml_runtime,
+        tools_service=tools_service,
+        tool_specs=tool_specs,
+        tool_executor=tool_executor,
+        direct_implementations=direct_implementations,
+        checkpoint_config=checkpoint_config,
+        default_tier=default_tier,
+        stream_chunk_size=stream_chunk_size,
+    )
+
+    if BUTLER_AGENT_RUNTIME == "legacy":
         return HermesAgentBackend(
             ml_runtime=ml_runtime,
             tools_service=tools_service,
             default_tier=default_tier,
             stream_chunk_size=stream_chunk_size,
         )
-    else:
-        logger.warning(
-            "invalid_agent_backend_flag",
-            flag=BUTLER_AGENT_RUNTIME,
-            fallback="langgraph",
-        )
-        return LangGraphAgentBackendAdapter(
-            ml_runtime=ml_runtime,
-            tools_service=tools_service,
-            tool_specs=tool_specs,
-            tool_executor=tool_executor,
-            direct_implementations=direct_implementations,
-            checkpoint_config=checkpoint_config,
-            default_tier=default_tier,
-            stream_chunk_size=stream_chunk_size,
-        )
+
+    return LangGraphAgentBackendAdapter(**langgraph_kwargs)

@@ -14,7 +14,6 @@ Requires:
 
 import asyncio
 import json
-import logging
 import os
 import time
 import uuid
@@ -36,7 +35,9 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def check_ha_requirements() -> bool:

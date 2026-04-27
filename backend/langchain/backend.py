@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import structlog
+from langchain_core.messages import AIMessage, HumanMessage
 
 from domain.ml.contracts import ReasoningTier
 from domain.tools.hermes_compiler import ButlerToolSpec
 from langchain.agent import create_agent
-from langchain.runtime import ButlerToolRuntime, ButlerToolRuntimeManager
+from langchain.runtime import ButlerToolRuntimeManager
 from langchain.streaming import LangChainEventAdapter, stream_langchain_to_butler
 
 logger = structlog.get_logger(__name__)
@@ -118,6 +119,8 @@ class LangGraphAgentBackend:
             account_id=request.account_id,
             session_id=request.session_id,
             trace_id=request.trace_id,
+            tool_executor=self.tool_executor,
+            direct_implementations=self.direct_implementations,
             user_id=request.user_id,
             preferred_model=request.preferred_model,
             preferred_tier=request.preferred_tier,
@@ -126,15 +129,12 @@ class LangGraphAgentBackend:
         )
 
         # Build initial state with conversation history
-        from langchain_core.messages import HumanMessage
-
         messages = []
         if request.conversation_history:
             for turn in request.conversation_history:
                 if turn.get("role") == "user":
                     messages.append(HumanMessage(content=turn.get("content", "")))
                 elif turn.get("role") == "assistant":
-                    from langchain_core.messages import AIMessage
                     messages.append(AIMessage(content=turn.get("content", "")))
 
         # Add current message
@@ -177,12 +177,47 @@ class LangGraphAgentBackend:
                 session_id=request.session_id,
             )
 
-            # Extract final response. content may be None when the model
-            # emits only tool_calls; coerce to empty string.
-            final_message = state["messages"][-1] if state["messages"] else None
+            # Log all message types in final state for debugging
+            logger.info(
+                "langgraph_final_state_messages",
+                session_id=request.session_id,
+                messages=[
+                    {
+                        "type": type(m).__name__,
+                        "role": getattr(m, "type", "unknown"),
+                        "content_snippet": str(getattr(m, "content", "") or "")[:80],
+                        "has_tool_calls": bool(
+                            (hasattr(m, "tool_calls") and m.tool_calls)
+                            or (
+                                hasattr(m, "additional_kwargs")
+                                and m.additional_kwargs.get("tool_calls")
+                            )
+                        ),
+                    }
+                    for m in state["messages"]
+                ],
+            )
+
+            # Extract final response: walk backwards, pick the last AIMessage
+            # with non-empty text. HumanMessage/ToolMessage are excluded.
+            # qwen3 emits thinking+tool_call in one turn (content = thinking text);
+            # we want the final synthesis turn after tool execution.
             content = ""
-            if final_message is not None and hasattr(final_message, "content"):
-                content = final_message.content or ""
+            for msg in reversed(state["messages"]):
+                if not isinstance(msg, AIMessage):
+                    continue
+                text = str(getattr(msg, "content", "") or "").strip()
+                if not text:
+                    continue
+                # Skip if message only has tool_calls and no synthesized text
+                has_tool_calls = bool(
+                    (hasattr(msg, "tool_calls") and msg.tool_calls)
+                    or msg.additional_kwargs.get("tool_calls")
+                )
+                if has_tool_calls and not text:
+                    continue
+                content = text
+                break
 
             # Extract tool calls
             tool_calls = []
@@ -217,7 +252,7 @@ class LangGraphAgentBackend:
     async def run_streaming(
         self,
         request: AgentRequest,
-    ) -> AsyncGenerator[Any, None]:
+    ) -> AsyncGenerator[Any]:
         """Execute agent request with streaming.
 
         Args:
@@ -250,15 +285,12 @@ class LangGraphAgentBackend:
         )
 
         # Build initial state
-        from langchain_core.messages import HumanMessage
-
         messages = []
         if request.conversation_history:
             for turn in request.conversation_history:
                 if turn.get("role") == "user":
                     messages.append(HumanMessage(content=turn.get("content", "")))
                 elif turn.get("role") == "assistant":
-                    from langchain_core.messages import AIMessage
                     messages.append(AIMessage(content=turn.get("content", "")))
 
         messages.append(HumanMessage(content=request.message))

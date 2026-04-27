@@ -95,7 +95,7 @@ class ButlerLock:
 
         self._redis = redis
         self._name_raw = name.strip()
-        
+
         # Use tenant-scoped key if tenant_id provided, otherwise fall back to legacy format
         if tenant_id:
             namespace = TenantNamespace(tenant_id=tenant_id)
@@ -104,7 +104,7 @@ class ButlerLock:
             # Fallback to legacy format for backward compatibility
             # TODO: Remove this fallback once all callers provide tenant_id
             self._name = f"butler:lock:{self._name_raw}"
-            
+
         self._ttl_ms = ttl_ms
         self._timeout_ms = timeout_ms
         self._retry_interval_ms = retry_interval_ms
@@ -281,7 +281,7 @@ class LockManager:
 
     def get_lock(self, name: str, tenant_id: str | None = None, **kwargs) -> ButlerLock:
         """Get a tenant-scoped lock.
-        
+
         Args:
             name: Lock resource name
             tenant_id: Optional tenant ID for multi-tenant isolation. If not provided,
@@ -293,5 +293,5 @@ class LockManager:
             ctx = get_tenant_context()
             if ctx is not None:
                 tenant_id = ctx.tenant_id
-        
+
         return ButlerLock(self._redis, name, tenant_id=tenant_id, **kwargs)

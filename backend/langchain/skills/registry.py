@@ -7,7 +7,9 @@ Manages skill registration, discovery, and lifecycle.
 import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerSkillRegistry:
@@ -53,10 +55,10 @@ class ButlerSkillRegistry:
         if self._hermes_dispatcher:
             try:
                 self._hermes_dispatcher.register_tool(skill_spec)
-            except Exception as e:
-                logger.exception("hermes_dispatcher_registration_failed", skill_name=skill_name)
+            except Exception:
+                logger.bind(skill_name=skill_name).exception("hermes_dispatcher_registration_failed")
 
-        logger.info("skill_registered", skill_name=skill_name, category=category)
+        logger.bind(skill_name=skill_name, category=category).info("skill_registered")
 
     def unregister_skill(self, skill_name: str) -> None:
         """Unregister a skill.
@@ -73,7 +75,7 @@ class ButlerSkillRegistry:
             if category in self._categories and skill_name in self._categories[category]:
                 self._categories[category].remove(skill_name)
 
-            logger.info("skill_unregistered", skill_name=skill_name)
+            logger.bind(skill_name=skill_name).info("skill_unregistered")
 
     def get_skill(self, skill_name: str) -> dict[str, Any] | None:
         """Get a skill by name.

@@ -12,12 +12,13 @@ The HA instance URL is read from ``HASS_URL`` (default: http://homeassistant.loc
 
 import asyncio
 import json
-import logging
 import os
 import re
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration

@@ -46,7 +46,6 @@ Usage:
 """
 
 import json
-import logging
 import os
 import asyncio
 import datetime
@@ -55,7 +54,9 @@ from tools.openrouter_client import get_async_client as _get_openrouter_client, 
 from agent.auxiliary_client import extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Configuration for MoA processing
 # Reference models - these generate diverse initial responses in parallel.

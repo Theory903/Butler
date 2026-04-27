@@ -5,7 +5,6 @@ Supports persistent sandboxes: when enabled, sandboxes are stopped on cleanup
 and resumed on next creation, preserving the filesystem across sessions.
 """
 
-import logging
 import math
 import os
 import shlex
@@ -24,7 +23,9 @@ from tools.environments.file_sync import (
     unique_parent_dirs,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class DaytonaEnvironment(BaseEnvironment):

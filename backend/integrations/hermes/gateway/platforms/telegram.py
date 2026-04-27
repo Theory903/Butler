@@ -9,14 +9,15 @@ Uses python-telegram-bot library for:
 
 import asyncio
 import json
-import logging
 import os
 import tempfile
 import html as _html
 import re
 from typing import Dict, List, Optional, Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup

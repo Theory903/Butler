@@ -7,7 +7,6 @@ view) and don't need this.
 """
 
 import hashlib
-import logging
 import os
 import shlex
 import shutil
@@ -27,7 +26,9 @@ from typing import Callable
 from hermes_constants import get_hermes_home
 from tools.environments.base import _file_mtime_key
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _SYNC_INTERVAL_SECONDS = 5.0
 _FORCE_SYNC_ENV = "HERMES_FORCE_FILE_SYNC"

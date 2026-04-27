@@ -582,6 +582,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
         for char in INVISIBLE_CHARS:
             if char in line:
                 char_name = _unicode_char_name(char)
+                logger.info("invisible_unicode_character_detected", char_name=char_name, char=char)
                 findings.append(Finding(
                     pattern_id="invisible_unicode",
                     severity="high",

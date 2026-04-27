@@ -8,13 +8,16 @@ import logging
 from typing import Any
 
 try:
+    from pyturboquant.core import estimate_inner_product, ip_quantize, mse_dequantize, mse_quantize
     from pyturboquant.search import TurboQuantIndex
-    from pyturboquant.core import mse_quantize, mse_dequantize, ip_quantize, estimate_inner_product
+
     PYTURBOQUANT_AVAILABLE = True
 except ImportError:
     PYTURBOQUANT_AVAILABLE = False
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class TurboQuantBackend:
@@ -59,7 +62,9 @@ class TurboQuantBackend:
     async def initialize(self) -> None:
         """Initialize TurboQuant backend."""
         if not PYTURBOQUANT_AVAILABLE:
-            logger.warning("turboquant_unavailable: Install pyturboquant to enable vector quantization")
+            logger.warning(
+                "turboquant_unavailable: Install pyturboquant to enable vector quantization"
+            )
             return
 
         if self._index is None:
@@ -79,8 +84,8 @@ class TurboQuantBackend:
             return
 
         try:
-            import torch
             import numpy as np
+            import torch
 
             # Convert to torch tensor
             tensor = torch.tensor(np.array(vectors), dtype=torch.float32)
@@ -104,17 +109,17 @@ class TurboQuantBackend:
             return [], []
 
         try:
-            import torch
             import numpy as np
+            import torch
 
             # Convert to torch tensor
             query = torch.tensor(np.array([query_vector]), dtype=torch.float32)
             distances, indices = self._index.search(query, k=k)
-            
+
             # Convert to Python lists
             distances_list = distances[0].tolist()
             indices_list = indices[0].tolist()
-            
+
             logger.info(f"turboquant_search_complete: k={k}, results={len(indices_list)}")
             return distances_list, indices_list
         except Exception as e:
@@ -135,17 +140,18 @@ class TurboQuantBackend:
             return b""
 
         try:
-            import torch
             import numpy as np
+            import torch
 
             # Convert to torch tensor
             tensor = torch.tensor(np.array([vector]), dtype=torch.float32)
-            
+
             # MSE-optimal quantization
             quantized = mse_quantize(tensor, bits=self._bits, seed=self._seed)
-            
+
             # Serialize quantized representation
             import pickle
+
             return pickle.dumps(quantized)
         except Exception as e:
             logger.error(f"turboquant_compress_failed: {e}")
@@ -166,11 +172,12 @@ class TurboQuantBackend:
 
         try:
             import pickle
+
             quantized = pickle.loads(compressed)
-            
+
             # Dequantize
             reconstructed = mse_dequantize(quantized)
-            
+
             # Convert to Python list
             return reconstructed[0].tolist()
         except Exception as e:

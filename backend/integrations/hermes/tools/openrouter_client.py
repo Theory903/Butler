@@ -7,6 +7,9 @@ consistently.
 """
 
 import os
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _client = None
 

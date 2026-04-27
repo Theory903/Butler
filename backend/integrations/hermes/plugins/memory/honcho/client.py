@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,7 +24,9 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from honcho import Honcho
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"

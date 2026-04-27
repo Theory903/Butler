@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import re
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool

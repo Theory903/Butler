@@ -8,7 +8,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -149,7 +151,9 @@ class AuthHardeningService:
             raise ValueError(f"Profile not found: {profile_id}")
 
         profile.rotated_at = datetime.now(UTC)
-        profile.expires_at = datetime.now(UTC) + timedelta(hours=profile.rotation_interval_hours * 2)
+        profile.expires_at = datetime.now(UTC) + timedelta(
+            hours=profile.rotation_interval_hours * 2
+        )
 
         logger.info("auth_profile_rotated", profile_id=profile_id)
         return profile
@@ -256,9 +260,7 @@ class AuthHardeningService:
 
         binding_id = str(uuid.uuid4())
         expires_at = (
-            datetime.now(UTC) + timedelta(hours=expires_in_hours)
-            if expires_in_hours
-            else None
+            datetime.now(UTC) + timedelta(hours=expires_in_hours) if expires_in_hours else None
         )
 
         binding = PersistentBinding(

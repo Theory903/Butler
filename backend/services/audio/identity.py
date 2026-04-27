@@ -9,7 +9,9 @@ from infrastructure.database import async_session_factory
 
 from .models import AudioModelProxy
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class VoiceIdentityManager:

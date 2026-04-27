@@ -53,7 +53,11 @@ class Neo4jKnowledgeRepo(KnowledgeRepoContract):
         )
 
     async def archive_entity(
-        self, account_id: uuid.UUID, entity_id: uuid.UUID, superseded_by: uuid.UUID | None = None, tenant_id: uuid.UUID | None = None
+        self,
+        account_id: uuid.UUID,
+        entity_id: uuid.UUID,
+        superseded_by: uuid.UUID | None = None,
+        tenant_id: uuid.UUID | None = None,
     ):
         """Standard archival logic for the Neo4j tier."""
         query = """
@@ -104,7 +108,11 @@ class Neo4jKnowledgeRepo(KnowledgeRepoContract):
         await self._client.execute_query(query, params)
 
     async def get_graph_context(
-        self, account_id: uuid.UUID, entity_names: list[str], depth: int = 1, tenant_id: uuid.UUID | None = None
+        self,
+        account_id: uuid.UUID,
+        entity_names: list[str],
+        depth: int = 1,
+        tenant_id: uuid.UUID | None = None,
     ) -> list[dict]:
         """Graph-Vector Expansion: Find entities and their neighborhood context."""
         cypher = f"""
@@ -114,7 +122,11 @@ class Neo4jKnowledgeRepo(KnowledgeRepoContract):
         RETURN e.name AS source, type(r[0]) AS relation, related.name AS target, related.summary AS summary
         LIMIT 50
         """
-        params = {"account_id": str(account_id), "tenant_id": str(tenant_id) if tenant_id else str(account_id), "entity_names": entity_names}
+        params = {
+            "account_id": str(account_id),
+            "tenant_id": str(tenant_id) if tenant_id else str(account_id),
+            "entity_names": entity_names,
+        }
         return await self._client.execute_query(cypher, params)
 
     async def upsert_edge(
@@ -163,30 +175,49 @@ class Neo4jKnowledgeRepo(KnowledgeRepoContract):
         WHERE e.name CONTAINS $query OR e.summary CONTAINS $query
         RETURN e LIMIT $limit
         """
-        params = {"account_id": str(account_id), "tenant_id": str(tenant_id) if tenant_id else str(account_id), "query": query, "limit": limit}
+        params = {
+            "account_id": str(account_id),
+            "tenant_id": str(tenant_id) if tenant_id else str(account_id),
+            "query": query,
+            "limit": limit,
+        }
         results = await self._client.execute_query(cypher, params)
 
         return [self._map_node_to_entity(r["e"]) for r in results]
 
     async def get_related_entities(
-        self, account_id: uuid.UUID, entity_id: uuid.UUID, depth: int = 1, tenant_id: uuid.UUID | None = None
+        self,
+        account_id: uuid.UUID,
+        entity_id: uuid.UUID,
+        depth: int = 1,
+        tenant_id: uuid.UUID | None = None,
     ) -> list[KnowledgeEntity]:
         cypher = f"""
         MATCH (e:KnowledgeEntity {{account_id: $account_id, tenant_id: $tenant_id, id: $entity_id, status: 'active'}})-[*1..{depth}]-(related:KnowledgeEntity {{tenant_id: $tenant_id, status: 'active'}})
         RETURN DISTINCT related LIMIT 20
         """
-        params = {"account_id": str(account_id), "tenant_id": str(tenant_id) if tenant_id else str(account_id), "entity_id": str(entity_id)}
+        params = {
+            "account_id": str(account_id),
+            "tenant_id": str(tenant_id) if tenant_id else str(account_id),
+            "entity_id": str(entity_id),
+        }
         results = await self._client.execute_query(cypher, params)
 
         return [self._map_node_to_entity(r["related"]) for r in results]
 
-    async def resolve_identity(self, account_id: uuid.UUID, name: str, tenant_id: uuid.UUID | None = None) -> KnowledgeEntity | None:
+    async def resolve_identity(
+        self, account_id: uuid.UUID, name: str, tenant_id: uuid.UUID | None = None
+    ) -> KnowledgeEntity | None:
         cypher = """
         MATCH (e:KnowledgeEntity {account_id: $account_id, tenant_id: $tenant_id, status: 'active'})
         WHERE e.name =~ $name_regex
         RETURN e LIMIT 1
         """
-        params = {"account_id": str(account_id), "tenant_id": str(tenant_id) if tenant_id else str(account_id), "name_regex": f"(?i){name}"}
+        params = {
+            "account_id": str(account_id),
+            "tenant_id": str(tenant_id) if tenant_id else str(account_id),
+            "name_regex": f"(?i){name}",
+        }
         results = await self._client.execute_query(cypher, params)
 
         if results:

@@ -4,13 +4,16 @@ Leverages LangGraph's checkpointing system for state inspection and rollback.
 """
 
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -75,7 +78,7 @@ class ButlerTimeTravel:
                     thread_id=thread_id,
                     timestamp=datetime.fromtimestamp(
                         checkpoint.get("checkpoint", {}).get("step", 0) or 0,
-                        tz=timezone.utc,
+                        tz=UTC,
                     ),
                     state=checkpoint.get("checkpoint", {}),
                     parent_checkpoint_id=checkpoint.get("checkpoint", {}).get("parent_checkpoint"),
@@ -112,7 +115,7 @@ class ButlerTimeTravel:
                 thread_id=thread_id,
                 timestamp=datetime.fromtimestamp(
                     checkpoint.get("step", 0) or 0,
-                    tz=timezone.utc,
+                    tz=UTC,
                 ),
                 state=checkpoint,
                 parent_checkpoint_id=checkpoint.get("parent_checkpoint"),
@@ -170,6 +173,7 @@ class ButlerTimeTravel:
         """
         if not new_thread_id:
             import uuid
+
             new_thread_id = f"{thread_id}_branch_{uuid.uuid4().hex[:8]}"
 
         checkpoint_state = await self.get_checkpoint(thread_id, checkpoint_id)

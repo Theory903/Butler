@@ -21,7 +21,6 @@ update when it's noticed.
 """
 
 import json
-import logging
 import os
 import datetime
 import threading
@@ -39,7 +38,9 @@ from tools.tool_backend_helpers import (
     prefers_gateway,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

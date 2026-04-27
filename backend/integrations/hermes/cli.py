@@ -32,7 +32,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules

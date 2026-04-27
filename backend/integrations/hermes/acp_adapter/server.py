@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -62,7 +61,9 @@ from acp_adapter.events import (
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 try:
     from hermes_cli import __version__ as HERMES_VERSION

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import queue
 import re
-import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,7 +14,9 @@ from plugins.memory.honcho.client import get_honcho_client
 if TYPE_CHECKING:
     from honcho import Honcho
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()

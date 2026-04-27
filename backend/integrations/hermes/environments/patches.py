@@ -18,9 +18,9 @@ Usage:
     This is idempotent and safe to call multiple times.
 """
 
-import logging
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 _patches_applied = False
 

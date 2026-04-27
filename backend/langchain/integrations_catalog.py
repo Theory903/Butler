@@ -3,12 +3,13 @@
 Provides a catalog of available integrations and their configurations.
 """
 
-import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class IntegrationType(str, Enum):
@@ -208,8 +209,12 @@ class ButlerIntegrationsCatalog:
 
         if status:
             integrations = [
-                i for i in integrations
-                if self._configs.get(i.integration_id, IntegrationConfig(integration_id=i.integration_id)).status == status
+                i
+                for i in integrations
+                if self._configs.get(
+                    i.integration_id, IntegrationConfig(integration_id=i.integration_id)
+                ).status
+                == status
             ]
 
         return integrations
@@ -339,9 +344,13 @@ class ButlerIntegrationsCatalog:
         return {
             "total_integrations": len(self._integrations),
             "by_type": {
-                itype.value: len([i for i in self._integrations.values() if i.integration_type == itype])
+                itype.value: len(
+                    [i for i in self._integrations.values() if i.integration_type == itype]
+                )
                 for itype in IntegrationType
             },
-            "configured": len([c for c in self._configs.values() if c.status == IntegrationStatus.CONFIGURED]),
+            "configured": len(
+                [c for c in self._configs.values() if c.status == IntegrationStatus.CONFIGURED]
+            ),
             "enabled": len([c for c in self._configs.values() if c.enabled]),
         }

@@ -11,7 +11,6 @@ import pytest
 from domain.runtime.context import RuntimeContext
 from domain.tools.policy import (
     ApprovalMode,
-    DegradedMode,
     RiskTier,
     ToolPolicy,
     ToolPolicyDecision,
@@ -155,9 +154,7 @@ class TestToolPolicy:
         assert decision.requires_approval is True
         assert decision.requires_sandbox is True
 
-    def test_disabled_tool_denied(
-        self, valid_context: RuntimeContext
-    ) -> None:
+    def test_disabled_tool_denied(self, valid_context: RuntimeContext) -> None:
         """Disabled tools should be denied regardless of other factors."""
         disabled_tool = ToolSpec.l0_safe(
             name="disabled_tool",

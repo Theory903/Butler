@@ -38,7 +38,9 @@ class ToolRiskClassifier:
     def __init__(self, semantic_classifier: SemanticClassifier | None = None) -> None:
         self._semantic_classifier = semantic_classifier
 
-    def classify(self, tool_name: str, params: dict[str, Any] | None = None, description: str | None = None) -> RiskTier:
+    def classify(
+        self, tool_name: str, params: dict[str, Any] | None = None, description: str | None = None
+    ) -> RiskTier:
         """Classify a tool operation by risk tier using semantic understanding.
 
         Args:
@@ -58,7 +60,9 @@ class ToolRiskClassifier:
         # For now, fall back to conservative default
         return self._default_classification(tool_name, params)
 
-    def _default_classification(self, tool_name: str, params: dict[str, Any] | None = None) -> RiskTier:
+    def _default_classification(
+        self, tool_name: str, params: dict[str, Any] | None = None
+    ) -> RiskTier:
         """Conservative default classification when semantic classifier unavailable.
 
         This is a structural fallback, not semantic - assumes medium risk by default.
@@ -82,7 +86,9 @@ class ToolRiskClassifier:
         """
         if self._semantic_classifier is not None:
             try:
-                classification = await self._semantic_classifier.classify_risk(tool_name, params, description)
+                classification = await self._semantic_classifier.classify_risk(
+                    tool_name, params, description
+                )
                 return self._map_risk_level_to_tier(classification.risk_level)
             except Exception:
                 # Fall back to conservative default on error

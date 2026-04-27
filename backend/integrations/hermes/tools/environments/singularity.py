@@ -5,7 +5,6 @@ Supports configurable resource limits and optional filesystem persistence
 via writable overlay directories that survive across sessions.
 """
 
-import logging
 import os
 import shutil
 import subprocess
@@ -22,7 +21,9 @@ from tools.environments.base import (
     _save_json_store,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
 

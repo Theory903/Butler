@@ -12,7 +12,6 @@ Auth supports:
 
 import copy
 import json
-import logging
 import os
 from pathlib import Path
 
@@ -25,7 +24,9 @@ try:
 except ImportError:
     _anthropic_sdk = None  # type: ignore[assignment]
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).

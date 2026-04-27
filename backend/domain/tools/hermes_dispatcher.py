@@ -277,8 +277,10 @@ class ButlerToolDispatch:
 
         try:
             # Use langchain Hermes integration for production
-            from backend.langchain.hermes_governance import HermesToolDispatcher
-            from backend.langchain.hermes_governance import _hermes_impl_mapping
+            from backend.langchain.hermes_governance import (
+                HermesToolDispatcher,
+                _hermes_impl_mapping,
+            )
 
             # Check if this is a Hermes tool
             hermes_spec = _hermes_impl_mapping.get(tool_name)
@@ -287,16 +289,19 @@ class ButlerToolDispatch:
 
             # Use the actual compiled specs from the global mapping
             from backend.langchain.hermes_governance import register_hermes_tools_in_butler
+
             compiled_specs = register_hermes_tools_in_butler()
 
             # Create dispatcher with actual compiled specs
             dispatcher = HermesToolDispatcher(compiled_specs=compiled_specs)
-            result = asyncio.run(dispatcher.dispatch(
-                tool_name=tool_name,
-                args=params,
-                env=env_ctx.env_overrides,
-                tenant_id=env_ctx.env_overrides.get("tenant_id"),
-            ))
+            result = asyncio.run(
+                dispatcher.dispatch(
+                    tool_name=tool_name,
+                    args=params,
+                    env=env_ctx.env_overrides,
+                    tenant_id=env_ctx.env_overrides.get("tenant_id"),
+                )
+            )
             return json.dumps(result)
 
         except ImportError:

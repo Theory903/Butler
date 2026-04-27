@@ -5,7 +5,9 @@ from qdrant_client import AsyncQdrantClient
 
 from infrastructure.config import settings
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class QdrantClient:

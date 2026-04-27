@@ -34,7 +34,6 @@ import json
 import os
 import time
 import yaml
-import logging
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Callable
@@ -47,6 +46,10 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.console import Console
 from integrations.hermes.hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
 from integrations.hermes.agent.retry_utils import jittered_backoff
+
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Load .env from HERMES_HOME first, then project root as a dev fallback.
 from integrations.hermes.hermes_cli.env_loader import load_hermes_dotenv
@@ -352,13 +355,6 @@ class TrajectoryCompressor:
         # Initialize OpenRouter client
         self._init_summarizer()
         
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            datefmt='%H:%M:%S'
-        )
-        self.logger = logging.getLogger(__name__)
-    
     def _init_tokenizer(self):
         """Initialize HuggingFace tokenizer for token counting."""
         try:

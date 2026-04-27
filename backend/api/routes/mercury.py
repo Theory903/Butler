@@ -7,7 +7,9 @@ from api.schemas.mercury import MercuryRequest, MercuryResponse
 from core.deps import get_mercury_service
 from services.gateway.protocol_service import MercuryProtocolService
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["mercury"])
 
 

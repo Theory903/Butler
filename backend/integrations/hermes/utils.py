@@ -1,7 +1,6 @@
 """Shared utility functions for hermes-agent."""
 
 import json
-import logging
 import os
 import stat
 import tempfile
@@ -11,7 +10,9 @@ from urllib.parse import urlparse
 
 import yaml
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})

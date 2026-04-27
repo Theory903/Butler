@@ -21,7 +21,6 @@ Config (env vars or hermes config.yaml under retaindb:):
 from __future__ import annotations
 
 import json
-import logging
 import os
 import queue
 import re
@@ -36,7 +35,9 @@ from urllib.parse import quote
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.retaindb.com"
 _ASYNC_SHUTDOWN = object()

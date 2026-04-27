@@ -5,7 +5,6 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
-import logging
 import os
 import re
 import sys
@@ -14,7 +13,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_config_path, get_skills_dir
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ── Platform mapping ──────────────────────────────────────────────────────
 

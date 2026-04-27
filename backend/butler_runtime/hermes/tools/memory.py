@@ -7,7 +7,9 @@ Hermes memory. This ensures Butler owns all memory operations.
 import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerMemoryTools:

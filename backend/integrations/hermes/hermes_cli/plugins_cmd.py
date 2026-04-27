@@ -9,7 +9,6 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 
 from __future__ import annotations
 
-import logging
 import os
 import shutil
 import subprocess
@@ -19,7 +18,9 @@ from typing import Optional
 
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Minimum manifest version this installer understands.
 # Plugins may declare ``manifest_version: 1`` in plugin.yaml;

@@ -68,9 +68,8 @@ class TestToolRegistry:
 @pytest.mark.asyncio
 async def test_end_to_end_chat():
     """End-to-end chat through LangGraph."""
-    from services.orchestrator.langgraph_runtime import ButlerLangGraphRuntime
-
     from core.envelope import ButlerEnvelope, SessionIdentity
+    from services.orchestrator.langgraph_runtime import ButlerLangGraphRuntime
 
     runtime = ButlerLangGraphRuntime()
     assert runtime.available() is True

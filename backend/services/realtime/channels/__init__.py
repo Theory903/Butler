@@ -17,7 +17,9 @@ from services.realtime.channels.slack import SlackChannel
 from services.realtime.channels.telegram import TelegramChannel
 from services.realtime.channels.whatsapp import WhatsAppChannel
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 __all__ = [
     "BaseChannel",
@@ -60,7 +62,9 @@ class ChannelRegistry:
                 await channel.disconnect()
                 logger.info("channel_disconnected", extra={"channel_id": channel_id})
             except Exception as e:
-                logger.error("channel_disconnect_failed", extra={"channel_id": channel_id, "error": str(e)})
+                logger.error(
+                    "channel_disconnect_failed", extra={"channel_id": channel_id, "error": str(e)}
+                )
 
 
 _CHANNEL_BUILDERS: dict[ChannelKind, type[BaseChannel]] = {

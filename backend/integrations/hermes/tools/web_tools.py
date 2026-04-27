@@ -41,7 +41,6 @@ Usage:
 """
 
 import json
-import logging
 import os
 import re
 import asyncio
@@ -63,7 +62,9 @@ from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gatew
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ─── Backend Selection ────────────────────────────────────────────────────────

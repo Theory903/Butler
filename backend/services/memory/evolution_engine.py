@@ -12,7 +12,9 @@ from domain.ml.contracts import IReasoningRuntime
 if TYPE_CHECKING:
     from services.memory.consent_manager import ConsentManager
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class MemoryEvolutionEngine:

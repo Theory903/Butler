@@ -6,9 +6,11 @@ import pytest
 
 from domain.orchestrator.runtime_kernel import (
     ExecutionContext,
-    ExecutionResult as HermesBackendExecutionResult,
     ExecutionStrategy,
     RuntimeKernel,
+)
+from domain.orchestrator.runtime_kernel import (
+    ExecutionResult as HermesBackendExecutionResult,
 )
 
 

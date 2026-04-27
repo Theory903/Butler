@@ -15,6 +15,9 @@ from services.orchestrator.nodes import (
     safety_node,
 )
 from services.orchestrator.nodes.context import ContextProvider, build_context_node
+from services.orchestrator.nodes.execute_agentic import (
+    build_execute_agentic_node,
+)
 from services.orchestrator.nodes.execute_deterministic import (
     build_execute_deterministic_node,
 )
@@ -62,6 +65,7 @@ def compile_butler_graph(
     graph.add_node("context", build_context_node(context_provider))
     graph.add_node("plan", plan_node)
     graph.add_node("execute_deterministic", build_execute_deterministic_node(core_runner))
+    graph.add_node("execute_agentic", build_execute_agentic_node(core_runner))
     graph.add_node("approval_interrupt", approval_interrupt_node)
     graph.add_node("memory_writeback", memory_writeback_node)
     graph.add_node("render", render_node)
@@ -84,6 +88,7 @@ def compile_butler_graph(
     # For now, only deterministic execution is fully implemented
     # Agentic execution node will be added in Phase 2
     graph.add_edge("execute_deterministic", "approval_interrupt")
+    graph.add_edge("execute_agentic", "approval_interrupt")
     graph.add_edge("approval_interrupt", "memory_writeback")
     graph.add_edge("memory_writeback", "render")
     graph.add_edge("render", END)
@@ -105,7 +110,15 @@ async def run_fallback_graph(
     state = await safety_node(state)
     state = await build_context_node(context_provider)(state)
     state = await plan_node(state)
-    state = await build_execute_deterministic_node(core_runner)(state)
+
+    # Route based on plan mode
+    plan = state.get("plan", {})
+    mode = plan.get("mode", "deterministic")
+    if mode == "deterministic":
+        state = await build_execute_deterministic_node(core_runner)(state)
+    else:
+        state = await build_execute_agentic_node(core_runner)(state)
+
     state = await approval_interrupt_node(state)
     state = await memory_writeback_node(state)
     return await render_node(state)

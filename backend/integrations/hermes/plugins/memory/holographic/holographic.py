@@ -20,7 +20,6 @@ References:
 """
 
 import hashlib
-import logging
 import struct
 import math
 
@@ -30,7 +29,9 @@ try:
 except ImportError:
     _HAS_NUMPY = False
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _TWO_PI = 2.0 * math.pi
 

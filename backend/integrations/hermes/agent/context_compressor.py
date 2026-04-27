@@ -33,7 +33,9 @@ from agent.model_metadata import (
 )
 from agent.redact import redact_sensitive_text
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "

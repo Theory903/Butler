@@ -6,7 +6,6 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 """
 
 import json
-import logging
 import os
 import re
 import sys
@@ -15,7 +14,9 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import display_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))

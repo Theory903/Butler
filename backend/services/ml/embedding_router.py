@@ -19,6 +19,7 @@ logger = structlog.get_logger(__name__)
 
 class RoutingDecision(StrEnum):
     """Routing decision outcomes."""
+
     PROCEED = "proceed"
     ESCALATE_TO_LLM = "escalate_to_llm"
     REQUIRE_APPROVAL = "require_approval"
@@ -28,6 +29,7 @@ class RoutingDecision(StrEnum):
 @dataclass
 class RoutingResult:
     """Result of embedding-based routing."""
+
     decision: RoutingDecision
     confidence: float
     reasoning: str
@@ -82,7 +84,6 @@ class EmbeddingRouter:
             "sexual_content": "sexual explicit inappropriate content",
             "violence": "violence threat harm danger",
             "pii": "personal private information sensitive data",
-
             # Risk categories
             "critical": "critical dangerous destructive delete financial money",
             "device": "device iot hardware physical control",
@@ -144,13 +145,16 @@ class EmbeddingRouter:
         try:
             # Compute embedding for input text
             loop = asyncio.get_event_loop()
-            text_embedding = await loop.run_in_executor(
-                None, lambda: self._model.encode(text)
-            )
+            text_embedding = await loop.run_in_executor(None, lambda: self._model.encode(text))
 
             # Compute similarity with safety categories
             safety_categories = [
-                "toxicity", "hate_speech", "self_harm", "sexual_content", "violence", "pii"
+                "toxicity",
+                "hate_speech",
+                "self_harm",
+                "sexual_content",
+                "violence",
+                "pii",
             ]
             similarity_scores = {}
 
@@ -162,7 +166,11 @@ class EmbeddingRouter:
 
             # Find highest similarity
             max_similarity = max(similarity_scores.values()) if similarity_scores else 0.0
-            max_category = max(similarity_scores.items(), key=lambda x: x[1])[0] if similarity_scores else "none"
+            max_category = (
+                max(similarity_scores.items(), key=lambda x: x[1])[0]
+                if similarity_scores
+                else "none"
+            )
 
             # Make routing decision
             if max_similarity > self._risk_threshold:
@@ -230,9 +238,7 @@ class EmbeddingRouter:
             )
 
             # Compute similarity with risk categories
-            risk_categories = [
-                "critical", "device", "write", "read", "builtin"
-            ]
+            risk_categories = ["critical", "device", "write", "read", "builtin"]
             similarity_scores = {}
 
             for category in risk_categories:
@@ -243,7 +249,11 @@ class EmbeddingRouter:
 
             # Find highest similarity
             max_similarity = max(similarity_scores.values()) if similarity_scores else 0.0
-            max_category = max(similarity_scores.items(), key=lambda x: x[1])[0] if similarity_scores else "builtin"
+            max_category = (
+                max(similarity_scores.items(), key=lambda x: x[1])[0]
+                if similarity_scores
+                else "builtin"
+            )
 
             # Make routing decision
             if max_category == "critical" and max_similarity > self._confidence_threshold:

@@ -10,7 +10,9 @@ from services.memory.knowledge_repo_contract import KnowledgeRepoContract
 if TYPE_CHECKING:
     from services.memory.consent_manager import ConsentManager
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 BUTLER_EXTRACTION_PROMPT = """
 You are Butler's high-fidelity Knowledge Extraction Engine. Your goal is to extract structured entities and relations from the provided text to populate a personal knowledge graph.

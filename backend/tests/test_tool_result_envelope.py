@@ -5,7 +5,6 @@ import pytest
 from domain.runtime.tool_result_envelope import (
     ToolResultEnvelope,
     ToolResultError,
-    ToolStatus,
 )
 
 

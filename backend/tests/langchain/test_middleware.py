@@ -25,9 +25,7 @@ class DummyMiddleware(ButlerBaseMiddleware):
     async def pre_model(self, context: ButlerMiddlewareContext) -> MiddlewareResult:
         self.pre_model_called = True
         if self.should_block:
-            return MiddlewareResult(
-                success=False, should_continue=False, error="Blocked by dummy"
-            )
+            return MiddlewareResult(success=False, should_continue=False, error="Blocked by dummy")
         return MiddlewareResult(success=True, should_continue=True)
 
     async def post_model(self, context: ButlerMiddlewareContext) -> MiddlewareResult:

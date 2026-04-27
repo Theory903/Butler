@@ -23,14 +23,15 @@ Usage in a tool module:
 
 import datetime
 import json
-import logging
 import os
 import uuid
 from typing import Any, Dict
 
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class DebugSession:

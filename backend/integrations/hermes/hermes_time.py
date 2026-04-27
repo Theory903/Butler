@@ -13,13 +13,14 @@ Invalid timezone values log a warning and fall back safely — Hermes never
 crashes due to a bad timezone string.
 """
 
-import logging
 import os
 from datetime import datetime
 from integrations.hermes.hermes_constants import get_config_path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 try:
     from zoneinfo import ZoneInfo

@@ -31,12 +31,13 @@ from __future__ import annotations
 import abc
 import base64
 import datetime
-import logging
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")

@@ -10,7 +10,9 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class MessageType(str, Enum):
@@ -117,7 +119,7 @@ class ButlerA2AClient:
         trust_level = trust_map.get(priority, TrustLevel.VERIFIED_USER)
 
         # Create subagent profile
-        from services.orchestrator.subagent_runtime import SubAgentProfile, RuntimeClass
+        from services.orchestrator.subagent_runtime import RuntimeClass, SubAgentProfile
 
         profile = SubAgentProfile(
             agent_id=f"sub:{recipient_id}",
@@ -238,5 +240,7 @@ class ButlerA2AServer:
             return False
 
         # In production, this would deliver via subagent runtime
-        logger.info("a2a_message_routed", recipient_id=message.recipient_id, message_id=message.message_id)
+        logger.info(
+            "a2a_message_routed", recipient_id=message.recipient_id, message_id=message.message_id
+        )
         return True

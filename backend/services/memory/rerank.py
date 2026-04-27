@@ -3,7 +3,9 @@ import logging
 
 from services.memory.retrieval import ScoredMemory
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class Reranker(abc.ABC):

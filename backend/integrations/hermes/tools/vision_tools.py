@@ -30,7 +30,6 @@ Usage:
 
 import base64
 import json
-import logging
 import os
 import uuid
 from pathlib import Path
@@ -41,7 +40,9 @@ from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 

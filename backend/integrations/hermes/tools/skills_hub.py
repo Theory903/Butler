@@ -15,7 +15,6 @@ Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 
 import hashlib
 import json
-import logging
 import os
 import re
 import shutil
@@ -36,7 +35,9 @@ from tools.skills_guard import (
     ScanResult, content_hash, TRUSTED_REPOS,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

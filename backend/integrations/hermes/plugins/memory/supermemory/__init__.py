@@ -7,7 +7,6 @@ explicit memory tools, cleaned turn capture, and session-end conversation ingest
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import threading
@@ -20,7 +19,9 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _DEFAULT_CONTAINER_TAG = "hermes"
 _DEFAULT_MAX_RECALL_RESULTS = 10

@@ -16,7 +16,6 @@ Or via $HERMES_HOME/mem0.json.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import threading
 import time
@@ -25,7 +24,9 @@ from typing import Any, Dict, List
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Circuit breaker: after this many consecutive failures, pause API calls
 # for _BREAKER_COOLDOWN_SECS to avoid hammering a down server.

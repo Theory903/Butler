@@ -17,7 +17,6 @@ with different backends via a bridge pattern.
 
 import asyncio
 import json
-import logging
 import os
 import platform
 import re
@@ -29,7 +28,9 @@ from typing import Dict, Optional, Any
 
 from hermes_constants import get_hermes_dir
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _kill_port_process(port: int) -> None:

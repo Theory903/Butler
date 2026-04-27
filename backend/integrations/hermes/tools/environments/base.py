@@ -23,7 +23,9 @@ from typing import IO, Callable, Protocol
 from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
 # HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and

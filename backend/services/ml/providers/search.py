@@ -386,9 +386,7 @@ class GoogleCustomSearchProvider(BaseSearchProvider):
             params["safe"] = "active" if request.safe_search else "off"
 
         if self._safe_client and self.tenant_id:
-            response = await self._safe_client.get(
-                self._base_url, self.tenant_id, params=params
-            )
+            response = await self._safe_client.get(self._base_url, self.tenant_id, params=params)
         else:
             response = await self._client.get(self._base_url, params=params)
         response.raise_for_status()

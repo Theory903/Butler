@@ -108,9 +108,7 @@ class TestSafetyCheck:
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
             mock_response = MagicMock()
             mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "results": [{"flagged": False, "categories": {}}]
-            }
+            mock_response.json.return_value = {"results": [{"flagged": False, "categories": {}}]}
 
             guard = ContentGuard(semantic_classifier=mock_classifier)
             with patch.object(guard._client, "post", new_callable=AsyncMock) as mock_post:
@@ -166,9 +164,7 @@ class TestSafetyCheck:
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
             mock_response = MagicMock()
             mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "results": [{"flagged": False, "categories": {}}]
-            }
+            mock_response.json.return_value = {"results": [{"flagged": False, "categories": {}}]}
 
             guard = ContentGuard()
             with patch.object(guard._client, "post", new_callable=AsyncMock) as mock_post:

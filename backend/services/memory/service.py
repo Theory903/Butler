@@ -38,7 +38,9 @@ from services.tenant.namespace import get_tenant_namespace
 if TYPE_CHECKING:
     from services.memory.consent_manager import ConsentManager
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _SESSION_REDIS_TTL_SECONDS = 86400 * 7
 _DEFAULT_COMPRESS_FETCH_LIMIT = 100
@@ -126,7 +128,11 @@ class MemoryService(MemoryServiceContract):
 
         # Check memory operation admission through router
         if self._operation_router:
-            from domain.orchestration.router import AdmissionDecision, OperationRequest, OperationType
+            from domain.orchestration.router import (
+                AdmissionDecision,
+                OperationRequest,
+                OperationType,
+            )
 
             operation_request = OperationRequest(
                 operation_type=OperationType.MEMORY_WRITE,
@@ -314,7 +320,7 @@ class MemoryService(MemoryServiceContract):
         **kwargs: Any,
     ) -> ConversationTurn:
         """Persist one conversation turn and trigger understanding analysis.
-        
+
         Args:
             account_id: Account ID
             session_id: Session ID
@@ -601,9 +607,11 @@ class MemoryService(MemoryServiceContract):
             },
         )
 
-    async def end_session(self, account_id: str, session_id: str, tenant_id: str | None = None) -> Any | None:
+    async def end_session(
+        self, account_id: str, session_id: str, tenant_id: str | None = None
+    ) -> Any | None:
         """Capture an episode and optionally distill it into the graph layer.
-        
+
         Args:
             account_id: Account ID
             session_id: Session ID
@@ -675,7 +683,9 @@ class MemoryService(MemoryServiceContract):
         """Create LangChain-compatible memory adapter for this session."""
         from langchain.memory import ButlerMemoryAdapter
 
-        return ButlerMemoryAdapter(session_id=session_id, account_id=account_id, memory_service=self)
+        return ButlerMemoryAdapter(
+            session_id=session_id, account_id=account_id, memory_service=self
+        )
 
     def _extract_metadata(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         metadata = kwargs.get("metadata", {})
@@ -781,14 +791,9 @@ class MemoryService(MemoryServiceContract):
             except (ValueError, TypeError):
                 return 0
 
-            from domain.memory.models import MemoryStatus
-
-            stmt = (
-                delete(MemoryEntry)
-                .where(
-                    MemoryEntry.id == mem_uuid,
-                    MemoryEntry.tenant_id == effective_tenant_id,
-                )
+            stmt = delete(MemoryEntry).where(
+                MemoryEntry.id == mem_uuid,
+                MemoryEntry.tenant_id == effective_tenant_id,
             )
             result = await self._db.execute(stmt)
             await self._db.commit()
@@ -796,15 +801,11 @@ class MemoryService(MemoryServiceContract):
 
         if content_filter:
             # Delete memories by content filter with tenant scope
-            from domain.memory.models import MemoryStatus
 
-            stmt = (
-                delete(MemoryEntry)
-                .where(
-                    MemoryEntry.account_id == account_id,
-                    MemoryEntry.tenant_id == effective_tenant_id,
-                    MemoryEntry.content.ilike(f"%{content_filter}%"),
-                )
+            stmt = delete(MemoryEntry).where(
+                MemoryEntry.account_id == account_id,
+                MemoryEntry.tenant_id == effective_tenant_id,
+                MemoryEntry.content.ilike(f"%{content_filter}%"),
             )
             result = await self._db.execute(stmt)
             await self._db.commit()

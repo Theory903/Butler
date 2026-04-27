@@ -35,12 +35,13 @@ Design reference:
 from __future__ import annotations
 
 import asyncio
-import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

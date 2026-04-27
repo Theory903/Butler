@@ -8,12 +8,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from langchain.tools import StructuredTool
 from langchain_core.tools import BaseTool
 
-from services.tools.mcp_bridge import MCPCallResult, MCPBridgeAdapter, MCPTool, get_mcp_bridge
+from services.tools.mcp_bridge import MCPBridgeAdapter, MCPTool, get_mcp_bridge
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -243,7 +244,7 @@ class ButlerMCPServer:
                     ]
                 }
             }
-        elif method == "resources/list":
+        if method == "resources/list":
             return {
                 "result": {
                     "resources": [
@@ -257,7 +258,7 @@ class ButlerMCPServer:
                     ]
                 }
             }
-        elif method == "prompts/list":
+        if method == "prompts/list":
             return {
                 "result": {
                     "prompts": [

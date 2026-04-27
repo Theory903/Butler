@@ -11,11 +11,12 @@ from typing import Any
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerCachingMiddleware(ButlerBaseMiddleware):
@@ -35,9 +36,7 @@ class ButlerCachingMiddleware(ButlerBaseMiddleware):
         self._cache_size = cache_size
         self._cache: dict[str, dict[str, Any]] = {}
 
-    def _generate_cache_key(
-        self, messages: list[dict[str, Any]], model: str | None
-    ) -> str:
+    def _generate_cache_key(self, messages: list[dict[str, Any]], model: str | None) -> str:
         """Generate a cache key from messages and model."""
         cache_input = {
             "messages": messages,

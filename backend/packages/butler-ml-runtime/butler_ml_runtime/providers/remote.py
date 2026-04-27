@@ -6,7 +6,6 @@ Uses external API for embeddings.
 from __future__ import annotations
 
 import httpx
-
 import structlog
 
 logger = structlog.get_logger(__name__)

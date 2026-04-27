@@ -27,7 +27,9 @@ import httpx
 from core.circuit_breaker import get_circuit_breaker_registry
 from services.security.safe_request import SafeRequestClient
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 

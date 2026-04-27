@@ -10,7 +10,9 @@ to avoid deep Hermes dependencies.
 import logging
 import os
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _get_backend_config() -> dict[str, str]:
@@ -19,10 +21,11 @@ def _get_backend_config() -> dict[str, str]:
     Butler uses environment variables instead of Hermes CLI config.
     """
     return {
-        "backend": os.getenv("WEB_BACKEND", "tavily").lower(),
+        "backend": os.getenv("WEB_BACKEND", "searxng").lower(),
         "tavily_api_key": os.getenv("TAVILY_API_KEY", ""),
         "firecrawl_api_key": os.getenv("FIRECRAWL_API_KEY", ""),
         "firecrawl_api_url": os.getenv("FIRECRAWL_API_URL", ""),
+        "searxng_url": os.getenv("SEARXNG_URL", "http://searxng:8080"),
     }
 
 
@@ -44,11 +47,69 @@ def web_search_tool(
     config = _get_backend_config()
     backend = config["backend"]
 
+    if backend == "searxng":
+        return _searxng_search(query, limit, config)
     if backend == "tavily":
         return _tavily_search(query, limit, search_depth, config)
     if backend == "firecrawl":
         return _firecrawl_search(query, limit, config)
     return {"error": f"Unsupported web backend: {backend}"}
+
+
+def _searxng_search(
+    query: str,
+    limit: int,
+    config: dict[str, str],
+) -> dict:
+    """Search using the local SearXNG instance."""
+    base_url = config.get("searxng_url", "").rstrip("/")
+    if not base_url:
+        return {"error": "SEARXNG_URL not set"}
+
+    try:
+        import httpx
+
+        response = httpx.get(
+            f"{base_url}/search",
+            params={
+                "q": query,
+                "format": "json",
+                "categories": "general",
+            },
+            timeout=15,
+            headers={"User-Agent": "Butler/1.0"},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        results = []
+        for item in data.get("results", [])[:limit]:
+            url = str(item.get("url", "")).strip()
+            title = str(item.get("title", "")).strip()
+            if not url:
+                continue
+            results.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "content": str(item.get("content", "") or "")[:2000],
+                    "score": float(item.get("score", 0.0) or 0.0),
+                }
+            )
+
+        answers = data.get("answers", [])
+        answer_text = answers[0] if answers else ""
+
+        logger.info(f"SearXNG search returned {len(results)} results for: {query}")
+        return {
+            "answer": answer_text,
+            "results": results,
+            "backend": "searxng",
+        }
+
+    except Exception as e:
+        logger.error(f"SearXNG search failed: {e}")
+        return {"error": f"Web search failed: {str(e)}"}
 
 
 def _tavily_search(

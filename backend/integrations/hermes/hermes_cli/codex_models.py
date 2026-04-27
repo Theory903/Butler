@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import List, Optional
 
 import os
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.5",

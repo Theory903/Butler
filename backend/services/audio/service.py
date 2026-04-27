@@ -22,7 +22,9 @@ from .stream_buffer import StreamBuffer
 from .stt import DualSTTStrategy
 from .tts import TTSManager
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 tracer = trace.get_tracer(__name__)
 
 

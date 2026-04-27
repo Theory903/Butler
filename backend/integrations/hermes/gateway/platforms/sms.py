@@ -22,7 +22,6 @@ import asyncio
 import base64
 import hashlib
 import hmac
-import logging
 import os
 import urllib.parse
 from typing import Any, Dict, Optional
@@ -36,7 +35,9 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import redact_phone, strip_markdown
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 TWILIO_API_BASE = "https://api.twilio.com/2010-04-01/Accounts"
 MAX_SMS_LENGTH = 1600  # ~10 SMS segments

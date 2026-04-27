@@ -9,10 +9,16 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from langchain.protocols.a2a import ButlerA2AClient, ButlerA2AServer, AgentMessage, MessageType, Priority
-from langchain.protocols.acp import ButlerACPClient, ButlerACPServer, ACPMessage, ACPAction, ACPStatus
+from langchain.protocols.a2a import (
+    AgentMessage,
+    ButlerA2AServer,
+    MessageType,
+    Priority,
+)
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class AgentRole(str, Enum):
@@ -99,12 +105,13 @@ class ButlerMultiAgentOrchestrator:
     ) -> str:
         """Dispatch a task via subagent runtime."""
         import uuid
+
         task_id = str(uuid.uuid4())
 
         if self._subagent_runtime:
             # Use real subagent runtime for execution
-            from services.orchestrator.subagent_runtime import SubAgentProfile, RuntimeClass
             from domain.policy.capability_flags import TrustLevel
+            from services.orchestrator.subagent_runtime import RuntimeClass, SubAgentProfile
 
             profile = SubAgentProfile(
                 agent_id=f"sub:{target_agent_id or 'orchestrator'}",
@@ -209,7 +216,9 @@ class ButlerDeepAgent:
         self._reasoning_chain: list[dict[str, Any]] = []
         self._current_depth = 0
 
-    async def decompose(self, task: str, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    async def decompose(
+        self, task: str, context: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         """Decompose task using Butler's planner.
 
         Args:
@@ -222,11 +231,10 @@ class ButlerDeepAgent:
         if self._planner:
             try:
                 # Use real Butler planner
-                from services.orchestrator.planner import Plan
 
                 plan = await self._planner.plan(task, context or {})
                 return [{"action": step.action, "params": step.params} for step in plan.steps]
-            except Exception as e:
+            except Exception:
                 logger.exception("planner_decompose_failed")
                 return [{"action": "fallback", "params": {"task": task}}]
         else:
@@ -259,7 +267,7 @@ class ButlerDeepAgent:
                     "alternative_paths": [],
                     "suggestions": [],
                 }
-            except Exception as e:
+            except Exception:
                 logger.exception("ml_reflection_failed")
 
         return {
@@ -354,8 +362,8 @@ class ButlerAgentHierarchy:
 
         for child in children:
             if self._subagent_runtime:
-                from services.orchestrator.subagent_runtime import SubAgentProfile, RuntimeClass
                 from domain.policy.capability_flags import TrustLevel
+                from services.orchestrator.subagent_runtime import RuntimeClass, SubAgentProfile
 
                 profile = SubAgentProfile(
                     agent_id=f"sub:{child.agent_id}",
@@ -383,7 +391,9 @@ class ButlerAgentHierarchy:
                 )
                 results[child.agent_id] = child_result
 
-        logger.info("agent_hierarchy_delegation_completed", parent=parent_id, children=len(children))
+        logger.info(
+            "agent_hierarchy_delegation_completed", parent=parent_id, children=len(children)
+        )
         return results
 
     def get_hierarchy_tree(self, root_id: str) -> dict[str, Any]:

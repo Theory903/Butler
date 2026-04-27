@@ -16,6 +16,7 @@ from services.security.safe_request import SafeRequestClient
 
 logger = structlog.get_logger(__name__)
 
+
 class ClawHubPackage(BaseModel):
     """Metadata for a package in the remote registry."""
 
@@ -142,7 +143,9 @@ class ClawHubClient:
             response.raise_for_status()
             return response.content
         except Exception as e:
-            logger.error("clawhub_download_failed", error=str(e), package_id=package_id, version=version)
+            logger.error(
+                "clawhub_download_failed", error=str(e), package_id=package_id, version=version
+            )
             raise
 
     async def get_manifest(self, package_id: str, version: str) -> dict[str, Any]:
@@ -160,7 +163,9 @@ class ClawHubClient:
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            logger.error("clawhub_get_manifest_failed", error=str(e), package_id=package_id, version=version)
+            logger.error(
+                "clawhub_get_manifest_failed", error=str(e), package_id=package_id, version=version
+            )
             raise
 
     async def get_signature(self, package_id: str, version: str) -> str:
@@ -178,5 +183,7 @@ class ClawHubClient:
             response.raise_for_status()
             return response.json().get("signature", "")
         except Exception as e:
-            logger.error("clawhub_get_signature_failed", error=str(e), package_id=package_id, version=version)
+            logger.error(
+                "clawhub_get_signature_failed", error=str(e), package_id=package_id, version=version
+            )
             raise

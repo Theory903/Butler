@@ -4,9 +4,7 @@ Manages middleware registration, ordering, and execution hooks.
 """
 
 import logging
-from collections import OrderedDict
 from enum import Enum
-from typing import Any, Callable
 
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
@@ -15,7 +13,9 @@ from langchain.middleware.base import (
     MiddlewareResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class MiddlewareHook(str, Enum):

@@ -17,7 +17,9 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, Field, validator
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 tracer = trace.get_tracer(__name__)
 
 

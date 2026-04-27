@@ -33,7 +33,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import logging
 import mimetypes
 import os
 import re
@@ -68,7 +67,9 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com"
 

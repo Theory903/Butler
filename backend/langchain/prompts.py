@@ -7,7 +7,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -225,7 +227,9 @@ class ButlerPromptOptimizer:
             },
         ]
 
-    def optimize_prompt(self, prompt: str, context: dict[str, Any] | None = None) -> PromptOptimization:
+    def optimize_prompt(
+        self, prompt: str, context: dict[str, Any] | None = None
+    ) -> PromptOptimization:
         """Optimize a prompt.
 
         Args:
@@ -296,7 +300,9 @@ class ButlerPromptOptimizer:
             "length": len(prompt),
             "word_count": len(prompt.split()),
             "sentence_count": prompt.count(".") + prompt.count("?") + prompt.count("!"),
-            "avg_word_length": sum(len(w) for w in prompt.split()) / len(prompt.split()) if prompt.split() else 0,
+            "avg_word_length": sum(len(w) for w in prompt.split()) / len(prompt.split())
+            if prompt.split()
+            else 0,
         }
 
     def compare_prompts(self, prompt1: str, prompt2: str) -> dict[str, Any]:
@@ -398,6 +404,7 @@ class ButlerPromptEngine:
             Version ID
         """
         import uuid
+
         version_id = str(uuid.uuid4())
 
         if prompt_id not in self._prompt_versions:

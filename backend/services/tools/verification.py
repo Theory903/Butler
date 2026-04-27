@@ -41,7 +41,9 @@ from domain.tools.models import ToolDefinition
 if TYPE_CHECKING:
     pass
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ── Account tier ordering ─────────────────────────────────────────────────────
 _TIER_RANK: dict[str, int] = {

@@ -4,12 +4,9 @@ These tests verify that the SemanticEmbeddingRouter uses embedding-based
 similarity matching rather than keyword/regex matching for classification.
 """
 
-import asyncio
-
 import pytest
-
 from butler_core.ml.routing import RoutingDecision
-from butler_core.ml.semantic_router import SemanticCategory, SemanticEmbeddingRouter
+from butler_core.ml.semantic_router import SemanticEmbeddingRouter
 
 
 class MockEmbeddingProvider:
@@ -25,9 +22,7 @@ class MockEmbeddingProvider:
         if text not in self.embeddings:
             # Use hash to create a unique vector for each unique text
             hash_val = hash(text)
-            self.embeddings[text] = [
-                ((hash_val + i) % 1000) / 1000.0 for i in range(384)
-            ]
+            self.embeddings[text] = [((hash_val + i) % 1000) / 1000.0 for i in range(384)]
         return self.embeddings[text]
 
     async def embed_many(self, texts: list[str]) -> list[list[float]]:

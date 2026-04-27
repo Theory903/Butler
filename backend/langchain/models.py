@@ -8,16 +8,16 @@ multi-tenant isolation.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import structlog
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import BaseModel
-
-import structlog
 
 from domain.ml.contracts import ReasoningRequest, ReasoningTier
 
@@ -86,11 +86,23 @@ class ButlerChatModel(BaseChatModel):
 
         for msg in messages:
             if msg.type == "system":
-                system_prompt = msg.content
+                raw = msg.content
+                system_prompt = raw if isinstance(raw, str) else str(raw)
+            elif isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
+                tool_names = ", ".join(
+                    tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
+                    for tc in msg.tool_calls
+                )
+                content_messages.append(f"AI: [called tools: {tool_names}]")
+            elif isinstance(msg, ToolMessage):
+                tool_name = getattr(msg, "name", "") or ""
+                raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                prefix = f"TOOL_RESULT[{tool_name}]" if tool_name else "TOOL_RESULT"
+                content_messages.append(f"{prefix}: {raw_content}")
             else:
-                # Convert message to string representation
                 if hasattr(msg, "content"):
-                    content_messages.append(f"{msg.type.upper()}: {msg.content}")
+                    raw_content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    content_messages.append(f"{msg.type.upper()}: {raw_content}")
                 else:
                     content_messages.append(str(msg))
 
@@ -114,9 +126,7 @@ class ButlerChatModel(BaseChatModel):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-        return loop.run_until_complete(
-            self._agenerate(messages, stop, run_manager, **kwargs)
-        )
+        return loop.run_until_complete(self._agenerate(messages, stop, run_manager, **kwargs))
 
     async def _agenerate(
         self,
@@ -126,6 +136,13 @@ class ButlerChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         """Async generate response using Butler's MLRuntimeManager."""
+        logger.info(
+            "butler_llm_agenerate_entry",
+            message_count=len(messages),
+            tools_count=len(kwargs.get("_butler_tools", [])),
+            preferred_model=self.preferred_model,
+        )
+
         prompt, system_prompt = self._convert_messages_to_prompt(messages)
 
         # Extract tools from kwargs if present (from ToolAwareButlerChatModel)
@@ -152,24 +169,100 @@ class ButlerChatModel(BaseChatModel):
                 preferred_tier=self.preferred_tier,
             )
 
-            # Convert tool_calls to LangChain format if present
+            logger.info(
+                "butler_llm_provider_response",
+                tool_calls_count=len(response.tool_calls) if response.tool_calls else 0,
+                tool_calls_sample=response.tool_calls[:1] if response.tool_calls else None,
+                tool_calls_type=type(response.tool_calls[0]).__name__
+                if response.tool_calls
+                else None,
+            )
+
+            logger.info(
+                "butler_llm_before_conversion",
+                has_tool_calls=bool(response.tool_calls),
+                tool_calls_count=len(response.tool_calls) if response.tool_calls else 0,
+            )
+
+            # Convert tool_calls to dict-safe format
+            # Accepts both OpenAI-compatible and already-normalized tool calls
             tool_calls = []
+            tool_names = []
             if response.tool_calls:
                 import json as _json
-                from langchain_core.messages import ToolCall
+
                 for tc in response.tool_calls:
-                    fn = tc.get("function", {})
-                    raw_args = fn.get("arguments", {})
-                    if isinstance(raw_args, str):
-                        try:
-                            raw_args = _json.loads(raw_args) if raw_args else {}
-                        except _json.JSONDecodeError:
-                            raw_args = {}
-                    tool_calls.append(ToolCall(
-                        name=fn.get("name"),
-                        args=raw_args,
-                        id=tc.get("id"),
-                    ))
+                    try:
+                        # Handle OpenAI-compatible format: {"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}
+                        if isinstance(tc, dict) and "function" in tc:
+                            fn = tc.get("function", {})
+                            name = fn.get("name")
+                            raw_args = fn.get("arguments")
+                            call_id = tc.get("id")
+                        # Handle already-normalized format: {"name": "...", "args": {...}, "id": "..."}
+                        elif isinstance(tc, dict):
+                            name = tc.get("name")
+                            raw_args = tc.get("args")
+                            call_id = tc.get("id")
+                        else:
+                            logger.warning(
+                                "butler_llm_unexpected_tool_call_format",
+                                tc_type=type(tc).__name__,
+                                tc=str(tc),
+                            )
+                            continue
+
+                        if not name:
+                            logger.warning(
+                                "butler_llm_tool_call_missing_name",
+                                tc=str(tc),
+                            )
+                            continue
+
+                        # Normalize arguments to dict
+                        if raw_args is None:
+                            args = {}
+                        elif isinstance(raw_args, dict):
+                            args = raw_args
+                        elif isinstance(raw_args, str):
+                            try:
+                                args = _json.loads(raw_args) if raw_args else {}
+                            except _json.JSONDecodeError:
+                                # Invalid JSON string -> wrap in input
+                                args = {"input": raw_args}
+                        elif isinstance(raw_args, (list, int, float, bool)):
+                            # Scalar/list -> wrap in input
+                            args = {"input": raw_args}
+                        else:
+                            args = {}
+
+                        # Generate ID if missing
+                        if not call_id:
+                            call_id = str(uuid.uuid4())
+
+                        # Create dict-style tool call
+                        tool_call = {
+                            "name": name,
+                            "args": args,
+                            "id": call_id,
+                            "type": "tool_call",
+                        }
+                        tool_calls.append(tool_call)
+                        tool_names.append(name)
+                    except Exception as e:
+                        logger.error(
+                            "butler_llm_tool_call_conversion_error",
+                            tc=str(tc),
+                            tc_type=type(tc).__name__,
+                            error=str(e),
+                        )
+                        raise
+
+            logger.info(
+                "butler_llm_tool_calls_converted",
+                converted_count=len(tool_calls),
+                tool_names=tool_names,
+            )
 
             # Create AIMessage with tool_calls if present
             if tool_calls:
@@ -179,6 +272,15 @@ class ButlerChatModel(BaseChatModel):
                 )
             else:
                 ai_message = AIMessage(content=response.content or "")
+
+            logger.info(
+                "butler_llm_aimessage_created",
+                has_tool_calls=bool(hasattr(ai_message, "tool_calls") and ai_message.tool_calls),
+                tool_calls_count=len(ai_message.tool_calls)
+                if hasattr(ai_message, "tool_calls")
+                else 0,
+                content_length=len(ai_message.content) if hasattr(ai_message, "content") else 0,
+            )
 
             # Convert to LangChain ChatResult
             generation = ChatGeneration(
@@ -322,39 +424,46 @@ class ToolAwareButlerChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         """Async generate response by delegating to base model with tools."""
+        logger.info(
+            "tool_aware_llm_agenerate_entry",
+            tools_count=len(self.tools),
+            message_count=len(messages),
+        )
         # Convert LangChain tools to ReasoningRequest format
         tools_dicts = []
         for tool in self.tools:
-            if hasattr(tool, 'name') and hasattr(tool, 'description') and hasattr(tool, 'args_schema'):
+            if (
+                hasattr(tool, "name")
+                and hasattr(tool, "description")
+                and hasattr(tool, "args_schema")
+            ):
                 # Get the schema
                 schema = {}
-                if hasattr(tool.args_schema, 'model_json_schema'):
+                if hasattr(tool.args_schema, "model_json_schema"):
                     schema = tool.args_schema.model_json_schema()
-                elif hasattr(tool.args_schema, 'schema'):
+                elif hasattr(tool.args_schema, "schema"):
                     schema = tool.args_schema.schema()
-                
+
                 # If schema has no properties, provide a minimal schema
                 # Some APIs reject empty schemas, so we add a dummy property
-                if not schema.get('properties'):
+                if not schema.get("properties"):
                     schema = {
                         "type": "object",
-                        "properties": {
-                            "input": {
-                                "type": "string",
-                                "description": "Tool input"
-                            }
-                        }
+                        "properties": {"input": {"type": "string", "description": "Tool input"}},
                     }
-                
-                tools_dicts.append({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": schema,
-                })
-        
-        # Limit to first 10 tools to avoid overwhelming the API
-        tools_dicts = tools_dicts[:10]
-        
+
+                tools_dicts.append(
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": schema,
+                    }
+                )
+
+        # Limit to max_tools as safety guard (not the main selection mechanism)
+        max_tools = int(kwargs.get("_butler_max_tools", 12))
+        tools_dicts = tools_dicts[:max_tools]
+
         # Store tools in kwargs for the base model to use
         kwargs_with_tools = {**kwargs, "_butler_tools": tools_dicts}
         return await self.base_model._agenerate(

@@ -6,7 +6,9 @@ from fastapi.responses import HTMLResponse
 from core.deps import get_a2ui_bridge
 from services.gateway.a2ui_bridge import A2UIBridgeService
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["canvas"])
 
 

@@ -5,8 +5,6 @@ Implements session-mode interaction, persistent bindings, secret-file pattern,
 approval classifier, prompt-harness, session rate limit, and translator.
 """
 
-import asyncio
-import hashlib
 import json
 import logging
 import time
@@ -15,7 +13,9 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ACPAction(str, Enum):
@@ -174,8 +174,7 @@ class ACPApprovalClassifier:
             tool_name = payload["tool_name"].lower()
             # High-risk tools require approval
             requires_approval = any(
-                keyword in tool_name
-                for keyword in ["delete", "modify", "execute", "shell", "sudo"]
+                keyword in tool_name for keyword in ["delete", "modify", "execute", "shell", "sudo"]
             )
 
         self._approval_cache[cache_key] = requires_approval
@@ -302,6 +301,7 @@ class ButlerACPClient:
     ) -> dict[str, Any]:
         """Send a request action."""
         import uuid
+
         correlation_id = str(uuid.uuid4())
         message = ACPMessage(
             action=ACPAction.REQUEST,

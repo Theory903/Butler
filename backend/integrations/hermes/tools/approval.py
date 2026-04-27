@@ -9,7 +9,6 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
-import logging
 import os
 import re
 import sys
@@ -18,7 +17,9 @@ import time
 import unicodedata
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a

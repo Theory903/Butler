@@ -9,12 +9,13 @@ import logging
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 from services.memory.anchored_summarizer import AnchoredSummarizer
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerSummarizationMiddleware(ButlerBaseMiddleware):

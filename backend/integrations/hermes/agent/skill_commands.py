@@ -5,7 +5,6 @@ can invoke skills via /skill-name commands.
 """
 
 import json
-import logging
 import re
 import subprocess
 from pathlib import Path
@@ -13,7 +12,9 @@ from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.

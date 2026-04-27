@@ -1,6 +1,5 @@
 """Firecrawl cloud browser provider."""
 
-import logging
 import os
 import uuid
 from typing import Dict
@@ -9,7 +8,9 @@ import requests
 
 from tools.browser_providers.base import CloudBrowserProvider
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _BASE_URL = "https://api.firecrawl.dev"
 

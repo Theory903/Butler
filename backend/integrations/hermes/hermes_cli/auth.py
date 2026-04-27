@@ -16,7 +16,6 @@ Architecture:
 from __future__ import annotations
 
 import json
-import logging
 import os
 import shutil
 import shlex
@@ -44,7 +43,9 @@ import yaml
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 try:
     import fcntl

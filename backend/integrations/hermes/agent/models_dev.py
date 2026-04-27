@@ -19,7 +19,6 @@ rather than parsing the raw JSON themselves.
 """
 
 import json
-import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +28,9 @@ from utils import atomic_json_write
 
 import requests
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 MODELS_DEV_URL = "https://models.dev/api.json"
 _MODELS_DEV_CACHE_TTL = 3600  # 1 hour in-memory

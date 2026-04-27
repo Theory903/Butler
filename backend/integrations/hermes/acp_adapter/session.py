@@ -12,7 +12,6 @@ from hermes_constants import get_hermes_home
 
 import copy
 import json
-import logging
 import os
 import re
 import sys
@@ -23,7 +22,9 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _normalize_cwd_for_compare(cwd: str | None) -> str:

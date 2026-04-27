@@ -28,7 +28,6 @@ Configuration in config.yaml:
 
 import asyncio
 import json
-import logging
 import os
 import re
 import traceback
@@ -96,7 +95,9 @@ from gateway.platforms.base import (
     SendResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]

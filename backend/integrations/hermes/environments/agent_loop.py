@@ -14,7 +14,6 @@ handle_function_call() from model_tools.py.
 import asyncio
 import concurrent.futures
 import json
-import logging
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -46,7 +45,9 @@ def resize_tool_pool(max_workers: int):
     old_executor.shutdown(wait=False)
     logger.info("Tool thread pool resized to %d workers", max_workers)
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

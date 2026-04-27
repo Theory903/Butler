@@ -8,7 +8,9 @@ from typing import Any
 
 from butler_runtime.tools.registry import ButlerToolSpec
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def convert_hermes_schema_to_butler_spec(

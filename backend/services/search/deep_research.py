@@ -17,7 +17,9 @@ from domain.ml.contracts import (
 )
 from domain.search.contracts import ISearchService, SearchEvidencePack, SearchResult
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ResearchPlan(BaseModel):

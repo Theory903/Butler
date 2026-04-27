@@ -20,7 +20,9 @@ import enum
 import json
 import logging
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 import os
 import threading
 import time

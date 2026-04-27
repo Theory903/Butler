@@ -19,7 +19,6 @@ into the user's project directory.
 """
 
 import hashlib
-import logging
 import os
 import re
 import shutil
@@ -28,7 +27,9 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional, Set
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants

@@ -9,7 +9,7 @@ Dependencies (optional):
     or: pip install hermes-agent[voice]
 """
 
-import logging
+import json
 import os
 import platform
 import re
@@ -22,7 +22,9 @@ import time
 import wave
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lazy audio imports -- never imported at module level to avoid crashing

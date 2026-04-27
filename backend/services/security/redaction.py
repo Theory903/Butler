@@ -1,7 +1,9 @@
 import logging
 import re
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class RedactionService:

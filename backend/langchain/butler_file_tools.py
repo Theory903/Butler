@@ -13,7 +13,9 @@ import os
 
 from langchain.butler_file_operations import ButlerFileOperations
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # Expected write errors for permission handling

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -13,6 +15,8 @@ from core.errors import Problem
 from domain.auth.contracts import AccountContext
 from domain.runtime import ResponseValidator
 from services.orchestrator.service import OrchestratorService
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 
@@ -60,6 +64,7 @@ async def orchestrator_intake(
 
     Response is validated through Runtime Spine to prevent leaks.
     """
+    logger.info("orchestrator_route_intake_called", session_id=envelope.session_id)
     result = await svc.intake(envelope)
 
     # Validate response content to prevent leaks
@@ -68,9 +73,7 @@ async def orchestrator_intake(
             ResponseValidator.validate_user_facing_response(result.content)
         except Exception:
             # Sanitize if validation fails
-            result.content = ResponseValidator.sanitize_user_facing_response(
-                result.content
-            )
+            result.content = ResponseValidator.sanitize_user_facing_response(result.content)
 
     return result
 
@@ -83,8 +86,12 @@ async def orchestrator_intake_streaming(
     """Streaming entry point for intelligence tasks."""
     from services.gateway.stream_bridge import SSE_HEADERS
 
+    async def event_stream() -> AsyncGenerator[str]:
+        async for event in svc.intake_streaming(envelope):
+            yield event.to_sse()
+
     return StreamingResponse(
-        svc.intake_streaming(envelope),
+        event_stream(),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )

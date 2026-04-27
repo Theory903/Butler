@@ -7,7 +7,6 @@ wrapper, while preserving Hermes' persistent snapshot behavior across sessions.
 import asyncio
 import base64
 import io
-import logging
 import shlex
 import tarfile
 import threading
@@ -29,7 +28,9 @@ from tools.environments.file_sync import (
     unique_parent_dirs,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _SNAPSHOT_STORE = get_hermes_home() / "modal_snapshots.json"
 _DIRECT_SNAPSHOT_NAMESPACE = "direct"

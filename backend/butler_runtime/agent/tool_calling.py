@@ -6,7 +6,9 @@ Adapted from Hermes tool calling patterns with Butler governance integration.
 import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ToolCallingHandler:

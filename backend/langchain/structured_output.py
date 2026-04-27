@@ -4,13 +4,15 @@ Integrates LangChain's structured output capabilities with Butler's agent.
 """
 
 import logging
-from typing import Any, Type
+from typing import Any
 
 from pydantic import BaseModel
 
 from langchain.models import ButlerChatModel
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerStructuredOutput:
@@ -33,7 +35,7 @@ class ButlerStructuredOutput:
 
     def with_structured_output(
         self,
-        schema: Type[BaseModel] | dict[str, Any],
+        schema: type[BaseModel] | dict[str, Any],
         method: str = "function_calling",
         **kwargs: Any,
     ) -> Any:
@@ -51,9 +53,8 @@ class ButlerStructuredOutput:
             # Try to use LangChain's with_structured_output if available
             if hasattr(self._chat_model, "with_structured_output"):
                 return self._chat_model.with_structured_output(schema, method=method, **kwargs)
-            else:
-                # Fallback: wrap the model with structured output logic
-                return self._structured_output_fallback(schema, method=method, **kwargs)
+            # Fallback: wrap the model with structured output logic
+            return self._structured_output_fallback(schema, method=method, **kwargs)
         except Exception as exc:
             logger.warning("structured_output_configuration_failed", error=str(exc))
             # Return the original model if structured output fails
@@ -61,7 +62,7 @@ class ButlerStructuredOutput:
 
     def _structured_output_fallback(
         self,
-        schema: Type[BaseModel] | dict[str, Any],
+        schema: type[BaseModel] | dict[str, Any],
         method: str = "function_calling",
         **kwargs: Any,
     ) -> Any:
@@ -75,6 +76,7 @@ class ButlerStructuredOutput:
         Returns:
             A wrapper runnable
         """
+
         # This is a simplified fallback - in production, you'd want
         # to implement proper function calling or JSON mode parsing
         class StructuredOutputWrapper:
@@ -84,11 +86,12 @@ class ButlerStructuredOutput:
 
             async def ainvoke(self, messages, config=None):
                 response = await self._model.ainvoke(messages, config)
-                
+
                 # Try to parse the response as the schema
                 if isinstance(self._schema, type) and issubclass(self._schema, BaseModel):
                     try:
                         import json
+
                         parsed = json.loads(response.content)
                         return self._schema(**parsed)
                     except Exception:
@@ -100,7 +103,7 @@ class ButlerStructuredOutput:
 
     def create_tool_from_schema(
         self,
-        schema: Type[BaseModel],
+        schema: type[BaseModel],
         name: str,
         description: str,
     ) -> dict[str, Any]:
@@ -130,7 +133,7 @@ class ButlerStructuredOutput:
     def validate_output(
         self,
         output: str | dict[str, Any],
-        schema: Type[BaseModel],
+        schema: type[BaseModel],
     ) -> BaseModel | dict[str, Any] | str:
         """Validate output against a schema.
 
@@ -144,14 +147,14 @@ class ButlerStructuredOutput:
         try:
             if isinstance(output, str):
                 import json
+
                 parsed_output = json.loads(output)
             else:
                 parsed_output = output
 
             if isinstance(schema, type) and issubclass(schema, BaseModel):
                 return schema(**parsed_output)
-            else:
-                return parsed_output
+            return parsed_output
         except Exception as exc:
             logger.warning("output_validation_failed", error=str(exc))
             # Return original output if validation fails
@@ -159,6 +162,7 @@ class ButlerStructuredOutput:
 
 
 # Common structured output schemas for Butler
+
 
 class ToolCall(BaseModel):
     """Structured output for tool calls."""
@@ -224,9 +228,10 @@ class ActionResult(BaseModel):
 
 # Utility functions for creating structured output runnables
 
+
 def create_structured_output_agent(
     chat_model: ButlerChatModel,
-    output_schema: Type[BaseModel],
+    output_schema: type[BaseModel],
     system_prompt: str | None = None,
 ) -> Any:
     """Create an agent that returns structured output.
@@ -240,25 +245,25 @@ def create_structured_output_agent(
         A runnable that returns structured output
     """
     structured_output = ButlerStructuredOutput(chat_model)
-    
+
     if system_prompt:
         # Add system prompt to guide structured output
-        from langchain_core.messages import SystemMessage, HumanMessage
-        
+        from langchain_core.messages import SystemMessage
+
         def prompt_wrapper(messages):
             if not any(isinstance(m, SystemMessage) for m in messages):
                 return [SystemMessage(content=system_prompt)] + messages
             return messages
-        
+
         # Note: This is a simplified wrapper
         # In production, you'd want to properly chain the prompt with the model
-    
+
     return structured_output.with_structured_output(output_schema)
 
 
 def create_multi_schema_agent(
     chat_model: ButlerChatModel,
-    schemas: dict[str, Type[BaseModel]],
+    schemas: dict[str, type[BaseModel]],
     default_schema: str,
 ) -> Any:
     """Create an agent that can return multiple schema types.

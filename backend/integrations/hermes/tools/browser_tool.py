@@ -91,7 +91,9 @@ try:
 except ImportError:
     _is_camofox_mode = lambda: False  # noqa: E731
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes Android/Termux and macOS Homebrew locations needed for agent-browser,

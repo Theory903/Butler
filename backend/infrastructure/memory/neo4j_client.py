@@ -5,7 +5,9 @@ from neo4j import AsyncDriver, AsyncGraphDatabase
 
 from infrastructure.config import settings
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class Neo4jClient:

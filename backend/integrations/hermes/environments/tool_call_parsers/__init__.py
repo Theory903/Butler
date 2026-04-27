@@ -18,7 +18,6 @@ Usage:
     # tool_calls = list of ChatCompletionMessageToolCall objects, or None
 """
 
-import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple, Type
 
@@ -26,7 +25,9 @@ from openai.types.chat.chat_completion_message_tool_call import (
     ChatCompletionMessageToolCall,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Type alias for parser return value
 ParseResult = Tuple[Optional[str], Optional[List[ChatCompletionMessageToolCall]]]

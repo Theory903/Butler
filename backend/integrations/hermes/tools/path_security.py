@@ -5,11 +5,12 @@ patterns previously duplicated across skill_manager_tool, skills_tool,
 skills_hub, cronjob_tools, and credential_files.
 """
 
-import logging
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def validate_within_dir(path: Path, root: Path) -> Optional[str]:

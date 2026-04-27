@@ -28,7 +28,6 @@ Usage:
         --env.data_path_to_save_groups terminal_test_output.jsonl
 """
 
-import logging
 import os
 import sys
 import time
@@ -48,7 +47,9 @@ from integrations.hermes.environments.agent_loop import AgentResult
 from integrations.hermes.environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig
 from integrations.hermes.environments.tool_context import ToolContext
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # =============================================================================

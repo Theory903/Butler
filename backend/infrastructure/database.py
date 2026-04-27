@@ -20,7 +20,9 @@ from sqlalchemy.pool import QueuePool
 
 from infrastructure.config import settings
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Thread-safe context var to hold the current tenant_id for RLS propagation
 # This is set by TenantContextMiddleware and used for tenant isolation

@@ -21,7 +21,6 @@ Usage:
 """
 
 import json
-import logging
 import os
 import time
 from pathlib import Path
@@ -32,7 +31,9 @@ import traceback
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn, MofNCompleteColumn
 from rich.console import Console
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 import fire
 
 from run_agent import AIAgent
@@ -289,7 +290,10 @@ def _process_single_prompt(
                 if config.get("verbose"):
                     print(f"   Prompt {prompt_index}: Docker image check failed: {img_err}", flush=True)
 
-        from tools.terminal_tool import register_task_env_overrides
+        try:
+            from tools.terminal_tool import register_task_env_overrides
+        except ImportError:
+            from integrations.hermes.tools.terminal_tool import register_task_env_overrides  # type: ignore[no-redef]
         overrides = {
             "docker_image": container_image,
             "modal_image": container_image,
@@ -917,9 +921,10 @@ class BatchRunner:
                 task = progress.add_task("Processing", total=len(tasks))
                 
                 # Temporarily suppress DEBUG logging to avoid bar interference
-                root_logger = logging.getLogger()
-                original_level = root_logger.level
-                root_logger.setLevel(logging.WARNING)
+                import structlog
+                logger = structlog.get_logger(__name__)
+                original_level = logger.level
+                logger.setLevel("WARNING")
                 
                 try:
                     for result in pool.imap_unordered(_process_batch_worker, tasks):

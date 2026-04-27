@@ -1,22 +1,24 @@
 """Tests for Phase 3: Memory + HITL + Time Travel + Structured Output."""
 
-import pytest
+from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from domain.memory.contracts import MemoryServiceContract
 from langchain.memory import ButlerMemoryAdapter
 from langchain.middleware.hitl import (
-    ButlerHITLMiddleware,
-    ApprovalStrategy,
-    ApprovalStatus,
     ApprovalRequest,
+    ApprovalStatus,
+    ApprovalStrategy,
+    ButlerHITLMiddleware,
 )
-from langchain.time_travel import ButlerTimeTravel, CheckpointState
 from langchain.structured_output import (
+    AgentResponse,
     ButlerStructuredOutput,
     ToolCall,
-    AgentResponse,
 )
-from domain.memory.contracts import MemoryServiceContract
+from langchain.time_travel import ButlerTimeTravel, CheckpointState
 
 
 @pytest.fixture
@@ -72,7 +74,12 @@ class TestButlerMemoryAdapter:
         # Mock context pack
         mock_context = ContextPack(
             session_history=[
-                ConversationTurn(role="user", content="test", session_id="test_session", account_id="test_account_id")
+                ConversationTurn(
+                    role="user",
+                    content="test",
+                    session_id="test_session",
+                    account_id="test_account_id",
+                )
             ],
             relevant_memories=[],
             preferences=[],
@@ -228,20 +235,20 @@ class TestButlerTimeTravel:
         """Test time travel service initialization."""
         compiled_graph = MagicMock()
         checkpointer = MagicMock()
-        
+
         time_travel = ButlerTimeTravel(compiled_graph, checkpointer)
-        
+
         assert time_travel._compiled_graph == compiled_graph
         assert time_travel._checkpointer == checkpointer
 
     def test_checkpoint_state_creation(self):
         """Test checkpoint state creation."""
-        from datetime import datetime, timezone
-        
+        from datetime import datetime
+
         state = CheckpointState(
             checkpoint_id="cp_1",
             thread_id="thread_1",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             state={"messages": []},
             parent_checkpoint_id=None,
         )
@@ -253,14 +260,14 @@ class TestButlerTimeTravel:
         """Test getting checkpoint history."""
         compiled_graph = MagicMock()
         checkpointer = MagicMock()
-        
+
         # Mock asearch to return empty iterator
         checkpointer.asearch = AsyncMock(return_value=iter([]))
-        
+
         time_travel = ButlerTimeTravel(compiled_graph, checkpointer)
-        
+
         history = await time_travel.get_checkpoint_history("thread_1", limit=10)
-        
+
         assert isinstance(history, list)
         checkpointer.asearch.assert_called_once()
 
@@ -269,14 +276,14 @@ class TestButlerTimeTravel:
         """Test getting a specific checkpoint."""
         compiled_graph = MagicMock()
         checkpointer = MagicMock()
-        
+
         # Mock aget to return None
         checkpointer.aget = AsyncMock(return_value=None)
-        
+
         time_travel = ButlerTimeTravel(compiled_graph, checkpointer)
-        
+
         checkpoint = await time_travel.get_checkpoint("thread_1", "cp_1")
-        
+
         assert checkpoint is None
         checkpointer.aget.assert_called_once()
 
@@ -288,7 +295,7 @@ class TestButlerStructuredOutput:
         """Test structured output initialization."""
         chat_model = MagicMock()
         structured_output = ButlerStructuredOutput(chat_model)
-        
+
         assert structured_output._chat_model == chat_model
 
     def test_tool_call_schema(self):
@@ -314,13 +321,13 @@ class TestButlerStructuredOutput:
         """Test creating tool definition from schema."""
         chat_model = MagicMock()
         structured_output = ButlerStructuredOutput(chat_model)
-        
+
         tool_def = structured_output.create_tool_from_schema(
             schema=ToolCall,
             name="email_sender",
             description="Send an email",
         )
-        
+
         assert tool_def["type"] == "function"
         assert tool_def["function"]["name"] == "email_sender"
         assert "parameters" in tool_def["function"]
@@ -329,11 +336,11 @@ class TestButlerStructuredOutput:
         """Test validating output with Pydantic schema."""
         chat_model = MagicMock()
         structured_output = ButlerStructuredOutput(chat_model)
-        
+
         output = '{"tool_name": "email_sender", "arguments": {"to": "test@example.com"}}'
-        
+
         validated = structured_output.validate_output(output, ToolCall)
-        
+
         assert isinstance(validated, ToolCall)
         assert validated.tool_name == "email_sender"
 
@@ -341,12 +348,12 @@ class TestButlerStructuredOutput:
         """Test validating output with invalid JSON."""
         chat_model = MagicMock()
         structured_output = ButlerStructuredOutput(chat_model)
-        
+
         output = "invalid json"
-        
+
         # Should return original output on failure
         validated = structured_output.validate_output(output, ToolCall)
-        
+
         assert validated == output
 
 
@@ -356,14 +363,20 @@ class TestPhase3Integration:
     @pytest.mark.asyncio
     async def test_memory_with_agent_flow(self, memory_adapter, mock_memory_service):
         """Test memory integration with agent flow."""
+        from langchain_core.messages import HumanMessage
+
         from domain.memory.contracts import ContextPack
         from domain.memory.models import ConversationTurn
-        from langchain_core.messages import HumanMessage
 
         # Mock context retrieval
         mock_context = ContextPack(
             session_history=[
-                ConversationTurn(role="user", content="previous message", session_id="test_session", account_id="test_account_id")
+                ConversationTurn(
+                    role="user",
+                    content="previous message",
+                    session_id="test_session",
+                    account_id="test_account_id",
+                )
             ],
             relevant_memories=[],
             preferences=[],

@@ -9,12 +9,13 @@ from typing import Any
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 from services.security.redaction import RedactionService
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerPIIMiddleware(ButlerBaseMiddleware):

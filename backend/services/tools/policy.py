@@ -102,9 +102,7 @@ class ToolPolicyService:
             True if rate limit allows, False otherwise
         """
         if self._policy._rate_limiter:
-            return self._policy._rate_limiter.check_rate_limit(
-                tenant_id, account_id, tool_name
-            )
+            return self._policy._rate_limiter.check_rate_limit(tenant_id, account_id, tool_name)
         return True
 
     def check_quota(
@@ -124,9 +122,7 @@ class ToolPolicyService:
             True if quota allows, False otherwise
         """
         if self._policy._quota_service:
-            return self._policy._quota_service.check_quota(
-                tenant_id, account_id, tool_name
-            )
+            return self._policy._quota_service.check_quota(tenant_id, account_id, tool_name)
         return True
 
     def is_risk_tier_allowed(
@@ -144,7 +140,5 @@ class ToolPolicyService:
             True if risk tier allowed, False otherwise
         """
         if self._policy._tenant_service:
-            return self._policy._tenant_service.is_risk_tier_allowed(
-                tenant_id, risk_tier
-            )
+            return self._policy._tenant_service.is_risk_tier_allowed(tenant_id, risk_tier)
         return True

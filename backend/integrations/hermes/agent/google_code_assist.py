@@ -28,7 +28,6 @@ documented nowhere public — we copy them from the reference implementations.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import time
 import urllib.error
@@ -38,7 +37,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # =============================================================================

@@ -67,7 +67,9 @@ class IdempotencyManager:
         """
         payload = json.dumps({"message_id": message_id, "status": "processing"})
         # NX=True ensures it only writes if the key does not exist. Race safe.
-        acquired = await self.redis.set(self._get_scoped_key(idem_key), payload, ex=self.TTL_SECONDS, nx=True)
+        acquired = await self.redis.set(
+            self._get_scoped_key(idem_key), payload, ex=self.TTL_SECONDS, nx=True
+        )
         return bool(acquired)
 
     async def get_existing_message_id(self, idem_key: str) -> str | None:

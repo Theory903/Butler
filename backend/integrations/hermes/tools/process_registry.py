@@ -30,7 +30,6 @@ Usage:
 """
 
 import json
-import logging
 import os
 import platform
 import shlex
@@ -47,7 +46,9 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # Checkpoint file for crash recovery (gateway only)

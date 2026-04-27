@@ -2,7 +2,35 @@
 > **For:** Future OpenCode sessions
 > **Version:** 3.2 (Oracle-Grade v2.1)
 > **Updated:** 2026-04-22
+
 ---
+
+## ⚠️ IMPORTANT: Read These Before Any Task
+
+**This is the next phase architecture. All other docs/ references are deprecated.**
+
+**Read these documents in order before starting any work:**
+
+1. **[premble.md](premble.md)** - BIS v2 Complete Technical Architecture: Birth to Death, 0 → 100%
+   - PART 0: What This System Is
+   - PART 1: The Absolute Domain Law
+   - PART 2: System Architecture Overview
+   - PART 3-16: All domains, encryption, storage, build sequence, and privacy principles
+
+2. **[bis-v2-production-architecture-dfe18c.md](bis-v2-production-architecture-dfe18c.md)** - Production Implementation Specification
+   - Architectural Corrections (critical context)
+   - 7-Plane Architecture
+   - Encryption Layer (E2E Data Privacy)
+   - Control Plane, Context System, Tool System
+   - Deliberation Engine, Council Engine, Domain Crews
+   - Knowledge System, Memory System, Multi-Tenant Architecture
+   - Reliability Layer, Model System, User Mode System
+   - Implementation Phases (18 phases)
+
+**These documents replace all previous docs/ references.**
+
+---
+
 ## What This Project Is
 **Butler** = Personal AI system (not a chatbot wrapper):
 - Modular AI execution with **18 services**

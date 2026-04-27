@@ -11,11 +11,12 @@ from typing import Any
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # Cost per 1K tokens (example rates - should be configurable)

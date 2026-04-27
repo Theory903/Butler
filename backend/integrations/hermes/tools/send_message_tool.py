@@ -7,7 +7,6 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 
 import asyncio
 import json
-import logging
 import os
 import re
 from typing import Dict, Optional
@@ -16,7 +15,9 @@ import time
 
 from agent.redact import redact_sensitive_text
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")

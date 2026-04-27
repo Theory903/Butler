@@ -3,13 +3,13 @@
 Phase H: Gateway hardening with nginx parity using slowapi for rate limiting.
 """
 
-import logging
+import ipaddress
 from dataclasses import dataclass, field
 from typing import Any
 
-import ipaddress
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -56,8 +56,8 @@ class GatewayHardening:
         """Configure slowapi rate limiter."""
         try:
             from slowapi import Limiter
-            from slowapi.util import get_remote_address
             from slowapi.errors import RateLimitExceeded
+            from slowapi.util import get_remote_address
 
             self._limiter = Limiter(
                 key_func=get_remote_address,
@@ -82,11 +82,7 @@ class GatewayHardening:
         Returns:
             Dictionary of header name to value
         """
-        return {
-            h.name: h.value
-            for h in self._security_headers.values()
-            if h.enabled
-        }
+        return {h.name: h.value for h in self._security_headers.values() if h.enabled}
 
     def add_ip_whitelist(self, whitelist: IPWhitelist) -> None:
         """Add an IP whitelist.
@@ -126,7 +122,9 @@ class GatewayHardening:
             SecurityHeader(name="X-Frame-Options", value="DENY"),
             SecurityHeader(name="X-Content-Type-Options", value="nosniff"),
             SecurityHeader(name="X-XSS-Protection", value="1; mode=block"),
-            SecurityHeader(name="Strict-Transport-Security", value="max-age=31536000; includeSubDomains"),
+            SecurityHeader(
+                name="Strict-Transport-Security", value="max-age=31536000; includeSubDomains"
+            ),
             SecurityHeader(name="Content-Security-Policy", value="default-src 'self'"),
             SecurityHeader(name="Referrer-Policy", value="strict-origin-when-cross-origin"),
             SecurityHeader(name="Permissions-Policy", value="geolocation=(), microphone=()"),

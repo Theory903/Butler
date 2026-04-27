@@ -176,5 +176,9 @@ class ButlerToolRuntimeManager:
             session_id=session_id,
             trace_id=trace_id,
             user_id=configurable.get("user_id"),
-            metadata={k: v for k, v in configurable.items() if k not in {"tenant_id", "account_id", "session_id", "trace_id", "user_id"}},
+            metadata={
+                k: v
+                for k, v in configurable.items()
+                if k not in {"tenant_id", "account_id", "session_id", "trace_id", "user_id"}
+            },
         )

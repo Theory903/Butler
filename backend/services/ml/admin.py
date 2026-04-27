@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class HealthStatus(StrEnum):

@@ -13,7 +13,9 @@ from domain.ml.contracts import IReasoningRuntime
 if TYPE_CHECKING:
     from services.memory.consent_manager import ConsentManager
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class EpisodicMemoryEngine:
@@ -31,9 +33,11 @@ class EpisodicMemoryEngine:
         self._memory_service = memory_recorder  # narrow IMemoryRecorder slice
         self._consent = consent_manager
 
-    async def capture_episode(self, account_id: str, session_id: str, tenant_id: str | None = None) -> Episode | None:
+    async def capture_episode(
+        self, account_id: str, session_id: str, tenant_id: str | None = None
+    ) -> Episode | None:
         """Summarize a completed session into an interaction Episode.
-        
+
         Args:
             account_id: Account ID
             session_id: Session ID

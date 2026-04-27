@@ -31,8 +31,9 @@ Usage:
 """
 
 import importlib.util
+import errno
+import fcntl
 import json
-import logging
 import os
 import platform
 import re
@@ -44,7 +45,9 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

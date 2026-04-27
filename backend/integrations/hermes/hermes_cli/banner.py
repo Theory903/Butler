@@ -4,7 +4,6 @@ Pure display functions with no HermesCLI state dependency.
 """
 
 import json
-import logging
 import shutil
 import subprocess
 import threading
@@ -20,7 +19,9 @@ from rich.table import Table
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # =========================================================================

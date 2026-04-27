@@ -35,7 +35,6 @@ Payment / credit exhaustion fallback:
 """
 
 import json
-import logging
 import os
 import threading
 import time
@@ -50,7 +49,9 @@ from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False

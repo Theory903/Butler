@@ -20,6 +20,17 @@ from domain.orchestration.router import OperationRouter
 from services.ml.provider_health import MLProviderHealthTracker
 from services.ml.registry import ModelProviderFactory, ModelRegistry
 
+# Import orchestration layer if enabled
+try:
+    from services.ml_runtime.orchestrator_integration import (
+        create_orchestrator_bridge_if_enabled,
+        OrchestratorBridge,
+    )
+    from services.ml.provider_config_service import ProviderConfigService
+    ORCHESTRATION_AVAILABLE = True
+except ImportError:
+    ORCHESTRATION_AVAILABLE = False
+
 logger = structlog.get_logger(__name__)
 
 
@@ -54,6 +65,8 @@ class MLRuntimeManager(IReasoningRuntime):
         metrics: ButlerMetrics | None = None,
         max_concurrency: int = 20,
         operation_router: OperationRouter | None = None,
+        use_orchestrator: bool | None = None,
+        provider_config_service: ProviderConfigService | None = None,
     ) -> None:
         if max_concurrency <= 0:
             raise ValueError("max_concurrency must be greater than 0")
@@ -64,6 +77,18 @@ class MLRuntimeManager(IReasoningRuntime):
         self._metrics = metrics or get_metrics()
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._operation_router = operation_router
+        self._provider_config_service = provider_config_service
+        
+        # Initialize orchestrator bridge if enabled
+        if use_orchestrator is None:
+            use_orchestrator = ORCHESTRATION_AVAILABLE
+        self._orchestrator = None
+        if use_orchestrator and ORCHESTRATION_AVAILABLE:
+            self._orchestrator = create_orchestrator_bridge_if_enabled()
+            if self._orchestrator:
+                logger.info("ml_runtime_using_orchestration_layer")
+            else:
+                logger.info("ml_runtime_orchestration_not_enabled")
 
     async def generate(
         self,
@@ -77,9 +102,78 @@ class MLRuntimeManager(IReasoningRuntime):
         Args:
             tenant_id: Required tenant UUID for multi-tenant isolation
         """
+        # Get tenant-specific provider configuration if available
+        tenant_provider = None
+        tenant_api_key = None
+        
+        if self._provider_config_service:
+            try:
+                tenant_provider, tenant_model, tenant_api_key = await self._provider_config_service.get_provider_for_tenant(tenant_id)
+                
+                # Override request with tenant preferences
+                if tenant_provider:
+                    request.metadata = request.metadata or {}
+                    request.metadata["provider"] = tenant_provider.value
+                    request.metadata["model"] = tenant_model
+            except Exception as exc:
+                logger.warning(
+                    "ml_runtime_tenant_config_failed",
+                    tenant_id=tenant_id,
+                    error=str(exc),
+                )
+        
+        # Use orchestrator if enabled and available
+        if self._orchestrator:
+            try:
+                # Extract provider and model from request metadata
+                provider = request.metadata.get("provider") or request.metadata.get("runtime_provider")
+                model = request.metadata.get("model") or request.preferred_model
+                
+                # Call orchestrator
+                ml_response = await self._orchestrator.generate(
+                    prompt=request.prompt,
+                    provider=provider,
+                    model=model,
+                    system_message=request.system_prompt,
+                    tools=request.tools,
+                    metadata=request.metadata,
+                )
+                
+                # Convert to ReasoningResponse
+                return ReasoningResponse(
+                    content=ml_response.text,
+                    raw_response=None,
+                    usage={
+                        "input_tokens": ml_response.input_tokens,
+                        "output_tokens": ml_response.output_tokens,
+                        "total_tokens": ml_response.total_tokens,
+                        "duration_ms": int(ml_response.duration_seconds * 1000),
+                    },
+                    model_version=ml_response.model,
+                    provider_name=ml_response.provider,
+                    finish_reason="stop",
+                    metadata={
+                        **ml_response.metadata,
+                        "orchestrator_used": True,
+                        "retry_count": ml_response.retry_count,
+                        "tenant_provider": tenant_provider.value if tenant_provider else None,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "ml_runtime_orchestrator_failed",
+                    error=str(exc),
+                    exc_info=True,
+                )
+                # Fall through to legacy implementation
+        
         # Check ML inference operation admission through router
         if self._operation_router:
-            from domain.orchestration.router import AdmissionDecision, OperationRequest, OperationType
+            from domain.orchestration.router import (
+                AdmissionDecision,
+                OperationRequest,
+                OperationType,
+            )
 
             operation_request = OperationRequest(
                 operation_type=OperationType.CHAT,  # ML inference uses CHAT type
@@ -138,7 +232,10 @@ class MLRuntimeManager(IReasoningRuntime):
                         **dict(response.metadata or {}),
                         "runtime_candidate": candidate.name,
                         "runtime_tier": candidate.tier.value,
+                        "orchestrator_used": False,
+                        "tenant_provider": tenant_provider.value if tenant_provider else None,
                     },
+                    tool_calls=response.tool_calls or [],
                 )
             except Exception as exc:
                 duration_ms = int((monotonic() - started_at) * 1000)
@@ -178,6 +275,51 @@ class MLRuntimeManager(IReasoningRuntime):
         Args:
             tenant_id: Required tenant UUID for multi-tenant isolation
         """
+        # Get tenant-specific provider configuration if available
+        tenant_provider = None
+        tenant_api_key = None
+        
+        if self._provider_config_service:
+            try:
+                tenant_provider, tenant_model, tenant_api_key = await self._provider_config_service.get_provider_for_tenant(tenant_id)
+                
+                # Override request with tenant preferences
+                if tenant_provider:
+                    request.metadata = request.metadata or {}
+                    request.metadata["provider"] = tenant_provider.value
+                    request.metadata["model"] = tenant_model
+            except Exception as exc:
+                logger.warning(
+                    "ml_runtime_tenant_config_failed",
+                    tenant_id=tenant_id,
+                    error=str(exc),
+                )
+        
+        # Use orchestrator if enabled and available
+        if self._orchestrator:
+            try:
+                # Extract provider and model from request metadata
+                provider = request.metadata.get("provider") or request.metadata.get("runtime_provider")
+                model = request.metadata.get("model") or request.preferred_model
+                
+                # Call orchestrator stream
+                async for chunk in self._orchestrator.generate_stream(
+                    prompt=request.prompt,
+                    provider=provider,
+                    model=model,
+                    system_message=request.system_prompt,
+                    metadata=request.metadata,
+                ):
+                    yield chunk
+                return
+            except Exception as exc:
+                logger.warning(
+                    "ml_runtime_orchestrator_stream_failed",
+                    error=str(exc),
+                    exc_info=True,
+                )
+                # Fall through to legacy implementation
+        
         candidates = self._resolve_candidates(request, preferred_tier=preferred_tier)
         last_error: Exception | None = None
 
@@ -402,7 +544,7 @@ class MLRuntimeManager(IReasoningRuntime):
                 continue
 
             provider_health = self._health.get_provider_health(candidate.provider_name)
-            
+
             # Skip unhealthy providers
             if provider_health.status == HealthStatus.UNHEALTHY:
                 logger.warning(
@@ -446,6 +588,7 @@ class MLRuntimeManager(IReasoningRuntime):
                 **request.model_dump(),
                 "metadata": metadata,
                 "preferred_tier": candidate.tier,
+                "preferred_model": candidate.model_version,
             },
             strict=False,
         )

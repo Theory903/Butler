@@ -6,11 +6,12 @@ the file-write logic live here.
 """
 
 import json
-import logging
 from datetime import datetime
 from typing import Any, Dict, List
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def convert_scratchpad_to_think(content: str) -> str:

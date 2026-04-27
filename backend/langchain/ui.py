@@ -4,10 +4,13 @@ Provides UI components and functional API for LangChain agents.
 """
 
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -214,7 +217,7 @@ class ButlerGenerativeUI:
             try:
                 result = handler(event)
                 results.append(result)
-            except Exception as exc:
+            except Exception:
                 logger.exception("ui_event_handler_failed", component_id=event.component_id)
 
         return results
@@ -330,8 +333,7 @@ class ButlerFunctionalAPI:
 
         if callable(handler):
             return await handler(**parameters)
-        else:
-            return handler
+        return handler
 
     async def call_function_stream(
         self,
@@ -460,12 +462,14 @@ class ButlerUIAPI:
         # Generate form based on function parameters
         fields = []
         for param_name, param_schema in func.parameters.items():
-            fields.append({
-                "name": param_name,
-                "label": param_name.replace("_", " ").title(),
-                "type": param_schema.get("type", "text"),
-                "required": param_schema.get("required", False),
-            })
+            fields.append(
+                {
+                    "name": param_name,
+                    "label": param_name.replace("_", " ").title(),
+                    "type": param_schema.get("type", "text"),
+                    "required": param_schema.get("required", False),
+                }
+            )
 
         return self.ui.generate_form(
             form_id=f"form_{function_name}",

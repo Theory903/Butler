@@ -40,7 +40,9 @@ from redis.asyncio import Redis
 
 from services.tenant.namespace import get_tenant_namespace
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Max introspection cache TTL — even if token expires in 1h, we cap at 5min
 _MAX_INTROSPECT_TTL_S = 300

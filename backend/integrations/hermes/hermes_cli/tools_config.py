@@ -10,7 +10,6 @@ the `platform_toolsets` key.
 """
 
 import json as _json
-import logging
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -27,7 +26,9 @@ from hermes_cli.nous_subscription import (
 from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
 from utils import base_url_hostname
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 

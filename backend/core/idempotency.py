@@ -211,7 +211,9 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             return f"tenant:{ctx.tenant_id}"
 
         # Fallback to user-based scope for single-tenant or non-tenant contexts
-        user_id = request.headers.get("X-User-Id") or request.headers.get("X-Request-Id", "anonymous")
+        user_id = request.headers.get("X-User-Id") or request.headers.get(
+            "X-Request-Id", "anonymous"
+        )
         return f"user:{user_id}"
 
     def _get_storage_key(self, normalized_key: str, user_scope: str) -> str:

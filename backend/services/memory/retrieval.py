@@ -163,7 +163,7 @@ class RetrievalFusionEngine:
             scored_results = []
 
             for mem in top_candidates:
-                if mem.embedding:
+                if mem.embedding is not None and len(mem.embedding) > 0:
                     # Cosine similarity
                     mem_vec = np.array(mem.embedding)
                     query_vec = np.array(query_vector)
@@ -351,20 +351,9 @@ class RetrievalFusionEngine:
             )
             graph_res = await self._db.execute(graph_stmt)
             graph_memories = list(graph_res.scalars().all())
-
-            candidates.extend(graph_memories)
-
-        except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning(f"memory.retrieval.graph_expansion_failed: {exc}")
-
-        return candidates
-
-    async def _get_active_preferences(self, account_id: uuid.UUID) -> list[ExplicitPreference]:
-        stmt = select(ExplicitPreference).where(ExplicitPreference.account_id == account_id)
-        res = await self._db.execute(stmt)
-        return list(res.scalars().all())
+            return candidates + graph_memories
+        except Exception:
+            return candidates
 
     async def _get_active_dislikes(self, account_id: uuid.UUID) -> list[ExplicitDislike]:
         stmt = select(ExplicitDislike).where(ExplicitDislike.account_id == account_id)

@@ -1,6 +1,5 @@
 """Browserbase cloud browser provider (direct credentials only)."""
 
-import logging
 import os
 import uuid
 from typing import Any, Dict, Optional
@@ -9,7 +8,9 @@ import requests
 
 from tools.browser_providers.base import CloudBrowserProvider
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class BrowserbaseProvider(CloudBrowserProvider):

@@ -34,13 +34,14 @@ import logging
 import os
 import re
 import sys
-import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-logger = logging.getLogger("hermes.mcp_serve")
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lazy MCP SDK import

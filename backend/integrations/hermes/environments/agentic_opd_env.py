@@ -63,7 +63,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import logging
 import os
 import random
 import re
@@ -88,7 +87,9 @@ from integrations.hermes.environments.hermes_base_env import HermesAgentBaseEnv,
 from integrations.hermes.environments.agent_loop import AgentResult, HermesAgentLoop
 from integrations.hermes.environments.tool_context import ToolContext
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════

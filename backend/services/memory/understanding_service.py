@@ -9,7 +9,9 @@ from domain.memory.models import ExplicitDislike, ExplicitPreference, UserConstr
 from domain.ml.contracts import IReasoningRuntime
 from services.memory.knowledge_repo_contract import KnowledgeRepoContract
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class UnderstandingService:
@@ -25,9 +27,11 @@ class UnderstandingService:
         self._ml_runtime = ml_runtime
         self._knowledge_repo = knowledge_repo
 
-    async def analyze_turn(self, account_id: str, role: str, content: str, tenant_id: str | None = None) -> None:
+    async def analyze_turn(
+        self, account_id: str, role: str, content: str, tenant_id: str | None = None
+    ) -> None:
         """Analyze a single conversation turn for potential identity/preference updates.
-        
+
         Args:
             account_id: Account ID
             role: Message role
@@ -95,7 +99,7 @@ Only return items if they are EXPLICIT or strongly implied.
         stmt = select(ExplicitPreference).where(
             ExplicitPreference.account_id == account_id,
             ExplicitPreference.tenant_id == tenant_id,
-            ExplicitPreference.key == data["key"]
+            ExplicitPreference.key == data["key"],
         )
         res = await self._db.execute(stmt)
         pref = res.scalar_one_or_none()
@@ -129,7 +133,7 @@ Only return items if they are EXPLICIT or strongly implied.
         stmt = select(ExplicitDislike).where(
             ExplicitDislike.account_id == account_id,
             ExplicitDislike.tenant_id == tenant_id,
-            ExplicitDislike.key == data["key"]
+            ExplicitDislike.key == data["key"],
         )
         res = await self._db.execute(stmt)
         dis = res.scalar_one_or_none()
@@ -152,7 +156,7 @@ Only return items if they are EXPLICIT or strongly implied.
         stmt = select(UserConstraint).where(
             UserConstraint.account_id == account_id,
             UserConstraint.tenant_id == tenant_id,
-            UserConstraint.constraint_type == data["type"]
+            UserConstraint.constraint_type == data["type"],
         )
         res = await self._db.execute(stmt)
         con = res.scalar_one_or_none()

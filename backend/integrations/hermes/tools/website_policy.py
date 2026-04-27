@@ -11,7 +11,6 @@ quickly without re-reading the file on every URL check.
 from __future__ import annotations
 
 import fnmatch
-import logging
 import threading
 import time
 from pathlib import Path
@@ -20,7 +19,9 @@ from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _DEFAULT_WEBSITE_BLOCKLIST = {
     "enabled": False,

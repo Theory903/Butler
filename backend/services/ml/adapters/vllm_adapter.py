@@ -4,7 +4,9 @@ from typing import Any
 
 from services.security.safe_request import SafeRequestClient
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class VLLMAdapter:

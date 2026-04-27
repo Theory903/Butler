@@ -4,7 +4,6 @@ Phase E.2: Plugin SDK from openclaw using standard library importlib.
 Provides plugin lifecycle, manifest validation, and hot-reload.
 """
 
-import asyncio
 import hashlib
 import importlib
 import importlib.util
@@ -15,9 +14,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class PluginState(str, Enum):
@@ -147,7 +147,11 @@ class ButlerPluginSDK:
 
         # Load plugin module using importlib.util
         try:
-            entry_point = plugin_path / manifest.entry_point if plugin_path.is_dir() else plugin_path.parent / manifest.entry_point
+            entry_point = (
+                plugin_path / manifest.entry_point
+                if plugin_path.is_dir()
+                else plugin_path.parent / manifest.entry_point
+            )
             spec = importlib.util.spec_from_file_location(manifest.name, str(entry_point))
             if spec and spec.loader:
                 module = importlib.util.module_from_spec(spec)
@@ -180,7 +184,7 @@ class ButlerPluginSDK:
         if not manifest_path.exists():
             raise FileNotFoundError(f"Manifest not found: {manifest_path}")
 
-        with open(manifest_path, "r") as f:
+        with open(manifest_path) as f:
             data = json.load(f)
 
         manifest = PluginManifest.from_dict(data)
@@ -285,7 +289,7 @@ class ButlerPluginSDK:
             try:
                 plugin = await self.load_plugin(str(plugin_dir))
                 loaded_plugins.append(plugin)
-            except Exception as e:
+            except Exception:
                 logger.exception("plugin_load_failed", plugin_dir=str(plugin_dir))
 
         logger.info("all_plugins_loaded", count=len(loaded_plugins))

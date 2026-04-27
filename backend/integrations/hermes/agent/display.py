@@ -4,7 +4,6 @@ Pure display functions and classes with no AIAgent dependency.
 Used by AIAgent._execute_tool_calls for CLI feedback.
 """
 
-import logging
 import os
 import sys
 import threading
@@ -19,7 +18,9 @@ from utils import safe_json_loads
 _RED = "\033[31m"
 _RESET = "\033[0m"
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _ANSI_RESET = "\033[0m"
 

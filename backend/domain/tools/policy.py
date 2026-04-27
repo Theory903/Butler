@@ -101,9 +101,7 @@ class ToolPolicyDecision:
         )
 
     @classmethod
-    def degraded(
-        cls, mode: DegradedMode, reason: str
-    ) -> ToolPolicyDecision:
+    def degraded(cls, mode: DegradedMode, reason: str) -> ToolPolicyDecision:
         """Create a degraded mode decision."""
         return cls(
             allowed=True,
@@ -184,9 +182,7 @@ class ToolPolicy:
             user_permissions = frozenset()
         if not spec.required_permissions.issubset(user_permissions):
             missing = spec.required_permissions - user_permissions
-            return ToolPolicyDecision.deny(
-                f"Missing required permissions: {missing}"
-            )
+            return ToolPolicyDecision.deny(f"Missing required permissions: {missing}")
 
         # Check scopes satisfy required_scopes
         if not spec.required_scopes.issubset(frozenset(context.permissions or [])):
@@ -195,9 +191,7 @@ class ToolPolicy:
 
         # Check risk tier allowed by tenant plan
         if self._tenant_service:
-            if not self._tenant_service.is_risk_tier_allowed(
-                context.tenant_id, spec.risk_tier
-            ):
+            if not self._tenant_service.is_risk_tier_allowed(context.tenant_id, spec.risk_tier):
                 return ToolPolicyDecision.deny(
                     f"Risk tier {spec.risk_tier} not allowed for tenant plan"
                 )
@@ -246,6 +240,4 @@ class ToolPolicy:
             pass
 
         # All checks passed - allow execution
-        return ToolPolicyDecision.allow(
-            f"Tool {spec.canonical_name} execution allowed"
-        )
+        return ToolPolicyDecision.allow(f"Tool {spec.canonical_name} execution allowed")

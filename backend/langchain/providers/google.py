@@ -5,7 +5,9 @@ from typing import Any
 
 from .base import BaseProvider, ProviderConfig, ProviderType
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class GoogleProvider(BaseProvider):
@@ -40,7 +42,9 @@ class GoogleProvider(BaseProvider):
 
             self._client = self._chat_client or self._embedding_client
         except ImportError:
-            logger.warning("langchain_google_genai_not_installed: pip install langchain-google-genai")
+            logger.warning(
+                "langchain_google_genai_not_installed: pip install langchain-google-genai"
+            )
         except Exception as e:
             logger.error(f"google_initialization_failed: {e}")
 

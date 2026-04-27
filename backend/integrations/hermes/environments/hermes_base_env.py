@@ -18,7 +18,6 @@ Subclasses only need to implement:
 
 import asyncio
 import json
-import logging
 import os
 import sys
 import uuid
@@ -72,7 +71,9 @@ from integrations.hermes.tools.budget_config import (
 from model_tools import get_tool_definitions
 from toolset_distributions import sample_toolsets_from_distribution
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class HermesAgentEnvConfig(BaseEnvConfig):

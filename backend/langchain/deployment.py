@@ -8,7 +8,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class DeploymentStatus(str, Enum):
@@ -278,10 +280,9 @@ class ButlerHealthChecker:
 
         if all(s == HealthStatus.HEALTHY for s in statuses):
             return HealthStatus.HEALTHY
-        elif any(s == HealthStatus.UNHEALTHY for s in statuses):
+        if any(s == HealthStatus.UNHEALTHY for s in statuses):
             return HealthStatus.UNHEALTHY
-        else:
-            return HealthStatus.DEGRADED
+        return HealthStatus.DEGRADED
 
 
 class ButlerDeploymentOrchestrator:

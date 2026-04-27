@@ -18,6 +18,11 @@ Each openclaw SKILL.md has YAML frontmatter:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from langchain.skills.compiler import SkillDefinition
+
 import logging
 import re
 from dataclasses import dataclass
@@ -134,23 +139,27 @@ def discover_skills(skills_dir: Path | None = None) -> list[OpenclawSkill]:
     return skills
 
 
-def to_butler_skill_definition(skill: OpenclawSkill) -> dict[str, Any]:
-    """Convert an OpenclawSkill into a Butler SkillDefinition payload.
+def to_butler_skill_definition(skill: OpenclawSkill) -> SkillDefinition:
+    """Convert an OpenclawSkill into a Butler SkillDefinition.
 
     Compatible with ButlerSkillCompiler.register_skill().
     """
-    return {
-        "name": skill.name,
-        "description": skill.description,
-        "category": "openclaw",
-        "tags": skill.required_bins,
-        "metadata": {
+    from langchain.skills.compiler import SkillDefinition
+
+    return SkillDefinition(
+        name=skill.name,
+        description=skill.description,
+        category="openclaw",
+        parameters={"tags": skill.required_bins},
+        risk_level="low",
+        requires_auth=False,
+        metadata={
             "emoji": skill.emoji,
             "install": skill.install_steps,
             "source": str(skill.source_path),
+            "body": skill.body,
         },
-        "body": skill.body,
-    }
+    )
 
 
 def load_all_into_compiler(compiler: Any, skills_dir: Path | None = None) -> int:
@@ -168,11 +177,11 @@ def load_all_into_compiler(compiler: Any, skills_dir: Path | None = None) -> int
 
     for skill in skills:
         try:
-            payload = to_butler_skill_definition(skill)
+            skill_def = to_butler_skill_definition(skill)
             if hasattr(compiler, "register_skill"):
-                compiler.register_skill(**payload)
+                compiler.register_skill(skill_def)
             elif hasattr(compiler, "register"):
-                compiler.register(payload)
+                compiler.register(skill_def)
             else:
                 logger.warning(f"compiler_missing_register_method: skill={skill.name}")
                 continue

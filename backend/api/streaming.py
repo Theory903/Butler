@@ -6,12 +6,14 @@ Phase J: Streaming support for real-time responses using Server-Sent Events (SSE
 import asyncio
 import json
 import logging
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
-from fastapi import BackgroundTasks
 from sse_starlette.sse import EventSourceResponse
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerStreaming:
@@ -31,7 +33,7 @@ class ButlerStreaming:
     async def stream_response(
         self,
         request_id: str,
-        response_generator: AsyncGenerator[dict[str, Any], None],
+        response_generator: AsyncGenerator[dict[str, Any]],
     ) -> EventSourceResponse:
         """Stream response using SSE.
 
@@ -110,7 +112,7 @@ class ButlerStreaming:
 async def generate_response_chunks(
     message: str,
     chunk_size: int = 10,
-) -> AsyncGenerator[dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any]]:
     """Generate response chunks for streaming.
 
     Args:
@@ -121,7 +123,7 @@ async def generate_response_chunks(
         Response chunks
     """
     for i in range(0, len(message), chunk_size):
-        chunk = message[i:i + chunk_size]
+        chunk = message[i : i + chunk_size]
         yield {
             "chunk": chunk,
             "index": i // chunk_size,

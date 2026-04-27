@@ -24,7 +24,6 @@ Design:
 """
 
 import json
-import logging
 import os
 import re
 import tempfile
@@ -44,7 +43,9 @@ except ImportError:
     except ImportError:
         pass
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Where memory files live — resolved dynamically so profile overrides
 # (HERMES_HOME env var changes) are always respected.  The old module-level

@@ -26,7 +26,6 @@ actionable guidance the model can relay to the user.
 """
 
 import json
-import logging
 import os
 import urllib.error
 import urllib.parse
@@ -35,7 +34,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from tools.registry import registry
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
 

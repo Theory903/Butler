@@ -9,12 +9,13 @@ from typing import Any
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 from services.security.safety import ContentGuard
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerContentGuardMiddleware(ButlerBaseMiddleware):
@@ -62,14 +63,13 @@ class ButlerContentGuardMiddleware(ButlerBaseMiddleware):
                             error=f"Content blocked: {safety_result.get('reason')}",
                             metadata={"safety_result": safety_result},
                         )
-                    else:
-                        logger.warning(
-                            "unsafe_content_logged",
-                            account_id=context.account_id,
-                            session_id=context.session_id,
-                            reason=safety_result.get("reason"),
-                            categories=safety_result.get("categories"),
-                        )
+                    logger.warning(
+                        "unsafe_content_logged",
+                        account_id=context.account_id,
+                        session_id=context.session_id,
+                        reason=safety_result.get("reason"),
+                        categories=safety_result.get("categories"),
+                    )
             except Exception as exc:
                 logger.warning("content_guard_check_failed", error=str(exc))
 

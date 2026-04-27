@@ -8,12 +8,13 @@ import logging
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 from services.gateway.rate_limiter import RateLimiter
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerRateLimitMiddleware(ButlerBaseMiddleware):

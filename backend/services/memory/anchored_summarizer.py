@@ -14,7 +14,9 @@ from domain.ml.contracts import (
 if TYPE_CHECKING:
     from services.memory.consent_manager import ConsentManager
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 ANCHORED_SUMMARY_SCHEMA = """## Session Intent
 [Short description of what the user is trying to achieve]

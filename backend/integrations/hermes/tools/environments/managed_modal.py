@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import requests
 import uuid
@@ -17,7 +16,9 @@ from tools.environments.modal_utils import (
 )
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _request_timeout_env(name: str, default: float) -> float:

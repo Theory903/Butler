@@ -7,14 +7,15 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 """
 
 import json
-import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
 

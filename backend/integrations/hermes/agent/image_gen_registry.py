@@ -20,13 +20,14 @@ If unset, :func:`get_active_provider` applies fallback logic:
 
 from __future__ import annotations
 
-import logging
 import threading
 from typing import Dict, List, Optional
 
 from agent.image_gen_provider import ImageGenProvider
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 _providers: Dict[str, ImageGenProvider] = {}

@@ -9,11 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
 from backend.langchain.hermes_registry import HermesImplementationSpec
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
-
-import structlog
 
 logger = structlog.get_logger(__name__)
 

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 from hermes_constants import get_hermes_home
 from tools.tool_backend_helpers import managed_nous_tools_enabled

@@ -20,7 +20,6 @@ OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
@@ -43,7 +42,9 @@ from agent.models_dev import (
     list_provider_models,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

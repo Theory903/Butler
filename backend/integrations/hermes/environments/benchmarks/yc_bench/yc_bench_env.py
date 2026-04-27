@@ -65,7 +65,9 @@ from atroposlib.envs.server_handling.server_manager import APIServerConfig
 from integrations.hermes.environments.agent_loop import HermesAgentLoop
 from integrations.hermes.environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # =============================================================================
 # System prompt

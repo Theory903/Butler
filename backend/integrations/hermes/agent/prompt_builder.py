@@ -5,7 +5,6 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 """
 
 import json
-import logging
 import os
 import re
 import threading
@@ -26,7 +25,9 @@ from agent.skill_utils import (
 )
 from utils import atomic_json_write
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Context file scanning — detect prompt injection in AGENTS.md, .cursorrules,

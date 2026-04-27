@@ -43,7 +43,12 @@ class MessageHandler:
 class SlackProvider:
     """Slack Messaging Provider."""
 
-    def __init__(self, bot_token: str | None = None, signing_secret: str | None = None, tenant_id: str | None = None):
+    def __init__(
+        self,
+        bot_token: str | None = None,
+        signing_secret: str | None = None,
+        tenant_id: str | None = None,
+    ):
         self._bot_token = bot_token or os.environ.get("SLACK_BOT_TOKEN")
         self._signing_secret = signing_secret or os.environ.get("SLACK_SIGNING_SECRET")
         self.tenant_id = tenant_id or "default"
@@ -160,7 +165,9 @@ class DiscordProvider:
                 headers={"Authorization": f"Bot {self._bot_token}"},
             )
         else:
-            response = await self._client.post("/users/@me/channels", json={"recipient_id": user_id})
+            response = await self._client.post(
+                "/users/@me/channels", json={"recipient_id": user_id}
+            )
         if response.status_code != 200:
             return response.json()
 
@@ -340,7 +347,12 @@ class WhatsAppProvider:
 class LineProvider:
     """LINE Messaging API Provider."""
 
-    def __init__(self, channel_access_token: str | None = None, channel_secret: str | None = None, tenant_id: str | None = None):
+    def __init__(
+        self,
+        channel_access_token: str | None = None,
+        channel_secret: str | None = None,
+        tenant_id: str | None = None,
+    ):
         self._channel_access_token = channel_access_token or os.environ.get(
             "LINE_CHANNEL_ACCESS_TOKEN"
         )
@@ -455,7 +467,12 @@ class MatrixProvider:
 class TeamsProvider:
     """Microsoft Teams Messaging Provider."""
 
-    def __init__(self, bot_id: str | None = None, bot_password: str | None = None, tenant_id: str | None = None):
+    def __init__(
+        self,
+        bot_id: str | None = None,
+        bot_password: str | None = None,
+        tenant_id: str | None = None,
+    ):
         self._bot_id = bot_id or os.environ.get("TEAMS_BOT_ID")
         self._bot_password = bot_password or os.environ.get("TEAMS_BOT_PASSWORD")
         self.tenant_id = tenant_id or "default"

@@ -616,11 +616,7 @@ class PlatformRegistry:
                 # We bypass this for internal wiring by using object.__setattr__
                 object.__setattr__(adapter, "adapter_class", cls)
             except Exception as e:
-                import logging
-
-                logging.getLogger(__name__).warning(
-                    "Failed to load Hermes adapter for %s: %s", pid, e
-                )
+                logger.warning("Failed to load Hermes adapter for %s: %s", pid, e)
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────

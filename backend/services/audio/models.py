@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field
 from infrastructure.config import settings
 from services.security.safe_request import SafeRequestClient
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ── Pydantic Schemas ─────────────────────────────────────────────────────────

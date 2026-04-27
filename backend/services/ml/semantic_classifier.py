@@ -28,6 +28,7 @@ logger = structlog.get_logger(__name__)
 
 class RiskLevel(StrEnum):
     """Risk classification levels."""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -36,6 +37,7 @@ class RiskLevel(StrEnum):
 
 class SafetyCategory(StrEnum):
     """Safety violation categories."""
+
     TOXICITY = "toxicity"
     HATE_SPEECH = "hate_speech"
     SELF_HARM = "self_harm"
@@ -48,6 +50,7 @@ class SafetyCategory(StrEnum):
 @dataclass
 class SafetyClassification:
     """Result of safety classification."""
+
     is_safe: bool
     risk_level: RiskLevel
     categories: list[SafetyCategory]
@@ -60,6 +63,7 @@ class SafetyClassification:
 @dataclass
 class RiskClassification:
     """Result of risk classification for tool operations."""
+
     risk_level: RiskLevel
     requires_approval: bool
     requires_sandbox: bool
@@ -71,12 +75,14 @@ class RiskClassification:
 
 class SafetyClassificationRequest(BaseModel):
     """Structured request for safety classification."""
+
     text: str = Field(min_length=1)
     context: str | None = None
 
 
 class SafetyClassificationResponse(BaseModel):
     """Structured response from safety classifier."""
+
     is_safe: bool = Field(description="Whether the text is safe")
     risk_level: str = Field(description="Risk level: low, medium, high, critical")
     categories: list[str] = Field(description="List of safety category violations")
@@ -89,6 +95,7 @@ class SafetyClassificationResponse(BaseModel):
 
 class RiskClassificationRequest(BaseModel):
     """Structured request for risk classification."""
+
     tool_name: str = Field(min_length=1)
     params: dict[str, Any] | None = None
     description: str | None = None
@@ -96,6 +103,7 @@ class RiskClassificationRequest(BaseModel):
 
 class RiskClassificationResponse(BaseModel):
     """Structured response from risk classifier."""
+
     risk_level: str = Field(description="Risk level: low, medium, high, critical")
     requires_approval: bool = Field(description="Whether human approval is required")
     requires_sandbox: bool = Field(description="Whether sandboxed execution is required")

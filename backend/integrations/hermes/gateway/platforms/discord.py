@@ -10,7 +10,6 @@ Uses discord.py library for:
 """
 
 import asyncio
-import logging
 import os
 import struct
 import subprocess
@@ -20,7 +19,9 @@ import time
 from collections import defaultdict
 from typing import Callable, Dict, Optional, Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}

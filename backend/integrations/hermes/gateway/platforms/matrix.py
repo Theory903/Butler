@@ -25,7 +25,6 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
-import logging
 import mimetypes
 import os
 import re
@@ -98,7 +97,9 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Matrix message size limit (4000 chars practical, spec has no hard limit
 # but clients render poorly above this).

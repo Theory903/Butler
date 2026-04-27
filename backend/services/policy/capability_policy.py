@@ -18,6 +18,7 @@ logger = structlog.get_logger(__name__)
 
 class DataScope(StrEnum):
     """Data scope classifications."""
+
     INTERNAL = "internal"
     USER_DATA = "user_data"
     EXTERNAL_MESSAGE = "external_message"
@@ -30,6 +31,7 @@ class DataScope(StrEnum):
 
 class RiskLevel(StrEnum):
     """Risk levels for policy enforcement."""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -46,13 +48,21 @@ class CapabilityPolicy(BaseModel):
     risk_level: RiskLevel = Field(description="Risk level: low, medium, high, critical")
     requires_approval: bool = Field(description="Whether human approval is required")
     requires_secret_access: bool = Field(description="Whether secret/credential access is required")
-    requires_external_side_effect: bool = Field(description="Whether action affects external systems")
+    requires_external_side_effect: bool = Field(
+        description="Whether action affects external systems"
+    )
     data_scope: DataScope = Field(description="Type of data being accessed/modified")
     max_retries: int = Field(default=1, ge=0, description="Maximum retry attempts")
-    requires_sandbox: bool = Field(default=False, description="Whether sandboxed execution is required")
-    allowed_tenants: list[str] | None = Field(default=None, description="Tenant allowlist, None means all")
+    requires_sandbox: bool = Field(
+        default=False, description="Whether sandboxed execution is required"
+    )
+    allowed_tenants: list[str] | None = Field(
+        default=None, description="Tenant allowlist, None means all"
+    )
     denied_tenants: list[str] = Field(default_factory=list, description="Tenant denylist")
-    rate_limit_per_minute: int | None = Field(default=None, ge=0, description="Rate limit per minute")
+    rate_limit_per_minute: int | None = Field(
+        default=None, ge=0, description="Rate limit per minute"
+    )
     audit_log_required: bool = Field(default=True, description="Whether audit logging is required")
     description: str = Field(default="", description="Human-readable description")
 
@@ -124,7 +134,6 @@ class CapabilityPolicyEngine:
                 audit_log_required=True,
                 description="Send chat messages within the system",
             ),
-
             # File operations
             CapabilityPolicy(
                 capability="file.read",
@@ -159,7 +168,6 @@ class CapabilityPolicyEngine:
                 audit_log_required=True,
                 description="Delete files permanently",
             ),
-
             # Search capabilities
             CapabilityPolicy(
                 capability="search.web",
@@ -183,7 +191,6 @@ class CapabilityPolicyEngine:
                 audit_log_required=True,
                 description="Search internal knowledge base",
             ),
-
             # Memory capabilities
             CapabilityPolicy(
                 capability="memory.read",
@@ -207,7 +214,6 @@ class CapabilityPolicyEngine:
                 audit_log_required=True,
                 description="Write to user memory/knowledge",
             ),
-
             # Device/IoT capabilities
             CapabilityPolicy(
                 capability="device.control",
@@ -232,7 +238,6 @@ class CapabilityPolicyEngine:
                 audit_log_required=True,
                 description="Read device status or sensor data",
             ),
-
             # Financial capabilities
             CapabilityPolicy(
                 capability="payment.process",
@@ -256,7 +261,6 @@ class CapabilityPolicyEngine:
                 audit_log_required=True,
                 description="Read financial transaction history",
             ),
-
             # System capabilities
             CapabilityPolicy(
                 capability="system.config",
@@ -280,7 +284,6 @@ class CapabilityPolicyEngine:
                 audit_log_required=True,
                 description="Perform administrative operations",
             ),
-
             # General purpose
             CapabilityPolicy(
                 capability="general.query",

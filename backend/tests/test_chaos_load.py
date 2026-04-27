@@ -11,7 +11,7 @@ Tests cover:
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -26,7 +26,6 @@ from domain.orchestrator.runtime_kernel import (
 )
 from domain.tenant.namespace import TenantNamespace
 from domain.workflow.durable import (
-    RetryPolicy,
     WorkflowDefinition,
     WorkflowExecution,
     WorkflowStatus,
@@ -59,9 +58,7 @@ class TestConcurrentOperations:
 
         results = []
         with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [
-                executor.submit(hash_tenant_id, f"tenant_{i}") for i in range(1000)
-            ]
+            futures = [executor.submit(hash_tenant_id, f"tenant_{i}") for i in range(1000)]
             results = [f.result() for f in futures]
 
         assert len(results) == 1000
@@ -195,6 +192,7 @@ class TestTimeoutHandling:
 
     def test_timeout_simulation(self):
         """Test timeout simulation with asyncio."""
+
         async def slow_operation():
             await asyncio.sleep(0.1)
             return "done"
@@ -203,7 +201,7 @@ class TestTimeoutHandling:
             try:
                 result = await asyncio.wait_for(slow_operation(), timeout=0.2)
                 return result
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return "timeout"
 
         result = asyncio.run(with_timeout())
@@ -211,6 +209,7 @@ class TestTimeoutHandling:
 
     def test_timeout_exceeded(self):
         """Test timeout exceeded scenario."""
+
         async def very_slow_operation():
             await asyncio.sleep(1.0)
             return "done"
@@ -219,7 +218,7 @@ class TestTimeoutHandling:
             try:
                 result = await asyncio.wait_for(very_slow_operation(), timeout=0.1)
                 return result
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return "timeout"
 
         result = asyncio.run(with_timeout())
@@ -238,7 +237,9 @@ class TestRaceConditions:
                 for j in range(10):
                     # Use default arguments to capture loop variables
                     future = executor.submit(
-                        lambda i=i, j=j: TenantNamespace(f"tenant_{i}", f"account_{j}").to_redis_prefix()
+                        lambda i=i, j=j: TenantNamespace(
+                            f"tenant_{i}", f"account_{j}"
+                        ).to_redis_prefix()
                     )
                     futures.append(future)
 
@@ -279,9 +280,7 @@ class TestErrorConditionsUnderLoad:
 
     def test_workflow_with_zero_retries(self):
         """Test workflow with zero retries."""
-        wf = WorkflowDefinition.create(
-            "wf_1", "workflow_1", "tenant_1", "account_1", max_retries=0
-        )
+        wf = WorkflowDefinition.create("wf_1", "workflow_1", "tenant_1", "account_1", max_retries=0)
         assert wf.max_retries == 0
 
     def test_execution_result_with_invalid_stop_reason(self):

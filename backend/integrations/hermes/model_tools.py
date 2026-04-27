@@ -22,14 +22,15 @@ Public API (signatures preserved from the original 2,400-line version):
 
 import json
 import asyncio
-import logging
 import threading
 from typing import Dict, Any, List, Optional, Tuple
 
 from integrations.hermes.tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # =============================================================================
@@ -139,7 +140,10 @@ discover_builtin_tools()
 
 # MCP tool discovery (external MCP servers from config)
 try:
-    from tools.mcp_tool import discover_mcp_tools
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+    except ImportError:
+        from integrations.hermes.tools.mcp_tool import discover_mcp_tools  # type: ignore[no-redef]
     discover_mcp_tools()
 except Exception as e:
     logger.debug("MCP tool discovery failed: %s", e)

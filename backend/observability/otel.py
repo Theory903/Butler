@@ -14,7 +14,9 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerOpenTelemetry:
@@ -65,7 +67,7 @@ class ButlerOpenTelemetry:
         try:
             FastAPIInstrumentor.instrument_app(app)
             logger.info("fastapi_instrumented")
-        except Exception as e:
+        except Exception:
             logger.exception("fastapi_instrumentation_failed")
 
     def instrument_httpx(self) -> None:
@@ -73,7 +75,7 @@ class ButlerOpenTelemetry:
         try:
             HTTPXClientInstrumentor().instrument()
             logger.info("httpx_instrumented")
-        except Exception as e:
+        except Exception:
             logger.exception("httpx_instrumentation_failed")
 
     def get_tracer(self, name: str) -> Any:

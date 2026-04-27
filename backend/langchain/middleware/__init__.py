@@ -3,24 +3,28 @@
 This package provides middleware for Butler's LangGraph agent integration.
 """
 
+from langchain.middleware.audit import ButlerAuditMiddleware
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
     MiddlewareOrder,
     MiddlewareResult,
 )
-from langchain.middleware.registry import ButlerMiddlewareRegistry
-
-from langchain.middleware.guardrails import ButlerGuardrailsMiddleware
-from langchain.middleware.summarization import ButlerSummarizationMiddleware
-from langchain.middleware.rate_limit import ButlerRateLimitMiddleware
-from langchain.middleware.audit import ButlerAuditMiddleware
-from langchain.middleware.pii import ButlerPIIMiddleware
-from langchain.middleware.cost_tracking import ButlerCostTrackingMiddleware
-from langchain.middleware.content_guard import ButlerContentGuardMiddleware
-from langchain.middleware.tool_retry import ButlerToolRetryMiddleware
 from langchain.middleware.caching import ButlerCachingMiddleware
-from langchain.middleware.hitl import ButlerHITLMiddleware, ApprovalStrategy, ApprovalStatus, ApprovalRequest
+from langchain.middleware.content_guard import ButlerContentGuardMiddleware
+from langchain.middleware.cost_tracking import ButlerCostTrackingMiddleware
+from langchain.middleware.guardrails import ButlerGuardrailsMiddleware
+from langchain.middleware.hitl import (
+    ApprovalRequest,
+    ApprovalStatus,
+    ApprovalStrategy,
+    ButlerHITLMiddleware,
+)
+from langchain.middleware.pii import ButlerPIIMiddleware
+from langchain.middleware.rate_limit import ButlerRateLimitMiddleware
+from langchain.middleware.registry import ButlerMiddlewareRegistry
+from langchain.middleware.summarization import ButlerSummarizationMiddleware
+from langchain.middleware.tool_retry import ButlerToolRetryMiddleware
 
 __all__ = [
     "ButlerBaseMiddleware",

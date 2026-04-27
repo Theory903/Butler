@@ -12,11 +12,12 @@ that the main retry loop in run_agent.py consults for every API failure.
 from __future__ import annotations
 
 import enum
-import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ── Error taxonomy ──────────────────────────────────────────────────────

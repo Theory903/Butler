@@ -39,6 +39,10 @@ from typing import List, Dict, Any, Optional, Literal
 import fire
 from dotenv import load_dotenv
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 # Load environment variables
 load_dotenv()
 
@@ -203,8 +207,7 @@ class MiniSWERunner:
             format='%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%H:%M:%S'
         )
-        self.logger = logging.getLogger(__name__)
-        
+
         # Initialize LLM client via centralized provider router.
         # If explicit api_key/base_url are provided (e.g. from CLI args),
         # construct directly.  Otherwise use the router for OpenRouter.

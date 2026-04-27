@@ -27,7 +27,9 @@ import copy
 import hashlib
 import json
 import logging
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 import os
 import random
 import re
@@ -72,10 +74,16 @@ from model_tools import (
     handle_function_call,
     check_toolset_requirements,
 )
-from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
-from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
-from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool import cleanup_browser
+try:
+    from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
+    from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
+    from tools.interrupt import set_interrupt as _set_interrupt
+    from tools.browser_tool import cleanup_browser
+except ImportError:
+    from integrations.hermes.tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env  # type: ignore[no-redef]
+    from integrations.hermes.tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget  # type: ignore[no-redef]
+    from integrations.hermes.tools.interrupt import set_interrupt as _set_interrupt  # type: ignore[no-redef]
+    from integrations.hermes.tools.browser_tool import cleanup_browser  # type: ignore[no-redef]
 
 
 # Agent internals extracted to agent/ package for modularity

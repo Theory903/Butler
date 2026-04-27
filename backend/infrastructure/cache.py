@@ -8,7 +8,9 @@ import redis.asyncio as aioredis
 
 from infrastructure.config import settings
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _client: aioredis.Redis | None = None
 
@@ -95,7 +97,9 @@ class TenantRedisClient:
         try:
             return await self._redis.get(self._key(key))
         except Exception as e:
-            logger.error("tenant_redis_get_failed", key=key, tenant_id=self._tenant_id, error=str(e))
+            logger.error(
+                "tenant_redis_get_failed", key=key, tenant_id=self._tenant_id, error=str(e)
+            )
             return None
 
     async def set(self, key: str, value: str, ex: int | None = None) -> bool:
@@ -103,7 +107,9 @@ class TenantRedisClient:
         try:
             return await self._redis.set(self._key(key), value, ex=ex)
         except Exception as e:
-            logger.error("tenant_redis_set_failed", key=key, tenant_id=self._tenant_id, error=str(e))
+            logger.error(
+                "tenant_redis_set_failed", key=key, tenant_id=self._tenant_id, error=str(e)
+            )
             return False
 
     async def delete(self, key: str) -> int:
@@ -139,12 +145,17 @@ class TenantRedisClient:
                 batch_size = 1000
                 deleted = 0
                 for i in range(0, len(keys), batch_size):
-                    batch = keys[i:i + batch_size]
+                    batch = keys[i : i + batch_size]
                     deleted += await self._redis.delete(*batch)
                 return deleted
             return 0
         except Exception as e:
-            logger.error("tenant_redis_delete_pattern_failed", pattern=pattern, tenant_id=self._tenant_id, error=str(e))
+            logger.error(
+                "tenant_redis_delete_pattern_failed",
+                pattern=pattern,
+                tenant_id=self._tenant_id,
+                error=str(e),
+            )
             return 0
 
 

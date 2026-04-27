@@ -276,7 +276,7 @@ class ButlerSkillsHub:
     def register(self, skill: SkillDefinition) -> None:
         """Register a new skill (or replace an existing one by ID)."""
         self._skills[skill.id] = skill
-        logger.info("skill_registered", skill_id=skill.id, version=skill.version)
+        logger.bind(skill_id=skill.id, version=skill.version).info("skill_registered")
 
     def list_skills(self, category: str | None = None) -> list[dict]:
         skills = self._skills.values()

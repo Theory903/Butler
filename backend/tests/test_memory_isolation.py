@@ -15,7 +15,6 @@ class TestMemoryIsolation:
     async def test_memory_entry_query_filters_by_tenant(self):
         """MemoryEntry queries must filter by tenant_id."""
         from sqlalchemy import select
-        from sqlalchemy.ext.asyncio import AsyncSession
 
         # Simulate query with tenant_id filter
         tenant_id = uuid.uuid4()
@@ -273,7 +272,6 @@ class TestMemoryIsolation:
     async def test_forget_respects_tenant_id(self):
         """MemoryService.forget must filter by tenant_id."""
         from sqlalchemy import delete
-        from sqlalchemy.ext.asyncio import AsyncSession
 
         tenant_id = uuid.uuid4()
         account_id = uuid.uuid4()

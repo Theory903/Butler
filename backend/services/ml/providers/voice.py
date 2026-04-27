@@ -52,6 +52,7 @@ class TwilioVoiceProvider:
         }
         if self._safe_client and self.tenant_id and self._account_sid and self._auth_token:
             import base64
+
             auth_str = base64.b64encode(f"{self._account_sid}:{self._auth_token}".encode()).decode()
             response = await self._safe_client.post(
                 url,
@@ -73,6 +74,7 @@ class TwilioVoiceProvider:
         }
         if self._safe_client and self.tenant_id and self._account_sid and self._auth_token:
             import base64
+
             auth_str = base64.b64encode(f"{self._account_sid}:{self._auth_token}".encode()).decode()
             response = await self._safe_client.post(
                 url,
@@ -190,6 +192,7 @@ class PlivoVoiceProvider:
         }
         if self._safe_client and self.tenant_id and self._auth_id and self._auth_token:
             import base64
+
             auth_str = base64.b64encode(f"{self._auth_id}:{self._auth_token}".encode()).decode()
             response = await self._safe_client.post(
                 url,
@@ -211,6 +214,7 @@ class PlivoVoiceProvider:
         }
         if self._safe_client and self.tenant_id and self._auth_id and self._auth_token:
             import base64
+
             auth_str = base64.b64encode(f"{self._auth_id}:{self._auth_token}".encode()).decode()
             response = await self._safe_client.post(
                 url,
@@ -261,6 +265,7 @@ class SignalWireVoiceProvider:
         }
         if self._safe_client and self.tenant_id and self._project_id and self._api_token:
             import base64
+
             auth_str = base64.b64encode(f"{self._project_id}:{self._api_token}".encode()).decode()
             response = await self._safe_client.post(
                 url,
@@ -282,6 +287,7 @@ class SignalWireVoiceProvider:
         }
         if self._safe_client and self.tenant_id and self._project_id and self._api_token:
             import base64
+
             auth_str = base64.b64encode(f"{self._project_id}:{self._api_token}".encode()).decode()
             response = await self._safe_client.post(
                 url,

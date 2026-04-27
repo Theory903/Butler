@@ -11,11 +11,12 @@ from typing import Any
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ApprovalStrategy(str, Enum):
@@ -90,7 +91,9 @@ class ButlerHITLMiddleware(ButlerBaseMiddleware):
 
     def get_pending_approvals(self) -> list[ApprovalRequest]:
         """Get all pending approval requests."""
-        return [req for req in self._pending_approvals.values() if req.status == ApprovalStatus.PENDING]
+        return [
+            req for req in self._pending_approvals.values() if req.status == ApprovalStatus.PENDING
+        ]
 
     def get_approval_request(self, request_id: str) -> ApprovalRequest | None:
         """Get an approval request by ID."""
@@ -223,9 +226,7 @@ class ButlerHITLMiddleware(ButlerBaseMiddleware):
             "social_security",
         ]
 
-        requires_approval = any(
-            keyword in content.lower() for keyword in sensitive_keywords
-        )
+        requires_approval = any(keyword in content.lower() for keyword in sensitive_keywords)
 
         if requires_approval:
             request_id = f"{context.session_id}_{context.trace_id}_output"

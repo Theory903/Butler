@@ -5,10 +5,12 @@ Provides tracing, metrics, and evaluation capabilities.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -18,7 +20,7 @@ class AgentSpan:
     span_id: str
     parent_span_id: str | None = None
     operation_name: str = ""
-    start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    start_time: datetime = field(default_factory=lambda: datetime.now(UTC))
     end_time: datetime | None = None
     duration_ms: float = 0.0
     status: str = "started"
@@ -27,17 +29,19 @@ class AgentSpan:
 
     def finish(self, status: str = "completed") -> None:
         """Finish the span."""
-        self.end_time = datetime.now(timezone.utc)
+        self.end_time = datetime.now(UTC)
         self.duration_ms = (self.end_time - self.start_time).total_seconds() * 1000
         self.status = status
 
     def add_event(self, name: str, attributes: dict[str, Any] | None = None) -> None:
         """Add an event to the span."""
-        self.events.append({
-            "name": name,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "attributes": attributes or {},
-        })
+        self.events.append(
+            {
+                "name": name,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "attributes": attributes or {},
+            }
+        )
 
 
 @dataclass
@@ -48,7 +52,7 @@ class AgentMetric:
     value: float
     unit: str = ""
     labels: dict[str, str] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class ButlerAgentTracer:
@@ -88,6 +92,7 @@ class ButlerAgentTracer:
             The new span
         """
         import uuid
+
         span_id = str(uuid.uuid4())
 
         span = AgentSpan(
@@ -193,7 +198,9 @@ class ButlerAgentMetrics:
 
         logger.debug("metric_recorded", name=name, value=value)
 
-    def increment_counter(self, name: str, value: float = 1.0, labels: dict[str, str] | None = None) -> None:
+    def increment_counter(
+        self, name: str, value: float = 1.0, labels: dict[str, str] | None = None
+    ) -> None:
         """Increment a counter metric.
 
         Args:
@@ -203,7 +210,9 @@ class ButlerAgentMetrics:
         """
         self.record_metric(name, value, "count", labels)
 
-    def record_timing(self, name: str, duration_ms: float, labels: dict[str, str] | None = None) -> None:
+    def record_timing(
+        self, name: str, duration_ms: float, labels: dict[str, str] | None = None
+    ) -> None:
         """Record a timing metric.
 
         Args:
@@ -289,7 +298,7 @@ class ButlerAgentEvaluator:
             "criteria": criteria or ["relevance", "coherence", "helpfulness"],
             "scores": {},
             "overall_score": 0.0,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         # Compute scores for each criterion
@@ -299,7 +308,9 @@ class ButlerAgentEvaluator:
 
         # Compute overall score
         if evaluation["scores"]:
-            evaluation["overall_score"] = sum(evaluation["scores"].values()) / len(evaluation["scores"])
+            evaluation["overall_score"] = sum(evaluation["scores"].values()) / len(
+                evaluation["scores"]
+            )
 
         self._evaluations.append(evaluation)
         logger.info("agent_response_evaluated", overall_score=evaluation["overall_score"])
@@ -329,17 +340,16 @@ class ButlerAgentEvaluator:
         if criterion == "relevance":
             # Check if response relates to query
             return 0.8 if query.lower() in response.lower() else 0.5
-        elif criterion == "coherence":
+        if criterion == "coherence":
             # Check if response is coherent
             return 0.9 if len(response.split()) > 5 else 0.6
-        elif criterion == "helpfulness":
+        if criterion == "helpfulness":
             # Check if response is helpful
             return 0.85
-        elif criterion == "accuracy" and expected:
+        if criterion == "accuracy" and expected:
             # Check if response matches expected
             return 1.0 if response.strip() == expected.strip() else 0.0
-        else:
-            return 0.7
+        return 0.7
 
     def evaluate_tool_call(
         self,
@@ -364,7 +374,7 @@ class ButlerAgentEvaluator:
             "arguments": arguments,
             "result": str(result) if result is not None else None,
             "success": success,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         self._evaluations.append(evaluation)
@@ -414,7 +424,7 @@ class ButlerAgentEvaluator:
             "success_rate": self.get_success_rate(),
             "response_evaluations": len([e for e in self._evaluations if "overall_score" in e]),
             "tool_evaluations": len([e for e in self._evaluations if "success" in e]),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
     def clear_evaluations(self) -> None:
@@ -515,7 +525,7 @@ class ButlerObservability:
             "metrics": self.export_metrics(),
             "evaluations": self.export_evaluations(),
             "report": self._evaluator.generate_report(),
-            "export_timestamp": datetime.now(timezone.utc).isoformat(),
+            "export_timestamp": datetime.now(UTC).isoformat(),
         }
 
     def clear_all(self) -> None:

@@ -7,7 +7,9 @@ import logging
 
 from services.communication.channel_registry import Channel
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerHermesGatewayAdapter:

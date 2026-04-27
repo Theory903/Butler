@@ -10,11 +10,12 @@ from typing import Any
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -114,15 +115,11 @@ class ButlerCostTrackingMiddleware(ButlerBaseMiddleware):
 
     def get_tenant_cost(self, tenant_id: str) -> float:
         """Get total cost for a tenant."""
-        return sum(
-            entry.cost_usd for entry in self._cost_ledger if entry.tenant_id == tenant_id
-        )
+        return sum(entry.cost_usd for entry in self._cost_ledger if entry.tenant_id == tenant_id)
 
     def get_account_cost(self, account_id: str) -> float:
         """Get total cost for an account."""
-        return sum(
-            entry.cost_usd for entry in self._cost_ledger if entry.account_id == account_id
-        )
+        return sum(entry.cost_usd for entry in self._cost_ledger if entry.account_id == account_id)
 
     def clear_ledger(self):
         """Clear the cost ledger."""

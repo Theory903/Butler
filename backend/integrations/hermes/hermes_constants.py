@@ -7,6 +7,10 @@ without risk of circular imports.
 import os
 from pathlib import Path
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: ~/.hermes).
@@ -230,11 +234,13 @@ def get_config_path() -> Path:
     Replaces the ``get_hermes_home() / "config.yaml"`` pattern repeated
     in 7+ files (skill_utils.py, hermes_logging.py, hermes_time.py, etc.).
     """
+    logger.debug("Getting config path")
     return get_hermes_home() / "config.yaml"
 
 
 def get_skills_dir() -> Path:
     """Return the path to the skills directory under HERMES_HOME."""
+    logger.debug("Getting skills directory")
     return get_hermes_home() / "skills"
 
 

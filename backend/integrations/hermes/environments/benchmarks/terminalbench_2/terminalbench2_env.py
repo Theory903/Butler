@@ -66,7 +66,9 @@ from integrations.hermes.tools.terminal_tool import (
     cleanup_vm,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # =============================================================================

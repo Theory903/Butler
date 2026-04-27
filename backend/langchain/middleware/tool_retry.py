@@ -5,16 +5,16 @@ Implements tool retry with exponential backoff for transient failures.
 
 import asyncio
 import logging
-from typing import Any
 
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerToolRetryMiddleware(ButlerBaseMiddleware):

@@ -34,7 +34,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import logging
 import mimetypes
 import os
 import time
@@ -72,7 +71,9 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import strip_markdown
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class QQCloseError(Exception):

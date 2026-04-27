@@ -11,6 +11,7 @@ No business logic belongs here.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -97,22 +98,35 @@ async def _startup_doctor_check() -> None:
 
 
 async def _startup_data_backends() -> None:
-    await init_db()
-    logger.info("database_connected")
-
-    await get_redis()
-    logger.info("redis_connected")
+    """Initialize data stores concurrently to reduce cold start latency."""
+    tasks: list[Awaitable[Any]] = [
+        init_db(),
+        get_redis()
+    ]
 
     if settings.KNOWLEDGE_STORE_BACKEND == "neo4j":
-        await neo4j_client.connect()
-        logger.info("neo4j_connected")
+        tasks.append(neo4j_client.connect())
 
     if settings.VECTOR_STORE_BACKEND == "qdrant":
-        await qdrant_client.connect()
-        logger.info("qdrant_connected")
+        tasks.append(qdrant_client.connect())
+
+    await asyncio.gather(*tasks)
+    logger.info("data_backends_connected")
+
+
+async def _safe_init(name: str, init_fn: Callable[[], Any]) -> None:
+    """Safely initialize a component without crashing the boot sequence."""
+    try:
+        result = init_fn()
+        if isinstance(result, Awaitable):
+            await result
+        logger.info(f"{name}_initialized")
+    except Exception as exc:
+        logger.error(f"{name}_initialization_failed", error=str(exc))
 
 
 async def _startup_application_services() -> None:
+    # 1. Critical Base Services
     runtime = get_ml_runtime()
     await runtime.on_startup()
 
@@ -135,83 +149,55 @@ async def _startup_application_services() -> None:
     cleanup_worker = get_cleanup_worker()
     await cleanup_worker.start()
 
-    # Initialize langchain Hermes tools
+    # 2. Langchain Hermes Tools (Isolated)
     try:
-        from backend.langchain.hermes_loader import load_safe_hermes_tools
         from backend.langchain.hermes_governance import register_hermes_tools_in_butler
+        from backend.langchain.hermes_loader import load_safe_hermes_tools
 
         specs = load_safe_hermes_tools()
         logger.info("hermes_tools_loaded", count=len(specs))
 
-        # Register Hermes tools in Butler governance
         register_hermes_tools_in_butler()
         logger.info("hermes_tools_registered_in_butler")
     except Exception as exc:
-        logger.warning("hermes_tools_initialization_failed", error=str(exc))
+        logger.error("hermes_tools_initialization_failed", error=str(exc))
 
-    # Initialize LangGraph integration components
+    # 3. Critical Integration Components (Must Succeed or explicitly error)
     try:
-        # OpenTelemetry
-        get_otel()
-        logger.info("otel_initialized")
-
-        # Model monitoring
-        get_model_monitoring()
-        logger.info("model_monitoring_initialized")
-
-        # AB testing
-        get_ab_testing()
-        logger.info("ab_testing_initialized")
-
-        # Gateway hardening
-        get_gateway_hardening()
-        logger.info("gateway_hardening_initialized")
-
-        # Integrations catalog
-        get_integrations_catalog()
-        logger.info("integrations_catalog_initialized")
-
-        # Audit logger
-        get_audit_logger()
-        logger.info("audit_logger_initialized")
-
-        # PII detection/redaction
-        get_pii_detector()
-        get_pii_redactor()
-        logger.info("pii_services_initialized")
-
-        # TurboQuant backend
-        turboquant = get_turboquant_backend()
-        await turboquant.initialize()
-        logger.info("turboquant_backend_initialized")
-
-        # Auth hardening
-        get_auth_hardening()
-        logger.info("auth_hardening_initialized")
-
-        # LangChain provider registry
         provider_registry = get_langchain_provider_registry()
         await provider_registry.initialize_all()
         logger.info("langchain_provider_registry_initialized")
 
-        # Skills compiler + registry (load openclaw skills)
+        turboquant = get_turboquant_backend()
+        await turboquant.initialize()
+        logger.info("turboquant_backend_initialized")
+    except Exception as exc:
+        logger.error("critical_integration_initialization_failed", error=str(exc))
+
+    # 4. OpenClaw Skills (Isolated)
+    try:
         skills_compiler = get_skills_compiler()
-        skills_registry = get_skills_registry()
+        get_skills_registry()  # Ensure registry is initialized alongside
         from langchain.skills import load_all_into_compiler
 
         loaded_count = load_all_into_compiler(skills_compiler)
         logger.info("openclaw_skills_loaded", count=loaded_count)
-
-        # Channel registry
-        channel_registry = get_channel_registry()
-        logger.info("channel_registry_initialized")
-
-        # Memory host SDK
-        get_memory_host_sdk()
-        logger.info("memory_host_sdk_initialized")
-
     except Exception as exc:
-        logger.error("langgraph_components_initialization_failed", error=str(exc))
+        logger.error("openclaw_skills_initialization_failed", error=str(exc))
+
+    # 5. Non-Critical Observability & Hardening (Safe Init)
+    # These will not abort the boot sequence if they temporarily fail to connect
+    await _safe_init("otel", get_otel)
+    await _safe_init("model_monitoring", get_model_monitoring)
+    await _safe_init("ab_testing", get_ab_testing)
+    await _safe_init("gateway_hardening", get_gateway_hardening)
+    await _safe_init("integrations_catalog", get_integrations_catalog)
+    await _safe_init("audit_logger", get_audit_logger)
+    await _safe_init("pii_detector", get_pii_detector)
+    await _safe_init("pii_redactor", get_pii_redactor)
+    await _safe_init("auth_hardening", get_auth_hardening)
+    await _safe_init("channel_registry", get_channel_registry)
+    await _safe_init("memory_host_sdk", get_memory_host_sdk)
 
     logger.info("ml_runtime_warmed")
 
@@ -260,6 +246,7 @@ async def _shutdown_application_services() -> None:
         provider_registry = get_langchain_provider_registry()
         await provider_registry.shutdown_all()
 
+    # Graceful teardown order: workers -> networking -> databases
     await _safe_shutdown("cleanup_worker", _stop_cleanup_worker)
     await _safe_shutdown("realtime_listener", _stop_realtime_listener)
     await _safe_shutdown("state_syncer", _stop_state_syncer)
@@ -312,20 +299,12 @@ app = FastAPI(
     redoc_url="/redoc" if settings.DEBUG else None,
 )
 
-
 # -----------------------------------------------------------------------------
 # Middleware stack
 # -----------------------------------------------------------------------------
+
+# Internal/Context/Security middlewares execute *after* CORS
 app.add_middleware(InternalOnlyMiddleware)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 app.add_middleware(RequestContextMiddleware)
 app.add_middleware(TenantContextMiddleware, tenant_resolver_getter=get_tenant_resolver)
 app.add_middleware(RuntimeContextMiddleware)
@@ -335,6 +314,15 @@ app.add_middleware(TrafficGuardMiddleware, redis_getter=get_redis)
 
 _global_limiter = get_rate_limiter()
 app.add_middleware(RateLimitMiddleware, limiter=_global_limiter)
+
+# ADDED LAST = EXECUTED FIRST. This allows fast-pathing of preflight OPTIONS.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 setup_observability(app, settings.SERVICE_NAME, settings.OTEL_ENDPOINT)
 
@@ -448,6 +436,7 @@ from api.routes import (  # noqa: E402
     memory,
     mercury,
     ml,
+    ml_providers,
     orchestrator,
     realtime,
     research,
@@ -462,10 +451,6 @@ from api.routes.admin import create_admin_router  # noqa: E402
 from api.routes.cron import create_cron_router  # noqa: E402
 from api.routes.mcp import mcp_router  # noqa: E402
 
-# Google Workspace integration not available in upstream Hermes agent
-# from integrations.hermes.skills.productivity.google_workspace import (  # noqa: E402
-#     auth_flow as google_auth_flow,
-# )
 from services.memory.mcp_server import router as memory_mcp_router  # noqa: E402
 
 app.include_router(auth.router, prefix="/api/v1")
@@ -480,6 +465,7 @@ app.include_router(memory.router, prefix="/api/v1")
 app.include_router(tools.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(ml.router, prefix="/api/v1")
+app.include_router(ml_providers.router, prefix="/api/v1")
 app.include_router(realtime.router, prefix="/api/v1")
 app.include_router(communication.router, prefix="/api/v1")
 app.include_router(security.router, prefix="/api/v1")
@@ -489,8 +475,6 @@ app.include_router(audio.router, prefix="/api/v1")
 app.include_router(research.router, prefix="/api/v1")
 app.include_router(meetings.router, prefix="/api/v1")
 app.include_router(voice_gateway.router)
-# Google Workspace integration not available in upstream Hermes agent
-# app.include_router(google_auth_flow.router, prefix="/api/v1")
 app.include_router(mcp_router, prefix="/api/v1")
 app.include_router(memory_mcp_router, prefix="/api/v1")
 app.include_router(internal_router)

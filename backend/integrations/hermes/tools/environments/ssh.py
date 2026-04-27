@@ -1,7 +1,6 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
 import hashlib
-import logging
 import os
 import shlex
 import shutil
@@ -18,7 +17,9 @@ from tools.environments.file_sync import (
     unique_parent_dirs,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _ensure_ssh_available() -> None:

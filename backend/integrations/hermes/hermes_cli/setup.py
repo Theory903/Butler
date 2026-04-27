@@ -12,7 +12,6 @@ Config files are stored in ~/.hermes/ for easy access.
 """
 
 import importlib.util
-import logging
 import os
 import shutil
 import sys
@@ -25,7 +24,9 @@ from tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 

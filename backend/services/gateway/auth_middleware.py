@@ -20,9 +20,9 @@ AccountContext is populated with:
 
 from __future__ import annotations
 
+import jwt
 from redis.asyncio import Redis
 
-import jwt
 from domain.auth.contracts import AccountContext, IJWKSVerifier
 from domain.auth.exceptions import GatewayErrors
 from infrastructure.config import settings

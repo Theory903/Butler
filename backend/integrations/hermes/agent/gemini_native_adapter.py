@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import logging
 import time
 import uuid
 from types import SimpleNamespace
@@ -29,7 +28,9 @@ import httpx
 
 from agent.gemini_schema import sanitize_gemini_tool_parameters
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 

@@ -69,7 +69,9 @@ class DeepgramSTTProvider:
                 params=params,
             )
         else:
-            response = await self._client.post(url, content=audio_data, headers=headers, params=params)
+            response = await self._client.post(
+                url, content=audio_data, headers=headers, params=params
+            )
         response.raise_for_status()
         data = response.json()
 

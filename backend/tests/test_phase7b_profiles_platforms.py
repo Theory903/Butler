@@ -56,7 +56,6 @@ from domain.gateway.platform_registry import (
     PlatformRegistry,
     get_platform_registry,
 )
-
 from domain.policy.industry_profiles import (
     IndustryProfile,
     check_profile_capability,

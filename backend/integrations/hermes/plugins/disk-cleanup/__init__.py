@@ -20,7 +20,6 @@ needs to remember to run commands.
 
 from __future__ import annotations
 
-import logging
 import re
 import shlex
 import threading
@@ -29,7 +28,9 @@ from typing import Any, Dict, Optional, Set
 
 from . import disk_cleanup as dg
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # Per-task set of "test files newly tracked this turn".  Keyed by task_id

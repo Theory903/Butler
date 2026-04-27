@@ -14,7 +14,9 @@ from .callbacks import ButlerEventSink
 from .message_builder import MessageBuilder
 from .tool_calling import ToolCallingHandler
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerExecutionContext:

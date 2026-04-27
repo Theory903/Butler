@@ -8,7 +8,9 @@ from infrastructure.config import settings
 from services.ml.semantic_classifier import SemanticClassifier
 from services.security.safe_request import SafeRequestClient
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ContentGuard:

@@ -27,7 +27,9 @@ from langchain.providers import (
     VLLMProvider,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/integrations/providers", tags=["integrations"])
 
@@ -133,7 +135,9 @@ async def register_provider(
 
     registry.register(scoped_id, provider)
 
-    logger.info("provider_registered", extra={"tenant_id": tenant_id, "provider_id": request.provider_id})
+    logger.info(
+        "provider_registered", extra={"tenant_id": tenant_id, "provider_id": request.provider_id}
+    )
 
     return ProviderResponse(
         provider_id=request.provider_id,

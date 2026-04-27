@@ -17,12 +17,13 @@ import io
 import os
 import sys
 import time
-import logging
 from typing import Optional, Tuple
 
 import requests
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────
 

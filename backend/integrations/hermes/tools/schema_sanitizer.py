@@ -28,10 +28,11 @@ shapes the LLM backend couldn't use anyway.
 from __future__ import annotations
 
 import copy
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:

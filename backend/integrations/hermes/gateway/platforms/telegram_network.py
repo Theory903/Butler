@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-import logging
 import socket
 from typing import Iterable, Optional
 
 import httpx
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
 

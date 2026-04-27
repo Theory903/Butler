@@ -3,12 +3,12 @@
 Phase I: Model monitoring using Prometheus for metrics collection.
 """
 
-import logging
 from typing import Any
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
-from prometheus_client import CollectorRegistry
 
-logger = logging.getLogger(__name__)
+import structlog
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, start_http_server
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerModelMonitoring:
@@ -36,10 +36,12 @@ class ButlerModelMonitoring:
         try:
             start_http_server(self._port, registry=self._registry)
             logger.info("prometheus_server_started", port=self._port)
-        except Exception as e:
+        except Exception:
             logger.exception("prometheus_server_failed")
 
-    def create_counter(self, name: str, description: str, labels: list[str] | None = None) -> Counter:
+    def create_counter(
+        self, name: str, description: str, labels: list[str] | None = None
+    ) -> Counter:
         """Create a counter metric.
 
         Args:
@@ -75,7 +77,9 @@ class ButlerModelMonitoring:
         self._metrics[name] = gauge
         return gauge
 
-    def create_histogram(self, name: str, description: str, buckets: list[float] | None = None) -> Histogram:
+    def create_histogram(
+        self, name: str, description: str, buckets: list[float] | None = None
+    ) -> Histogram:
         """Create a histogram metric.
 
         Args:
@@ -112,7 +116,9 @@ class ButlerModelMonitoring:
         """
         counter = self._metrics.get("butler_inference_total")
         if counter:
-            counter.labels(model=model, provider=provider, status="success" if success else "error").inc()
+            counter.labels(
+                model=model, provider=provider, status="success" if success else "error"
+            ).inc()
 
         histogram = self._metrics.get("butler_inference_latency_seconds")
         if histogram:

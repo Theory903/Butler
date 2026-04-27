@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +108,9 @@ class MemorySchema:
     def validate(self) -> bool:
         if not self.id or not self.content:
             return False
-        if self.embedding is not None and not all(isinstance(x, (int, float)) for x in self.embedding):
+        if self.embedding is not None and not all(
+            isinstance(x, (int, float)) for x in self.embedding
+        ):
             return False
         return True
 

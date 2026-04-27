@@ -13,7 +13,6 @@ the conversation without modifying the system prompt (preserving prompt caching)
 Inspired by Block/goose's SubdirectoryHintTracker.
 """
 
-import logging
 import os
 import shlex
 from pathlib import Path
@@ -21,7 +20,9 @@ from typing import Dict, Any, Optional, Set
 
 from agent.prompt_builder import _scan_context_content
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Context files to look for in subdirectories, in priority order.
 # Same filenames as prompt_builder.py but we load ALL found (not first-wins)

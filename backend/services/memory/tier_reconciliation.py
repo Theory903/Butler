@@ -6,11 +6,16 @@ Coordinates data movement between hot, warm, and cold storage tiers.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+# Remove duplicate import
+# import structlog
 
 
 class MemoryTier(str, Enum):
@@ -76,7 +81,9 @@ class MemoryTierReconciliation:
             MemoryTier.HOT: TierPolicy(tier=MemoryTier.HOT, ttl_hours=1, max_size_mb=50),
             MemoryTier.WARM: TierPolicy(tier=MemoryTier.WARM, ttl_hours=168, max_size_mb=500),
             MemoryTier.COLD: TierPolicy(tier=MemoryTier.COLD, ttl_hours=8760, max_size_mb=5000),
-            MemoryTier.ARCHIVE: TierPolicy(tier=MemoryTier.ARCHIVE, ttl_hours=87600, max_size_mb=50000),
+            MemoryTier.ARCHIVE: TierPolicy(
+                tier=MemoryTier.ARCHIVE, ttl_hours=87600, max_size_mb=50000
+            ),
         }
 
     async def reconcile_tiers(self) -> dict[str, Any]:
@@ -100,7 +107,7 @@ class MemoryTierReconciliation:
                 try:
                     await self._promote_to_warm(item)
                     stats["hot_to_warm"] += 1
-                except Exception as e:
+                except Exception:
                     logger.exception("hot_to_warm_failed", key=item.key)
                     stats["errors"] += 1
 
@@ -111,7 +118,7 @@ class MemoryTierReconciliation:
                 try:
                     await self._promote_to_cold(item)
                     stats["warm_to_cold"] += 1
-                except Exception as e:
+                except Exception:
                     logger.exception("warm_to_cold_failed", key=item.key)
                     stats["errors"] += 1
 
@@ -187,7 +194,7 @@ class MemoryTierReconciliation:
                 compressed = await self._turboquant.compress(item.value)
                 await self._turboquant.store(item.key, compressed)
                 logger.info("promoted_to_cold", key=item.key)
-            except Exception as e:
+            except Exception:
                 logger.exception("turboquant_promotion_failed", key=item.key)
 
     async def _evict_expired(self) -> int:

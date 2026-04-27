@@ -401,7 +401,6 @@ class ButlerMemoryStore(IMemoryWriteStore):
             session_id=request.session_id,
             status=MemoryStatus.ACTIVE,
             valid_from=datetime.now(UTC),
-            is_scrubbed=request.is_scrubbed,
             metadata_col=metadata,
         )
 

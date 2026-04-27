@@ -14,7 +14,9 @@ from pydantic import BaseModel, Field
 from core.deps import get_channel_registry
 from services.realtime.channels import ChannelConfig, ChannelKind, build_channel
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/integrations/channels", tags=["integrations"])
 
@@ -28,7 +30,9 @@ class ChannelRegistrationRequest(BaseModel):
     """Request to register a new communication channel."""
 
     channel_id: str = Field(..., description="Unique channel ID")
-    channel_kind: ChannelKind = Field(..., description="Type of channel (DISCORD, SLACK, TELEGRAM, WHATSAPP)")
+    channel_kind: ChannelKind = Field(
+        ..., description="Type of channel (DISCORD, SLACK, TELEGRAM, WHATSAPP)"
+    )
     token: str | None = Field(None, description="Bot token (for Discord/Telegram/WhatsApp)")
     webhook_url: str | None = Field(None, description="Webhook URL (for Slack/WhatsApp)")
     extra: dict[str, Any] = Field(default_factory=dict)
@@ -84,7 +88,9 @@ async def register_channel(
 
     registry.register(scoped_id, channel)
 
-    logger.info("channel_registered", extra={"tenant_id": tenant_id, "channel_id": request.channel_id})
+    logger.info(
+        "channel_registered", extra={"tenant_id": tenant_id, "channel_id": request.channel_id}
+    )
 
     return ChannelResponse(
         channel_id=request.channel_id,

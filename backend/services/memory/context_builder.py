@@ -14,7 +14,9 @@ from domain.memory.models import (
 )
 from services.memory.retrieval import ScoredMemory
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _DEFAULT_TOKEN_BUDGET = 4096
 _DEFAULT_HISTORY_BUDGET_RATIO = 0.35

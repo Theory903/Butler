@@ -18,7 +18,6 @@ Working directory: $HERMES_HOME/byterover/ (profile-scoped context tree)
 from __future__ import annotations
 
 import json
-import logging
 import os
 import shutil
 import subprocess
@@ -29,7 +28,9 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Timeouts
 _QUERY_TIMEOUT = 10   # brv query — should be fast

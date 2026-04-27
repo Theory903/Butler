@@ -216,7 +216,9 @@ from datetime import datetime
 from hermes_cli import __version__, __release_date__
 from hermes_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _relative_time(ts) -> str:

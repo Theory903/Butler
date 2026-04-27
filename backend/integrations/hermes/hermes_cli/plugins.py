@@ -36,7 +36,6 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import importlib.util
-import logging
 import sys
 import types
 from dataclasses import dataclass, field
@@ -51,7 +50,9 @@ try:
 except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants

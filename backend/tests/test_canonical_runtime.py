@@ -15,7 +15,7 @@ Tests cover:
 """
 
 import dataclasses
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -80,9 +80,7 @@ class TestExecutionMessage:
 
     def test_create_message_with_metadata(self):
         """Test creating message with metadata."""
-        message = ExecutionMessage(
-            role="user", content="Hello", metadata={"key": "value"}
-        )
+        message = ExecutionMessage(role="user", content="Hello", metadata={"key": "value"})
         assert message.metadata == {"key": "value"}
 
     def test_message_frozen(self):

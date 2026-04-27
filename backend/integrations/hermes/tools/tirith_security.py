@@ -22,7 +22,6 @@ never blocks.
 
 import hashlib
 import json
-import logging
 import os
 import platform
 import shutil
@@ -36,7 +35,9 @@ import urllib.request
 
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _REPO = "sheeki03/tirith"
 

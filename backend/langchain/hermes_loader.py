@@ -14,17 +14,17 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
-from backend.langchain.hermes_errors import HermesImportError
 from backend.langchain.hermes_registry import (
     ButlerHermesRegistry,
     HermesImplementationSpec,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Base directories for tool discovery
 HERMES_INTEGRATION_DIR = Path(__file__).parent.parent / "integrations" / "hermes"
@@ -144,7 +144,7 @@ def extract_specs_from_module(module: Any, module_path: str) -> list[HermesImple
 
         # Create spec
         doc = inspect.getdoc(obj) or ""
-        
+
         # Skip functions without documentation (likely internal helpers)
         if not doc and not safe_functions:
             continue

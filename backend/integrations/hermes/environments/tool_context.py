@@ -24,7 +24,6 @@ Example usage in a compute_reward():
 """
 
 import json
-import logging
 import os
 from typing import Any, Dict, List, Optional
 
@@ -35,7 +34,9 @@ from model_tools import handle_function_call
 from integrations.hermes.tools.terminal_tool import cleanup_vm
 from integrations.hermes.tools.browser_tool import cleanup_browser
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Thread pool for running sync tool calls that internally use asyncio.run()
 _tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)

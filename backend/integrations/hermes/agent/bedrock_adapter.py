@@ -28,13 +28,14 @@ Requires: ``boto3`` (optional dependency — only needed when using the Bedrock 
 """
 
 import json
-import logging
 import os
 import re
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lazy boto3 import — only loaded when the Bedrock provider is actually used.

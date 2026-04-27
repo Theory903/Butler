@@ -16,11 +16,10 @@ import base64
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
-
-import jwt
 
 
 def _b64url(data: bytes) -> str:
@@ -88,6 +87,9 @@ class JWKSManager:
             "sub": str(claims["sub"]),  # Principal ID
             "sid": str(claims["sid"]),  # Session ID
             "aid": str(claims["aid"]),  # Active Account ID (Context)
+            "tenant_id": str(claims.get("tenant_id") or claims["aid"]),
+            "account_id": str(claims.get("account_id") or claims["aid"]),
+            "user_id": str(claims.get("user_id") or claims["sub"]),
             "amr": claims.get("amr", ["pwd"]),  # Auth Methods Reference
             "acr": claims.get("acr", "aal1"),  # Assurance Level
             "device_id": claims.get("device_id"),
@@ -121,6 +123,8 @@ class JWKSManager:
             "aud": self._audience,
             "sub": str(claims["sub"]),
             "sid": str(claims["sid"]),
+            "tenant_id": str(claims.get("tenant_id") or claims["sub"]),
+            "account_id": str(claims.get("account_id") or claims["sub"]),
             "fid": family_id,
             "typ": "refresh",
             "device_id": claims.get("device_id"),
@@ -183,6 +187,58 @@ class JWKSManager:
                 }
             )
         return {"keys": keys}
+
+
+# ---------------------------------------------------------------------------
+# Helper functions for token creation
+# ---------------------------------------------------------------------------
+
+
+def create_access_token(account_id: str, session_id: str, tenant_id: str | None = None) -> str:
+    """Create an access token with required tenant context claims.
+
+    Args:
+        account_id: Account ID (used as sub)
+        session_id: Session ID (used as sid)
+        tenant_id: Optional tenant ID for multi-tenancy. If not provided, defaults to account_id.
+
+    Returns:
+        Signed JWT access token
+    """
+    mgr = get_jwks_manager()
+    # If tenant_id not provided, use account_id as fallback for single-tenant setup
+    if tenant_id is None:
+        tenant_id = account_id
+
+    claims = {
+        "sub": account_id,  # Principal ID (user_id)
+        "sid": session_id,  # Session ID
+        "aid": account_id,  # Account ID (context)
+        "tenant_id": tenant_id,  # Tenant ID for multi-tenancy
+        "account_id": account_id,  # Account ID (for TenantResolver)
+        "user_id": account_id,  # User ID (for TenantResolver, same as account_id for now)
+    }
+    return mgr.sign_access_token(claims, ttl=timedelta(minutes=15))
+
+
+def create_refresh_token(account_id: str, family_id: str, tenant_id: str | None = None) -> str:
+    """Create a refresh token.
+
+    Args:
+        account_id: Account ID (used as sub)
+        family_id: Token family ID (used as fid)
+        tenant_id: Optional tenant ID for multi-tenancy
+
+    Returns:
+        Signed JWT refresh token
+    """
+    mgr = get_jwks_manager()
+    claims = {
+        "sub": account_id,
+        "sid": str(uuid4()),  # New session ID for refresh
+        "tenant_id": tenant_id or account_id,
+    }
+    return mgr.sign_refresh_token(claims, family_id, ttl=timedelta(days=30))
 
 
 # ---------------------------------------------------------------------------

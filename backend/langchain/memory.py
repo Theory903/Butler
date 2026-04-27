@@ -145,7 +145,10 @@ class ButlerMemoryAdapter(BaseChatMessageHistory):
         # Add relevant memories as system context
         if hasattr(context, "relevant_memories") and context.relevant_memories:
             memory_content = "\n".join(
-                [f"- {mem.content if hasattr(mem, 'content') else str(mem)}" for mem in context.relevant_memories[:10]]
+                [
+                    f"- {mem.content if hasattr(mem, 'content') else str(mem)}"
+                    for mem in context.relevant_memories[:10]
+                ]
             )
             messages.append(SystemMessage(content=f"Relevant memories:\n{memory_content}"))
 

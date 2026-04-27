@@ -11,13 +11,11 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from services.ml.semantic_classifier import (
-    RiskClassification,
     RiskLevel,
     SafetyCategory,
-    SafetyClassification,
     SemanticClassifier,
 )
-from services.policy.capability_policy import CapabilityPolicy, CapabilityPolicyEngine, DataScope
+from services.policy.capability_policy import CapabilityPolicyEngine
 
 
 class TestMultilingualSafetyClassification:
@@ -346,7 +344,6 @@ class TestDeterministicPolicyEnforcement:
     @pytest.fixture
     def policy_engine(self):
         """Create policy engine with default policies."""
-        from services.policy.capability_policy import CapabilityPolicyEngine
 
         return CapabilityPolicyEngine()
 

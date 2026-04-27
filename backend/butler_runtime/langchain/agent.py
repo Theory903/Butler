@@ -10,7 +10,9 @@ from ..agent.loop import ButlerExecutionContext, ButlerUnifiedAgentLoop
 from ..graph.compiler import ButlerGraphCompiler
 from .tools import ButlerLangChainTools
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ButlerLangChainAgent:

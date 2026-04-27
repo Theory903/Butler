@@ -17,12 +17,13 @@ Import chain (circular-import safe):
 import ast
 import importlib
 import json
-import logging
 import threading
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
@@ -53,11 +54,26 @@ def _module_registers_tools(module_path: Path) -> bool:
     return any(_is_registry_register_call(stmt) for stmt in tree.body)
 
 
+def _tools_package_prefix() -> str:
+    """Return the importable package prefix for the tools directory.
+
+    When hermes is run standalone the package is simply ``tools``.
+    When embedded inside Butler (sys.path rooted at backend/) the package
+    resolves as ``integrations.hermes.tools``.  We derive the prefix from
+    this module's own ``__name__`` so both layouts work without env vars.
+    """
+    parts = __name__.split(".")
+    if len(parts) >= 2 and parts[-1] == "registry":
+        return ".".join(parts[:-1])
+    return "tools"
+
+
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
     """Import built-in self-registering tool modules and return their module names."""
     tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
+    pkg_prefix = _tools_package_prefix()
     module_names = [
-        f"tools.{path.stem}"
+        f"{pkg_prefix}.{path.stem}"
         for path in sorted(tools_path.glob("*.py"))
         if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
         and _module_registers_tools(path)

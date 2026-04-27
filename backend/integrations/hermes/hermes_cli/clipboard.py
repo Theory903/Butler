@@ -13,7 +13,6 @@ Platform support:
 """
 
 import base64
-import logging
 import os
 import subprocess
 import sys
@@ -21,7 +20,9 @@ from pathlib import Path
 
 from hermes_constants import is_wsl as _is_wsl
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def save_clipboard_image(dest: Path) -> bool:

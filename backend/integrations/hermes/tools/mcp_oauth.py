@@ -34,7 +34,6 @@ Configuration in config.yaml::
 
 import asyncio
 import json
-import logging
 import os
 import re
 import socket
@@ -47,7 +46,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lazy imports -- MCP SDK with OAuth support is optional

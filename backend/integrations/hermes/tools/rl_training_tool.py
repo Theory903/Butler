@@ -37,7 +37,6 @@ import subprocess
 import sys
 import time
 import uuid
-import logging
 from datetime import datetime
 import yaml
 from dataclasses import dataclass
@@ -46,7 +45,9 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ============================================================================
 # Path Configuration

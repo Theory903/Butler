@@ -1,9 +1,7 @@
-"""
-LangChain/LangGraph Streaming Adapter - Maps LC events to Butler events.
+"""LangChain/LangGraph Streaming Adapter — maps LC events to Butler events.
 
-This adapter translates LangChain/LangGraph streaming events into Butler's
-canonical event schemas (StreamTokenEvent, StreamFinalEvent, etc.) for SSE
-and pubsub clients.
+Translates LangChain/LangGraph streaming events into Butler's canonical event
+schemas (StreamTokenEvent, StreamFinalEvent, etc.) for SSE and pubsub clients.
 """
 
 from __future__ import annotations
@@ -19,24 +17,24 @@ from domain.events.schemas import (
     StreamFinalEvent,
     StreamStartEvent,
     StreamStatusEvent,
+    StreamTokenEvent,
     StreamToolCallEvent,
     StreamToolResultEvent,
-    StreamTokenEvent,
 )
 
 logger = structlog.get_logger(__name__)
 
 
 class LangChainEventAdapter:
-    """Adapter for converting LangChain/LangGraph events to Butler events.
+    """Convert LangChain/LangGraph events to Butler canonical events.
 
-    This adapter:
-    - Maps LangChain token chunks to StreamTokenEvent
-    - Maps LangGraph tool calls to StreamToolCallEvent
-    - Maps LangGraph tool results to StreamToolResultEvent
-    - Maps LangGraph interrupts to StreamApprovalRequiredEvent
-    - Maps completion to StreamFinalEvent
-    - Maps errors to StreamErrorEvent
+    Mapping:
+    - Token chunks          → StreamTokenEvent  (``payload.content``)
+    - Tool calls            → StreamToolCallEvent
+    - Tool results          → StreamToolResultEvent
+    - LangGraph interrupts  → StreamApprovalRequiredEvent
+    - Completion            → StreamFinalEvent
+    - Errors                → StreamErrorEvent
     """
 
     def __init__(
@@ -45,22 +43,17 @@ class LangChainEventAdapter:
         session_id: str,
         trace_id: str,
         task_id: str | None = None,
-    ):
-        """Initialize the event adapter.
-
-        Args:
-            account_id: Account UUID
-            session_id: Session UUID
-            trace_id: Trace UUID
-            task_id: Optional task UUID
-        """
+    ) -> None:
         self.account_id = account_id
         self.session_id = session_id
         self.trace_id = trace_id
         self.task_id = task_id
 
+    # ------------------------------------------------------------------
+    # Factory methods
+    # ------------------------------------------------------------------
+
     def create_start_event(self) -> StreamStartEvent:
-        """Create a stream start event."""
         return StreamStartEvent(
             account_id=self.account_id,
             session_id=self.session_id,
@@ -69,21 +62,23 @@ class LangChainEventAdapter:
         )
 
     def create_token_event(self, token: str, index: int = 0) -> StreamTokenEvent:
-        """Create a token event from LangChain chunk.
+        """Create a token event from a LangChain chunk.
 
         Args:
-            token: Token or chunk of text
-            index: Token index for ordering
+            token: Text token or chunk.
+            index: Token index for ordering.
 
-        Returns:
-            StreamTokenEvent instance
+        Note:
+            Payload key is ``"content"`` (not ``"token"``) to match the
+            canonical ``StreamTokenEvent`` shape consumed by the runtime kernel
+            and SSE bridge.
         """
         return StreamTokenEvent(
             account_id=self.account_id,
             session_id=self.session_id,
             trace_id=self.trace_id,
             task_id=self.task_id,
-            payload={"token": token, "index": index},
+            payload={"content": token, "index": index},
         )
 
     def create_tool_call_event(
@@ -96,17 +91,12 @@ class LangChainEventAdapter:
         """Create a tool call event.
 
         Args:
-            tool_name: Name of the tool being called
-            tool_args: Tool arguments (may be redacted based on risk tier)
-            execution_id: Unique execution ID
-            risk_tier: Risk tier of the tool
-
-        Returns:
-            StreamToolCallEvent instance
+            tool_name:    Name of the tool.
+            tool_args:    Tool arguments (redacted for L1+ tools per governance).
+            execution_id: Unique execution identifier.
+            risk_tier:    Risk tier string (``"L0"`` – ``"L3"``).
         """
-        # Redact params for L1+ tools per Butler governance
         visible_params = tool_args if risk_tier == "L0" else None
-
         return StreamToolCallEvent(
             account_id=self.account_id,
             session_id=self.session_id,
@@ -129,19 +119,9 @@ class LangChainEventAdapter:
     ) -> StreamToolResultEvent:
         """Create a tool result event.
 
-        Args:
-            tool_name: Name of the tool
-            result: Tool result (may be redacted based on risk tier)
-            execution_id: Unique execution ID
-            duration_ms: Execution duration in milliseconds
-            risk_tier: Risk tier of the tool
-
-        Returns:
-            StreamToolResultEvent instance
+        Result is redacted for L1+ tools per Butler governance policy.
         """
-        # Redact result for L1+ tools per Butler governance
         visible_result = result if risk_tier == "L0" else None
-
         return StreamToolResultEvent(
             account_id=self.account_id,
             session_id=self.session_id,
@@ -163,18 +143,6 @@ class LangChainEventAdapter:
         risk_tier: str,
         expires_at: str,
     ) -> StreamApprovalRequiredEvent:
-        """Create an approval required event from LangGraph interrupt.
-
-        Args:
-            approval_id: Approval request ID
-            approval_type: Type of approval (tool_execution, send_message, etc)
-            description: Human-readable description
-            risk_tier: Risk tier requiring approval
-            expires_at: ISO timestamp when approval expires
-
-        Returns:
-            StreamApprovalRequiredEvent instance
-        """
         return StreamApprovalRequiredEvent(
             account_id=self.account_id,
             session_id=self.session_id,
@@ -196,17 +164,6 @@ class LangChainEventAdapter:
         total_steps: int = 0,
         message: str = "",
     ) -> StreamStatusEvent:
-        """Create a status event.
-
-        Args:
-            phase: Current phase (planning, executing, paused, compensating)
-            step_index: Current step index
-            total_steps: Total number of steps
-            message: Status message
-
-        Returns:
-            StreamStatusEvent instance
-        """
         return StreamStatusEvent(
             account_id=self.account_id,
             session_id=self.session_id,
@@ -222,30 +179,20 @@ class LangChainEventAdapter:
 
     def create_final_event(
         self,
+        content: str = "",
         input_tokens: int = 0,
         output_tokens: int = 0,
         cache_read_tokens: int = 0,
         estimated_cost_usd: float = 0.0,
         duration_ms: int = 0,
     ) -> StreamFinalEvent:
-        """Create a final event.
-
-        Args:
-            input_tokens: Input token count
-            output_tokens: Output token count
-            cache_read_tokens: Cache read token count
-            estimated_cost_usd: Estimated cost in USD
-            duration_ms: Total duration in milliseconds
-
-        Returns:
-            StreamFinalEvent instance
-        """
         return StreamFinalEvent(
             account_id=self.account_id,
             session_id=self.session_id,
             trace_id=self.trace_id,
             task_id=self.task_id,
             payload={
+                "content": content,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cache_read_tokens": cache_read_tokens,
@@ -262,18 +209,6 @@ class LangChainEventAdapter:
         status: int = 500,
         retryable: bool = False,
     ) -> StreamErrorEvent:
-        """Create an error event.
-
-        Args:
-            error_type: RFC 9457 problem type URI
-            title: Error title
-            detail: Error detail
-            status: HTTP status code
-            retryable: Whether the error is retryable
-
-        Returns:
-            StreamErrorEvent instance
-        """
         return StreamErrorEvent(
             account_id=self.account_id,
             session_id=self.session_id,
@@ -289,68 +224,86 @@ class LangChainEventAdapter:
         )
 
 
-async def stream_langchain_to_butler(
-    langchain_stream: AsyncGenerator[Any, None],
-    adapter: LangChainEventAdapter,
-) -> AsyncGenerator[Any, None]:
-    """Convert LangChain/LangGraph stream to Butler event stream.
+# ---------------------------------------------------------------------------
+# Streaming adapter function
+# ---------------------------------------------------------------------------
 
-    Args:
-        langchain_stream: LangChain/LangGraph async generator
-        adapter: LangChainEventAdapter instance
+
+async def stream_langchain_to_butler(
+    langchain_stream: AsyncGenerator[Any],
+    adapter: LangChainEventAdapter,
+) -> AsyncGenerator[Any]:
+    """Convert a LangChain/LangGraph async stream to Butler canonical events.
+
+    Mapping rules applied in order per event:
+      1. ``event.content`` (str) → StreamTokenEvent
+      2. ``event.tool_calls``    → StreamToolCallEvent per call
+      3. ``event.event == "on_tool_start"`` → StreamToolCallEvent
+      4. ``event.event == "on_tool_end"``   → StreamToolResultEvent
+      5. ``"interrupt"`` in ``event.event`` → StreamApprovalRequiredEvent
+
+    Any unhandled event type is silently skipped — the adapter never raises
+    inside the loop so a single unexpected event cannot abort the stream.
 
     Yields:
-        Butler canonical events (StreamTokenEvent, StreamFinalEvent, etc)
+        Butler canonical events.  Always starts with StreamStartEvent and
+        ends with StreamFinalEvent (or StreamErrorEvent on exception).
     """
-    # Yield start event
     yield adapter.create_start_event()
 
     try:
         async for event in langchain_stream:
-            # Map LangChain events to Butler events
-            if hasattr(event, "content") and isinstance(event.content, str):
-                # Token chunk
-                yield adapter.create_token_event(event.content)
-            elif hasattr(event, "tool_calls"):
-                # Tool call
-                for tool_call in event.tool_calls:
+            # 1. Plain token chunk (AIMessageChunk, etc.)
+            content = getattr(event, "content", None)
+            if isinstance(content, str) and content:
+                yield adapter.create_token_event(content)
+                continue
+
+            # 2. Tool call embedded in a message
+            tool_calls = getattr(event, "tool_calls", None)
+            if tool_calls:
+                for tc in tool_calls:
+                    name = tc.get("name", "unknown") if isinstance(tc, dict) else getattr(tc, "name", "unknown")
+                    args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+                    exec_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
                     yield adapter.create_tool_call_event(
-                        tool_name=tool_call.get("name", "unknown"),
-                        tool_args=tool_call.get("args", {}),
-                        execution_id=tool_call.get("id", ""),
+                        tool_name=name,
+                        tool_args=args if isinstance(args, dict) else {},
+                        execution_id=str(exec_id),
                     )
-            elif hasattr(event, "event") and event.event == "on_tool_start":
-                # Tool start (LangGraph)
-                if hasattr(event, "data"):
-                    data = event.data
-                    yield adapter.create_tool_call_event(
-                        tool_name=data.get("input", {}).get("name", "unknown"),
-                        tool_args=data.get("input", {}).get("arguments", {}),
-                        execution_id=data.get("execution_id", ""),
-                    )
-            elif hasattr(event, "event") and event.event == "on_tool_end":
-                # Tool end (LangGraph)
-                if hasattr(event, "data"):
-                    data = event.data
-                    yield adapter.create_tool_result_event(
-                        tool_name=data.get("input", {}).get("name", "unknown"),
-                        result=data.get("output"),
-                        execution_id=data.get("execution_id", ""),
-                        duration_ms=data.get("duration_ms", 0),
-                    )
-            elif hasattr(event, "event") and "interrupt" in str(event.event).lower():
-                # Approval interrupt (LangGraph)
-                if hasattr(event, "data"):
-                    data = event.data
+                continue
+
+            # 3–5. LangGraph lifecycle events
+            event_name = getattr(event, "event", None)
+            data = getattr(event, "data", {}) or {}
+
+            if event_name == "on_tool_start":
+                inp = data.get("input", {}) if isinstance(data, dict) else {}
+                yield adapter.create_tool_call_event(
+                    tool_name=inp.get("name", "unknown"),
+                    tool_args=inp.get("arguments", {}),
+                    execution_id=str(data.get("execution_id", "")) if isinstance(data, dict) else "",
+                )
+
+            elif event_name == "on_tool_end":
+                inp = data.get("input", {}) if isinstance(data, dict) else {}
+                yield adapter.create_tool_result_event(
+                    tool_name=inp.get("name", "unknown"),
+                    result=data.get("output") if isinstance(data, dict) else None,
+                    execution_id=str(data.get("execution_id", "")) if isinstance(data, dict) else "",
+                    duration_ms=int(data.get("duration_ms", 0)) if isinstance(data, dict) else 0,
+                )
+
+            elif event_name and "interrupt" in str(event_name).lower():
+                if isinstance(data, dict):
                     yield adapter.create_approval_required_event(
-                        approval_id=data.get("approval_id", ""),
-                        approval_type=data.get("type", "tool_execution"),
-                        description=data.get("description", ""),
-                        risk_tier=data.get("risk_tier", "L2"),
-                        expires_at=data.get("expires_at", ""),
+                        approval_id=str(data.get("approval_id", "")),
+                        approval_type=str(data.get("type", "tool_execution")),
+                        description=str(data.get("description", "")),
+                        risk_tier=str(data.get("risk_tier", "L2")),
+                        expires_at=str(data.get("expires_at", "")),
                     )
 
-        # Yield final event on completion
         yield adapter.create_final_event()
 
     except Exception as exc:

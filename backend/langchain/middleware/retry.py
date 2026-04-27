@@ -12,11 +12,12 @@ from typing import Any
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class RetryMiddleware(ButlerBaseMiddleware):
@@ -126,36 +127,37 @@ class RetryMiddleware(ButlerBaseMiddleware):
                     )
 
                     # Update metadata for retry
-                    context.metadata.update({
-                        "retry_count": retry_count + 1,
-                        "retry_delay_ms": delay_ms,
-                        "should_retry": True,
-                    })
+                    context.metadata.update(
+                        {
+                            "retry_count": retry_count + 1,
+                            "retry_delay_ms": delay_ms,
+                            "should_retry": True,
+                        }
+                    )
 
                     return MiddlewareResult(
                         success=True,
                         should_continue=True,
                         metadata=context.metadata,
                     )
-                else:
-                    logger.warning(
-                        "retry_middleware_max_retries_exceeded",
-                        tool_name=tool_name,
-                        max_retries=self._max_retries,
-                        error=error,
-                    )
+                logger.warning(
+                    "retry_middleware_max_retries_exceeded",
+                    tool_name=tool_name,
+                    max_retries=self._max_retries,
+                    error=error,
+                )
 
-                    # Trip circuit breaker if available
-                    if self._circuit_breaker_registry:
-                        breaker = self._circuit_breaker_registry.get(f"tool:{tool_name}")
-                        if breaker:
-                            breaker.record_failure()
+                # Trip circuit breaker if available
+                if self._circuit_breaker_registry:
+                    breaker = self._circuit_breaker_registry.get(f"tool:{tool_name}")
+                    if breaker:
+                        breaker.record_failure()
 
-                    return MiddlewareResult(
-                        success=False,
-                        should_continue=False,
-                        error=f"Max retries exceeded for tool: {tool_name}",
-                    )
+                return MiddlewareResult(
+                    success=False,
+                    should_continue=False,
+                    error=f"Max retries exceeded for tool: {tool_name}",
+                )
 
         # Reset retry count on success
         context.metadata["retry_count"] = 0
@@ -170,7 +172,7 @@ class RetryMiddleware(ButlerBaseMiddleware):
         Returns:
             Backoff delay in milliseconds
         """
-        delay_ms = int((self._backoff_base ** retry_count) * 100)
+        delay_ms = int((self._backoff_base**retry_count) * 100)
         return min(delay_ms, self._backoff_max_ms)
 
     async def execute_with_retry(

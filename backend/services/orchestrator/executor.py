@@ -36,13 +36,13 @@ from domain.events.schemas import (
     StreamErrorEvent,
 )
 from domain.memory.contracts import MemoryServiceContract
+from domain.orchestration.router import OperationRequest, OperationRouter, OperationType
 from domain.orchestrator.models import Task, Workflow, WorkflowEvent
 from domain.orchestrator.runtime_kernel import (
     ExecutionContext,
     ExecutionMessage,
     RuntimeKernel,
 )
-from domain.orchestration.router import OperationRequest, OperationRouter, OperationType
 from domain.orchestrator.state import TaskStateMachine
 from domain.orchestrator.workflow_dag import PlanLowerer, WorkflowDAG
 from domain.tools.contracts import ToolsServiceContract
@@ -601,7 +601,7 @@ class DurableExecutor:
         if self._operation_router is not None and step.action != "respond":
             from domain.orchestration.router import AdmissionDecision
 
-            tenant_id = getattr(workflow, 'tenant_id', None) or str(workflow.account_id)
+            tenant_id = getattr(workflow, "tenant_id", None) or str(workflow.account_id)
             operation_request = OperationRequest(
                 operation_type=OperationType.TOOL_CALL,
                 tenant_id=tenant_id,
@@ -634,7 +634,7 @@ class DurableExecutor:
             )
         ]
 
-        tenant_id = getattr(workflow, 'tenant_id', None) or str(workflow.account_id)
+        tenant_id = getattr(workflow, "tenant_id", None) or str(workflow.account_id)
         context = ExecutionContext(
             task=task,
             workflow=workflow,
@@ -692,9 +692,10 @@ class DurableExecutor:
     async def _cache_task_state(self, task: Task) -> None:
         """Cache hot task state in Redis for fast reads."""
         # Use tenant-scoped key if task has tenant_id, otherwise fallback to legacy format
-        tenant_id = getattr(task, 'tenant_id', None)
+        tenant_id = getattr(task, "tenant_id", None)
         if tenant_id:
             from services.tenant.namespace import get_tenant_namespace
+
             namespace = get_tenant_namespace(tenant_id)
             key = f"{namespace.prefix}:task:{task.id}:state"
         else:

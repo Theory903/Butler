@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 
 from services.audio.models import MeetingTranscript, MusicMatch, TranscribeResult
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ─── Dependencies ───
 

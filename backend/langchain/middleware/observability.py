@@ -12,11 +12,12 @@ from typing import Any
 from langchain.middleware.base import (
     ButlerBaseMiddleware,
     ButlerMiddlewareContext,
-    MiddlewareOrder,
     MiddlewareResult,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ObservabilityMiddleware(ButlerBaseMiddleware):
@@ -278,7 +279,9 @@ class ObservabilityMiddleware(ButlerBaseMiddleware):
                     if self._metrics:
                         self._metrics.record_error(
                             operation="tool_execution",
-                            error_type=type(error).__name__ if isinstance(error, Exception) else "error",
+                            error_type=type(error).__name__
+                            if isinstance(error, Exception)
+                            else "error",
                             tags={
                                 "tool_name": tool_name,
                                 "tenant_id": context.tenant_id,

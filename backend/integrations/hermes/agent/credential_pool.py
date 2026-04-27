@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import random
 import threading
 import time
@@ -32,7 +31,9 @@ from hermes_cli.auth import (
     write_credential_pool,
 )
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _load_config_safe() -> Optional[dict]:

@@ -19,7 +19,9 @@ from enum import Enum
 from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:

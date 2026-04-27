@@ -7,7 +7,9 @@ from typing import Any
 
 from .base import BaseChannel, ChannelConfig, ChannelKind, ChannelMessage
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class DiscordChannel(BaseChannel):

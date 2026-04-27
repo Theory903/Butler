@@ -116,7 +116,8 @@ def prefers_gateway(config_section: str) -> bool:
         section = (load_config() or {}).get(config_section)
         if isinstance(section, dict):
             return bool(section.get("use_gateway"))
-    except Exception:
+    except Exception as e:
+        logger.error("Error occurred while checking gateway preference", exc_info=e)
         pass
     return False
 

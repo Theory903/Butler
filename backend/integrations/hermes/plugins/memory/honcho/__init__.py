@@ -16,7 +16,6 @@ Config: Uses the existing Honcho config chain:
 from __future__ import annotations
 
 import json
-import logging
 import re
 import threading
 import time
@@ -25,7 +24,9 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------

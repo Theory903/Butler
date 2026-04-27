@@ -184,6 +184,7 @@ class ClientContext(BaseModel):
 
     client_version: str | None = None
     locale: str | None = None
+    timezone: str | None = None
     user_agent: str | None = None
     app_build: str | None = None
     platform: str | None = None
@@ -193,6 +194,7 @@ class ClientContext(BaseModel):
     @field_validator(
         "client_version",
         "locale",
+        "timezone",
         "user_agent",
         "app_build",
         "platform",
@@ -547,9 +549,15 @@ class OrchestratorResult(BaseModel):
     finish_reason: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("content", mode="before")
+    @classmethod
+    def _normalize_content(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
     @field_validator(
         "workflow_id",
-        "content",
         "approval_id",
         "session_id",
         "request_id",

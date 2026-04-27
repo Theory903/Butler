@@ -134,11 +134,14 @@ class Settings(BaseSettings):
     HERMES_HOME: str = "/tmp/hermes"
 
     # LLM Model Config
-    DEFAULT_MODEL: str = "claude-sonnet-4-5"  # Profile A — standard chat
+    DEFAULT_MODEL: str = "gemma-4-26b-a4b-it"  # Profile A — standard chat
     LONG_CONTEXT_MODEL: str = "claude-opus-4-5"  # Profile B — long-context planner
     LONG_CONTEXT_TOKEN_THRESHOLD: int = 8192  # Switch to Profile B above this
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     RERANKER_MODEL: str = "bge-reranker-v2-m3"
+
+    # Response Formatting
+    SHOW_THOUGHTS: bool = False  # Show LLM <thought> tags in responses
 
     # ── Audio Service ──────────────────────────────────────────────────────
     AUDIO_GPU_ENDPOINT: str = "http://audio-gpu:8009"
@@ -202,6 +205,43 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     AWS_ACCESS_KEY_ID: str | None = None
     AWS_SECRET_ACCESS_KEY: str | None = None
+
+    # ── ToolScope Configuration (Semantic Tool Retrieval) ───────────────────────
+    TOOLSCOPE_ENABLED: bool = True  # Enable ToolScope for semantic tool filtering
+    TOOLSCOPE_K: int = 8  # Number of tools to retrieve per query (base retrieval)
+    # Note: ToolScope uses Butler's existing EmbeddingService, not a separate model
+    TOOLSCOPE_ENABLE_RERANKING: bool = False  # Enable cross-encoder reranking
+    TOOLSCOPE_RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    TOOLSCOPE_ENABLE_STICKY_SESSIONS: bool = True  # Enable sticky sessions for multi-turn
+    TOOLSCOPE_STICKY_THRESHOLD_REUSE: float = 0.95
+    TOOLSCOPE_STICKY_THRESHOLD_REFRESH: float = 0.8
+    TOOLSCOPE_STICKY_KEEP: int = 2
+    TOOLSCOPE_MAX_RISK_TIER: str = "L2"  # Maximum risk tier to allow by default
+    TOOLSCOPE_TOOL_TEXT_TRUNCATE: int = 256  # Truncate tool descriptions to this length
+    TOOLSCOPE_DYNAMIC_CUTOFF_ENABLED: bool = True  # Enable dynamic threshold-based cutoff
+    TOOLSCOPE_CUTOFF_THRESHOLD: float = 0.5  # Minimum score threshold for tool selection
+    TOOLSCOPE_MAX_TOOLS: int = 12  # Maximum number of tools to return after cutoff
+    TOOLSCOPE_RERANKING_BLEND_SEMANTIC: float = 0.6  # Weight for semantic score in reranking
+    TOOLSCOPE_RERANKING_BLEND_INTENT: float = 0.2  # Weight for intent match in reranking
+    TOOLSCOPE_RERANKING_BLEND_SUCCESS: float = 0.1  # Weight for tool success rate in reranking
+    TOOLSCOPE_RERANKING_BLEND_COST: float = 0.1  # Weight for cost bias in reranking
+
+    # ── Intent Builder Configuration ─────────────────────────────────────────────
+    INTENT_BUILDER_ENABLED: bool = True  # Enable intent builder pre-retrieval
+    INTENT_BUILDER_DEFAULT_RISK_LEVEL: str = "L2"  # Default risk level for constraints
+    INTENT_BUILDER_MAX_QUERY_LENGTH: int = 500  # Maximum length for normalized query
+
+    # ── Execution Guardrail Configuration ───────────────────────────────────────
+    TOOL_GUARDRAIL_ENABLED: bool = True  # Enable execution guardrail
+    TOOL_GUARDRAIL_STRICT_MODE: bool = False  # Reject on any violation
+    TOOL_GUARDRAIL_MAX_PARAMETER_SIZE: int = 10000  # Maximum size for parameter values
+    TOOL_GUARDRAIL_ENABLE_SCHEMA_VALIDATION: bool = True  # Enable schema validation
+
+    # ── Feedback Loop Configuration ─────────────────────────────────────────────
+    TOOL_FEEDBACK_ENABLED: bool = True  # Enable feedback loop
+    TOOL_FEEDBACK_WINDOW_SECONDS: int = 3600  # Time window for feedback aggregation
+    TOOL_FEEDBACK_MIN_SAMPLES: int = 10  # Minimum samples before using feedback
+    TOOL_FEEDBACK_SUCCESS_DECAY_RATE: float = 0.1  # Rate at which old success rates decay
 
 
 settings = Settings()

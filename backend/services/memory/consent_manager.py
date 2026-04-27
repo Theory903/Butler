@@ -15,7 +15,9 @@ from typing import Any
 from core.observability import get_metrics
 from core.tracing import tracer
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class ConsentManager:

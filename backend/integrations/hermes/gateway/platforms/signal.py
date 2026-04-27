@@ -14,7 +14,6 @@ Requires:
 import asyncio
 import base64
 import json
-import logging
 import os
 import random
 import time
@@ -39,7 +38,9 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import redact_phone
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants

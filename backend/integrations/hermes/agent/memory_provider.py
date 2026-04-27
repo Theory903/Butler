@@ -32,11 +32,12 @@ Optional hooks (override to opt in):
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class MemoryProvider(ABC):

@@ -194,7 +194,7 @@ class LegacyButlerAdapter(ToolAdapter):
                 owner="tools",
                 category="utility",
             )
-        elif name in ["check_package_for_malware", "web_search", "web_extract"]:
+        if name in ["check_package_for_malware", "web_search", "web_extract"]:
             # L1: external API calls, read-only
             return ToolSpec.l1_readonly(
                 name=name,
@@ -203,7 +203,7 @@ class LegacyButlerAdapter(ToolAdapter):
                 owner="tools",
                 category="web" if "web" in name else "utility",
             )
-        elif name in ["read_file", "list_files", "search_files", "memory_search", "memory_context"]:
+        if name in ["read_file", "list_files", "search_files", "memory_search", "memory_context"]:
             # L2: read operations with potential side effects
             return ToolSpec.l2_write(
                 name=name,
@@ -213,7 +213,7 @@ class LegacyButlerAdapter(ToolAdapter):
                 category="file" if "file" in name else "memory",
                 approval_mode=ApprovalMode.IMPLICIT,
             )
-        elif name in ["write_file", "memory_store", "memory_update_preference", "memory_forget"]:
+        if name in ["write_file", "memory_store", "memory_update_preference", "memory_forget"]:
             # L2: write operations
             return ToolSpec.l2_write(
                 name=name,
@@ -222,20 +222,21 @@ class LegacyButlerAdapter(ToolAdapter):
                 owner="tools",
                 category="file" if "file" in name else "memory",
                 approval_mode=ApprovalMode.IMPLICIT,
-                required_permissions=frozenset(["file:write"] if "file" in name else ["memory:write"]),
+                required_permissions=frozenset(
+                    ["file:write"] if "file" in name else ["memory:write"]
+                ),
             )
-        else:
-            # Default to L1 for unknown tools, mark as disabled until classified
-            return ToolSpec.create(
-                name=name,
-                canonical_name=f"butler.{name}",
-                description=description,
-                owner="tools",
-                category="utility",
-                risk_tier=RiskTier.L1,
-                approval_mode=ApprovalMode.NONE,
-                enabled=False,
-            )
+        # Default to L1 for unknown tools, mark as disabled until classified
+        return ToolSpec.create(
+            name=name,
+            canonical_name=f"butler.{name}",
+            description=description,
+            owner="tools",
+            category="utility",
+            risk_tier=RiskTier.L1,
+            approval_mode=ApprovalMode.NONE,
+            enabled=False,
+        )
 
     def bind_executor(self, spec: ToolSpec) -> Any:
         """Bind executor to the tool spec.

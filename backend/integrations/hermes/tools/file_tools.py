@@ -3,7 +3,6 @@
 
 import errno
 import json
-import logging
 import os
 import threading
 from pathlib import Path
@@ -19,7 +18,9 @@ from tools.file_operations import (
 from tools import file_state
 from agent.redact import redact_sensitive_text
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}

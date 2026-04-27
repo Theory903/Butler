@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Mapping
 
 
 class RuntimeContextError(Exception):
     """Raised when RuntimeContext is invalid or missing required fields."""
-
-    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,9 +51,7 @@ class RuntimeContext:
             RuntimeContextError: If required tenant/account/session fields are missing.
         """
         if not self.tenant_id or not self.account_id or not self.session_id:
-            raise RuntimeContextError(
-                "Missing tenant/account/session scope for runtime operation."
-            )
+            raise RuntimeContextError("Missing tenant/account/session scope for runtime operation.")
 
     def require_workflow_scope(self) -> None:
         """Ensure workflow/task scope is present.
@@ -64,9 +60,7 @@ class RuntimeContext:
             RuntimeContextError: If required workflow/task fields are missing.
         """
         if not self.workflow_id:
-            raise RuntimeContextError(
-                "Missing workflow_id for workflow operation."
-            )
+            raise RuntimeContextError("Missing workflow_id for workflow operation.")
 
     def require_agent_scope(self) -> None:
         """Ensure agent scope is present.
@@ -75,9 +69,7 @@ class RuntimeContext:
             RuntimeContextError: If required agent_id field is missing.
         """
         if not self.agent_id:
-            raise RuntimeContextError(
-                "Missing agent_id for agent operation."
-            )
+            raise RuntimeContextError("Missing agent_id for agent operation.")
 
     @classmethod
     def create(

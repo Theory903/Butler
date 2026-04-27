@@ -8,9 +8,8 @@ Tests cover:
 """
 
 import os
-from alembic.config import Config
 
-import pytest
+from alembic.config import Config
 
 
 class TestMigrationStructure:
@@ -18,8 +17,9 @@ class TestMigrationStructure:
 
     def test_initial_schema_migration_exists(self):
         """Test initial schema migration file exists."""
-        from alembic import command
         from alembic.config import Config
+
+        from alembic import command
 
         config = Config("alembic.ini")
         # Verify migration can be loaded
@@ -49,7 +49,6 @@ class TestMigrationStructure:
 
     def test_initial_schema_revision_id(self):
         """Test initial schema has correct revision ID."""
-        from alembic.migration import MigrationContext
         from alembic.script import ScriptDirectory
 
         script_dir = ScriptDirectory.from_config(Config("alembic.ini"))
@@ -92,8 +91,9 @@ class TestMigrationFunctions:
 
     def test_initial_schema_upgrade_function_exists(self):
         """Test initial schema has upgrade function."""
-        from alembic import command
         from alembic.config import Config
+
+        from alembic import command
 
         config = Config("alembic.ini")
         # Verify upgrade function exists by checking migration can be processed
@@ -101,8 +101,9 @@ class TestMigrationFunctions:
 
     def test_initial_schema_downgrade_function_exists(self):
         """Test initial schema has downgrade function."""
-        from alembic import command
         from alembic.config import Config
+
+        from alembic import command
 
         config = Config("alembic.ini")
         # Verify downgrade function exists by checking migration can be processed
@@ -110,8 +111,9 @@ class TestMigrationFunctions:
 
     def test_orchestration_tables_upgrade_function_exists(self):
         """Test orchestration tables has upgrade function."""
-        from alembic import command
         from alembic.config import Config
+
+        from alembic import command
 
         config = Config("alembic.ini")
         # Verify upgrade function exists
@@ -119,8 +121,9 @@ class TestMigrationFunctions:
 
     def test_orchestration_tables_downgrade_function_exists(self):
         """Test orchestration tables has downgrade function."""
-        from alembic import command
         from alembic.config import Config
+
+        from alembic import command
 
         config = Config("alembic.ini")
         # Verify downgrade function exists
@@ -265,6 +268,7 @@ class TestAlembicConfig:
         sys.path.insert(0, ".")
         try:
             import alembic.env  # type: ignore
+
             assert alembic.env is not None
         except ImportError:
             # This is expected if there are import issues

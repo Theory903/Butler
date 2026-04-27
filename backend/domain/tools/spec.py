@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
 
 
 class RiskTier(str, Enum):
@@ -86,11 +85,16 @@ class ToolSpec:
     pii_possible: bool
     compensation_handler: str | None
     enabled: bool
+    blocked: bool = False
+    block_reason: str = ""
     tags: frozenset[str] = field(default_factory=frozenset)
 
     def is_safe_to_auto_approve(self) -> bool:
         """Check if tool can be auto-approved without human review."""
-        return self.approval_mode in {ApprovalMode.NONE, ApprovalMode.IMPLICIT} and self.risk_tier in {
+        return self.approval_mode in {
+            ApprovalMode.NONE,
+            ApprovalMode.IMPLICIT,
+        } and self.risk_tier in {
             RiskTier.L0,
             RiskTier.L1,
         }
@@ -144,6 +148,8 @@ class ToolSpec:
         pii_possible: bool = False,
         compensation_handler: str | None = None,
         enabled: bool = True,
+        blocked: bool = False,
+        block_reason: str = "",
         tags: frozenset[str] | None = None,
     ) -> ToolSpec:
         """Factory method to create a ToolSpec with sensible defaults.
@@ -175,6 +181,8 @@ class ToolSpec:
             pii_possible: Whether tool may handle PII
             compensation_handler: Compensation handler function name
             enabled: Whether tool is enabled
+            blocked: Whether tool is blocked from execution
+            block_reason: Reason why tool is blocked
             tags: Tool tags for classification
 
         Returns:
@@ -207,6 +215,8 @@ class ToolSpec:
             pii_possible=pii_possible,
             compensation_handler=compensation_handler,
             enabled=enabled,
+            blocked=blocked,
+            block_reason=block_reason,
             tags=tags or frozenset(),
         )
 

@@ -219,6 +219,8 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
     Best-effort — returns sensible defaults on any failure so terminal
     execution never breaks because the config file is unreadable.
     """
+    import structlog
+    logger = structlog.get_logger(__name__)
     try:
         from hermes_cli.config import load_config
 
@@ -229,7 +231,8 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
             files = []
         auto_bashrc = bool(terminal_cfg.get("auto_source_bashrc", True))
         return [str(f) for f in files if f], auto_bashrc
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to read terminal shell init config", exc_info=e)
         return [], True
 
 

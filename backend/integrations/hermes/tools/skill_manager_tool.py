@@ -33,7 +33,6 @@ Directory layout for user skills:
 """
 
 import json
-import logging
 import os
 import re
 import shutil
@@ -42,7 +41,9 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Import security scanner — external hub installs always get scanned;
 # agent-created skills only get scanned when skills.guard_agent_created is on.

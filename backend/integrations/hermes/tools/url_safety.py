@@ -24,12 +24,13 @@ Limitations (documented, not fixable at pre-flight level):
 """
 
 import ipaddress
-import logging
 import os
 import socket
 from urllib.parse import urlparse
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Hostnames that should always be blocked regardless of IP resolution
 # or any config toggle.  These are cloud metadata endpoints that an

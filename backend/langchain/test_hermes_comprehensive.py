@@ -153,6 +153,7 @@ def test_utility_tools():
     sys.path.insert(0, str(langchain_path))
 
     from butler_url_safety import is_safe_url
+
     from integrations.hermes.tools.ansi_strip import strip_ansi
     from integrations.hermes.tools.fuzzy_match import fuzzy_find_and_replace
     from integrations.hermes.tools.osv_check import check_package_for_malware

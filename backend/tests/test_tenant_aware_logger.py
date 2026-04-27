@@ -9,10 +9,7 @@ Tests cover:
 - Hardened error handling
 """
 
-import hashlib
 from unittest.mock import patch
-
-import pytest
 
 from core.tenant_aware_logger import (
     TenantAwareLogger,
@@ -355,12 +352,11 @@ class TestIntegrationScenarios:
         """Test different log levels in sequence."""
         logger = TenantAwareLogger("test_logger")
 
-        with patch.object(logger.logger, "info") as mock_info, patch.object(
-            logger.logger, "warning"
-        ) as mock_warning, patch.object(
-            logger.logger, "error"
-        ) as mock_error:
-
+        with (
+            patch.object(logger.logger, "info") as mock_info,
+            patch.object(logger.logger, "warning") as mock_warning,
+            patch.object(logger.logger, "error") as mock_error,
+        ):
             logger.info("Info", tenant_id="tenant_1")
             logger.warning("Warning", tenant_id="tenant_1")
             logger.error("Error", tenant_id="tenant_1")

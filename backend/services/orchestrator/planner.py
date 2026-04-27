@@ -7,6 +7,7 @@ from typing import Any, Protocol
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from domain.orchestration.router import OperationRequest, OperationRouter, OperationType
 from domain.orchestrator.contracts import (
     ExecutionMode,
     ExecutionPlan,
@@ -14,7 +15,6 @@ from domain.orchestrator.contracts import (
     PlanStepContract,
     RiskLevel,
 )
-from domain.orchestration.router import OperationRequest, OperationRouter, OperationType
 
 logger = structlog.get_logger(__name__)
 
@@ -195,7 +195,9 @@ class PlanEngine:
         self._available_tools_provider = available_tools_provider
         self._router = router
 
-    async def create_plan(self, intent: str, context: dict[str, Any] | None, tenant_id: str = "default") -> Plan:
+    async def create_plan(
+        self, intent: str, context: dict[str, Any] | None, tenant_id: str = "default"
+    ) -> Plan:
         """Create an execution plan.
 
         Uses model-based planning when available. Falls back to deterministic
@@ -464,7 +466,9 @@ class PlanEngine:
             + ("\n".join(tool_lines) if tool_lines else "- none explicitly provided")
         )
 
-    def _get_available_tools(self, tenant_id: str = "default", account_id: str | None = None) -> list[dict[str, Any]]:
+    def _get_available_tools(
+        self, tenant_id: str = "default", account_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """Return normalized planner-visible tool metadata filtered by router admission."""
         if self._available_tools_provider is None:
             return []
