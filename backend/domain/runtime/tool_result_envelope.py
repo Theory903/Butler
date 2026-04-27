@@ -5,14 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-
 ToolStatus = Literal["success", "partial", "failed"]
 
 
 class ToolResultError(Exception):
     """Raised when tool result envelope is invalid or missing required fields."""
-
-    pass
 
 
 @dataclass(frozen=True, slots=True)

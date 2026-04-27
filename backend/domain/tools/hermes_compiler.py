@@ -109,80 +109,179 @@ _HERMES_TOOL_TIER_MAP: dict[str, dict] = {
         "owner": "search",
         "sandbox": "none",
         "side_effects": ["network"],
+        "description": "Search the web for current information, news, weather, facts, or any real-time data. Use this for any question requiring up-to-date or external knowledge.",
     },
     "memory_recall": {
         "tier": RiskTier.L0,
         "owner": "memory",
         "sandbox": "none",
         "side_effects": [],
+        "description": "Recall information from the user's long-term memory store, including past conversations, preferences, and stored facts.",
+        "blocked": True,
+        "block_reason": "No direct implementation - use memory service instead",
     },
     "session_search": {
         "tier": RiskTier.L0,
         "owner": "memory",
         "sandbox": "none",
         "side_effects": [],
+        "description": "Search the current session's conversation history for relevant context or previously mentioned information.",
+        "blocked": True,
+        "block_reason": "No direct implementation - use memory service instead",
     },
-    "list_files": {"tier": RiskTier.L0, "owner": "tools", "sandbox": "none", "side_effects": []},
-    "read_file": {"tier": RiskTier.L0, "owner": "tools", "sandbox": "docker", "side_effects": []},
+    "list_files": {
+        "tier": RiskTier.L0,
+        "owner": "tools",
+        "sandbox": "none",
+        "side_effects": [],
+        "description": "List files and directories in the user's workspace.",
+        "blocked": True,
+        "block_reason": "No direct implementation - use file service instead",
+    },
+    "read_file": {
+        "tier": RiskTier.L0,
+        "owner": "tools",
+        "sandbox": "docker",
+        "side_effects": [],
+        "description": "Read the contents of a file from the user's workspace.",
+        "blocked": True,
+        "block_reason": "No direct implementation - use file service instead",
+    },
     "clarify": {
         "tier": RiskTier.L0,
         "owner": "orchestrator",
         "sandbox": "none",
         "side_effects": [],
+        "description": "Ask the user a clarifying question when their request is ambiguous or requires more information to proceed.",
+        "blocked": True,
+        "block_reason": "No direct implementation - handled by orchestrator",
     },
-    "get_time": {"tier": RiskTier.L0, "owner": "tools", "sandbox": "none", "side_effects": []},
-    "fuzzy_match": {"tier": RiskTier.L0, "owner": "tools", "sandbox": "none", "side_effects": []},
+    "get_time": {
+        "tier": RiskTier.L0,
+        "owner": "tools",
+        "sandbox": "none",
+        "side_effects": [],
+        "description": "Get the current date and time.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "timezone": {
+                    "type": "string",
+                    "description": "IANA timezone (e.g., 'UTC', 'Asia/Kolkata')",
+                }
+            },
+        },
+        "output_schema": {
+            "type": "object",
+            "properties": {
+                "timezone": {"type": "string"},
+                "iso": {"type": "string"},
+                "date": {"type": "string"},
+                "time": {"type": "string"},
+                "weekday": {"type": "string"},
+            },
+        },
+    },
+    "fuzzy_match": {
+        "tier": RiskTier.L0,
+        "owner": "tools",
+        "sandbox": "none",
+        "side_effects": [],
+        "description": "Perform fuzzy string matching to find the closest match from a list of candidates.",
+        "blocked": True,
+        "block_reason": "No direct implementation",
+    },
     "url_safety_check": {
         "tier": RiskTier.L0,
         "owner": "security",
         "sandbox": "none",
         "side_effects": ["network"],
+        "description": "Check whether a URL is safe to visit by scanning for malware, phishing, or other threats.",
+        "blocked": True,
+        "block_reason": "No direct implementation - use butler_url_safety module instead",
     },
     "osv_check": {
         "tier": RiskTier.L0,
         "owner": "security",
         "sandbox": "none",
         "side_effects": ["network"],
+        "description": "Check a software package for known vulnerabilities using the OSV (Open Source Vulnerabilities) database.",
+        "blocked": True,
+        "block_reason": "No direct implementation",
     },
-    "system_stats": {"tier": RiskTier.L0, "owner": "tools", "sandbox": "none", "side_effects": []},
+    "system_stats": {
+        "tier": RiskTier.L0,
+        "owner": "tools",
+        "sandbox": "none",
+        "side_effects": [],
+        "description": "Get system resource statistics including CPU, memory, and disk usage.",
+        "blocked": True,
+        "block_reason": "No direct implementation",
+    },
     # ── L1: logged — no approval, audit trail ─────────────────────────────
     "transcribe_audio": {
         "tier": RiskTier.L1,
         "owner": "audio",
         "sandbox": "none",
         "side_effects": [],
+        "blocked": True,
+        "block_reason": "No direct implementation - use audio service instead",
     },
     "synthesize_speech": {
         "tier": RiskTier.L1,
         "owner": "audio",
         "sandbox": "none",
         "side_effects": [],
+        "blocked": True,
+        "block_reason": "No direct implementation - use audio service instead",
     },
     "vision_analyze": {
         "tier": RiskTier.L1,
         "owner": "vision",
         "sandbox": "none",
         "side_effects": [],
+        "blocked": True,
+        "block_reason": "No direct implementation - use vision service instead",
     },
     "image_generate": {
         "tier": RiskTier.L1,
         "owner": "ml",
         "sandbox": "none",
         "side_effects": ["external_api"],
+        "blocked": True,
+        "block_reason": "No direct implementation - use ML runtime instead",
     },
-    "todo_list": {"tier": RiskTier.L1, "owner": "tools", "sandbox": "none", "side_effects": []},
+    "todo_list": {
+        "tier": RiskTier.L1,
+        "owner": "tools",
+        "sandbox": "none",
+        "side_effects": [],
+        "blocked": True,
+        "block_reason": "No direct implementation - use task management service instead",
+    },
     "get_credential": {
         "tier": RiskTier.L1,
         "owner": "auth",
         "sandbox": "none",
         "side_effects": ["credential_access"],
+        "blocked": True,
+        "block_reason": "No direct implementation - use auth service instead",
     },
-    "list_skills": {"tier": RiskTier.L1, "owner": "tools", "sandbox": "none", "side_effects": []},
+    "list_skills": {
+        "tier": RiskTier.L1,
+        "owner": "tools",
+        "sandbox": "none",
+        "side_effects": [],
+        "blocked": True,
+        "block_reason": "No direct implementation - use skills hub service instead",
+    },
     "get_skill_plan": {
         "tier": RiskTier.L1,
         "owner": "tools",
         "sandbox": "none",
         "side_effects": [],
+        "blocked": True,
+        "block_reason": "No direct implementation - use skills hub service instead",
     },
     # ── L2: confirm — one-click approval ──────────────────────────────────
     "write_file": {
@@ -383,6 +482,19 @@ class HermesToolCompiler:
             },
         )
 
+        # Check if tool is blocked in tier config
+        if tier_config.get("blocked", False):
+            return ButlerToolSpec(
+                name=hermes_name,
+                hermes_name=hermes_name,
+                description=tier_config.get("description", "Blocked tool"),
+                blocked=True,
+                block_reason=tier_config.get("block_reason", "Blocked in tier configuration"),
+                risk_tier=tier_config.get("tier", RiskTier.L2),
+                input_schema={},
+                output_schema={},
+            )
+
         tier = tier_config["tier"]
         owner = tier_config["owner"]
         sandbox = tier_config["sandbox"]
@@ -424,8 +536,8 @@ class HermesToolCompiler:
             visible_tiers=_TIER_VISIBILITY[tier],
             visible_channels=hermes_meta.get("visible_channels", ["mobile", "web", "voice", "api"]),
             visible_industries=hermes_meta.get("visible_industries", ["*"]),
-            input_schema=hermes_meta.get("input_schema", {}),
-            output_schema=hermes_meta.get("output_schema", {}),
+            input_schema=hermes_meta.get("input_schema") or tier_config.get("input_schema", {}),
+            output_schema=hermes_meta.get("output_schema") or tier_config.get("output_schema", {}),
         )
 
         logger.debug(
@@ -448,10 +560,12 @@ class HermesToolCompiler:
             from integrations.hermes.tools.registry import get_all_tool_definitions
 
             hermes_tools = get_all_tool_definitions()
-        except ImportError:
+        except ImportError as exc:
             logger.warning(
                 "hermes_tool_registry_unavailable",
                 message="Using tier map only — Hermes tool registry not importable",
+                error=str(exc),
+                exc_info=True,
             )
             hermes_tools = {}
 
@@ -460,6 +574,9 @@ class HermesToolCompiler:
         # Compile all tools in the tier map
         for hermes_name, _tier_config in _HERMES_TOOL_TIER_MAP.items():
             meta = hermes_tools.get(hermes_name, {})
+            # Fall back to tier map description when Hermes registry is unavailable
+            if not meta.get("description") and _tier_config.get("description"):
+                meta = {**meta, "description": _tier_config["description"]}
             spec = self.compile(hermes_name, meta)
             specs.append(spec)
 

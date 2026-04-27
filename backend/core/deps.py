@@ -1,3 +1,10 @@
+"""Butler application dependencies.
+
+This module provides the dependency injection graph for FastAPI routes.
+Hardened to prevent per-request instantiation of heavy ML, orchestration,
+and tool compilation objects.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -16,9 +23,7 @@ from core.health_agent import ButlerHealthAgent
 from core.locks import LockManager
 from core.observability import get_metrics
 from core.state_sync import GlobalStateSyncer
-from domain.events.schemas import ButlerEvent, StreamFinalEvent, StreamTokenEvent
-from domain.ml.contracts import IReasoningRuntime, ReasoningRequest, ReasoningTier
-from domain.orchestrator.runtime_kernel import ExecutionContext
+from domain.ml.contracts import ReasoningTier
 from domain.tools.hermes_compiler import ButlerToolSpec
 from infrastructure.cache import get_redis, get_redis_sync
 from infrastructure.config import BUTLER_NODE_ID, settings
@@ -53,7 +58,6 @@ from services.tenant import (
     TenantResolver,
     get_default_policy,
 )
-from services.tenant.isolation import IsolationLevel, IsolationPolicy
 from services.tools.mcp_bridge import MCPBridgeAdapter
 from services.workflow.acp_server import ButlerACPServer
 
@@ -75,7 +79,9 @@ if TYPE_CHECKING:
     from services.workspace.cleanup_worker import CleanupWorker
     from services.workspace.workspace_manager import WorkspaceManager
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class DependencyRegistry:
@@ -86,8 +92,11 @@ class DependencyRegistry:
     """
 
     def __init__(self) -> None:
+        import threading
         self._lock = asyncio.Lock()
+        self._thread_lock = threading.Lock()
 
+        # Core infrastructure
         self._lock_manager: LockManager | None = None
         self._state_syncer: GlobalStateSyncer | None = None
         self._health_agent: ButlerHealthAgent | None = None
@@ -125,6 +134,12 @@ class DependencyRegistry:
         # Phase 5: Operation router
         self._operation_router: Any | None = None
 
+        # Heavy AI/ML Singletons (Extracted from per-request generation)
+        self._embedding_service: Any | None = None
+        self._compiled_tool_specs: dict[str, ButlerToolSpec] | None = None
+        self._intent_classifier: Any | None = None
+        self._plan_engine: Any | None = None
+
         # LangGraph integration components
         self._otel: Any | None = None
         self._model_monitoring: Any | None = None
@@ -144,6 +159,48 @@ class DependencyRegistry:
         self._skills_registry: Any | None = None
         self._channel_registry: Any | None = None
         self._memory_host_sdk: Any | None = None
+
+    # ---------------------------------------------------------------------------
+    # Heavy Component Singletons
+    # ---------------------------------------------------------------------------
+
+    def get_embedding_service(self) -> Any:
+        if self._embedding_service is None:
+            with self._thread_lock:
+                if self._embedding_service is None:
+                    from services.ml.embeddings import EmbeddingService
+                    self._embedding_service = EmbeddingService(settings.EMBEDDING_MODEL)
+        return self._embedding_service
+
+    def get_compiled_tool_specs(self) -> dict[str, ButlerToolSpec]:
+        if self._compiled_tool_specs is None:
+            with self._thread_lock:
+                if self._compiled_tool_specs is None:
+                    from domain.tools.hermes_compiler import HermesToolCompiler
+                    compiler = HermesToolCompiler()
+                    self._compiled_tool_specs = {spec.name: spec for spec in compiler.compile_all()}
+        return self._compiled_tool_specs
+
+    def get_intent_classifier(self) -> Any:
+        if self._intent_classifier is None:
+            with self._thread_lock:
+                if self._intent_classifier is None:
+                    from services.ml.intent import IntentClassifier
+                    self._intent_classifier = IntentClassifier(runtime=self.get_ml_runtime())
+        return self._intent_classifier
+
+    def get_plan_engine(self) -> Any:
+        if self._plan_engine is None:
+            with self._thread_lock:
+                if self._plan_engine is None:
+                    from services.orchestrator.planner import LLMPlannerBackend, PlanEngine
+                    planner_backend = LLMPlannerBackend(runtime=self.get_ml_runtime())
+                    self._plan_engine = PlanEngine(planner_backend=planner_backend)
+        return self._plan_engine
+
+    # ---------------------------------------------------------------------------
+    # Standard Infrastructure
+    # ---------------------------------------------------------------------------
 
     def get_breakers(self) -> CircuitBreakerRegistry:
         return get_circuit_breaker_registry()
@@ -410,10 +467,8 @@ class DependencyRegistry:
 
     def get_tool_specs(self) -> list[ButlerToolSpec]:
         """Get compiled ButlerToolSpec list for LangGraph backend."""
-        from domain.tools.hermes_compiler import HermesToolCompiler
-
-        compiler = HermesToolCompiler()
-        return compiler.compile_all()
+        # Now safely fetching from cache instead of recompiling
+        return list(self.get_compiled_tool_specs().values())
 
     def get_checkpoint_config(self) -> dict[str, Any] | None:
         """Get LangGraph checkpoint configuration."""
@@ -441,36 +496,16 @@ async def get_tenant_context(
 ) -> TenantContext:
     """
     Provide TenantContext from validated JWT/session.
-
-    This is the canonical way to get tenant context in route handlers.
-    TenantContext is immutable and created only by TenantResolver.
-
-    Args:
-        request: FastAPI request
-        tenant_resolver: Tenant resolver service
-
-    Returns:
-        TenantContext with tenant identity and metadata
-
-    Raises:
-        ValueError: If tenant cannot be resolved from request
     """
-    # Extract tenant info from JWT or session
-    # In production, this should validate JWT and extract tenant_id
-    # For now, use a simplified approach
-    
-    # Try to get tenant_id from request state (set by auth middleware)
     tenant_id = getattr(request.state, "tenant_id", None)
     if not tenant_id:
         raise ValueError("Tenant context not available - authentication required")
-    
-    # In production, call tenant_resolver.resolve() with JWT claims
-    # For now, create a minimal TenantContext
+
     from services.tenant.context import IsolationLevel
-    
+
     return TenantContext(
         tenant_id=tenant_id,
-        account_id=tenant_id,  # Simplified - should be separate
+        account_id=tenant_id,
         user_id=getattr(request.state, "user_id", "system"),
         plan=getattr(request.state, "plan", "free"),
         region=settings.ENVIRONMENT,
@@ -508,22 +543,18 @@ async def get_cache() -> Redis:
 
 
 def get_breakers() -> CircuitBreakerRegistry:
-    """Provide the global circuit breaker registry."""
     return _registry.get_breakers()
 
 
 def get_lock_manager() -> LockManager:
-    """Provide the process-wide lock manager."""
     return _registry.get_lock_manager()
 
 
 def get_state_syncer() -> GlobalStateSyncer:
-    """Provide the process-wide global state syncer."""
     return _registry.get_state_syncer()
 
 
 def get_health_agent() -> ButlerHealthAgent:
-    """Provide the process-wide health agent."""
     return _registry.get_health_agent()
 
 
@@ -533,14 +564,12 @@ def get_health_agent() -> ButlerHealthAgent:
 
 
 def get_ml_runtime() -> MLRuntimeManager:
-    """Provide the process-wide ML runtime manager."""
     return _registry.get_ml_runtime()
 
 
 async def get_smart_router(
     redis: Redis = Depends(get_cache),
 ) -> ButlerSmartRouter:
-    """Provide the smart model router."""
     from services.ml.smart_router import ButlerSmartRouter
 
     del redis
@@ -551,19 +580,16 @@ async def get_smart_router(
 
 
 def get_feature_service() -> FeatureService:
-    """Provide the feature service."""
     return _registry.get_feature_service()
 
 
 def get_personalization_engine() -> PersonalizationEngine:
-    """Provide the personalization engine."""
     return _registry.get_personalization_engine()
 
 
 async def get_ranker(
     redis: Redis = Depends(get_cache),
 ) -> LightRanker:
-    """Provide the lightweight ranker."""
     del redis
     return LightRanker(feature_service=get_feature_service())
 
@@ -572,7 +598,6 @@ async def get_blender(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_cache),
 ) -> ButlerBlender:
-    """Provide the federated intelligence blender."""
     memory = await get_memory_service(db, redis)
     tools = await get_tools_service(db, redis)
     ranker = await get_ranker(redis)
@@ -591,24 +616,20 @@ async def get_blender(
 
 
 def get_redaction_service() -> RedactionService:
-    """Provide the redaction service."""
     return _registry.get_redaction_service()
 
 
 def get_content_guard() -> ContentGuard:
-    """Provide the content guard."""
     return _registry.get_content_guard()
 
 
 def get_jwks_manager() -> JWKSManager:
-    """Provide the JWKS manager."""
     return _registry.get_jwks_manager()
 
 
 async def get_auth_middleware(
     redis: Redis = Depends(get_cache),
 ) -> JWTAuthMiddleware:
-    """Provide JWT auth middleware."""
     from services.gateway.auth_middleware import JWTAuthMiddleware
 
     return JWTAuthMiddleware(
@@ -626,7 +647,6 @@ async def get_memory_service(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_cache),
 ) -> MemoryService:
-    """Provide a request-scoped memory service."""
     from services.memory.anchored_summarizer import AnchoredSummarizer
     from services.memory.consent_manager import ConsentManager
     from services.memory.context_builder import ContextBuilder
@@ -641,9 +661,9 @@ async def get_memory_service(
     from services.memory.service import MemoryService
     from services.memory.turboquant_store import get_cold_store
     from services.memory.understanding_service import UnderstandingService
-    from services.ml.embeddings import EmbeddingService
 
-    embedder = EmbeddingService(settings.EMBEDDING_MODEL)
+    # Pulling heavy objects from Registry to avoid O(N) per-request bottleneck
+    embedder = _registry.get_embedding_service()
     runtime = get_ml_runtime()
     summarizer = AnchoredSummarizer(runtime)
 
@@ -681,7 +701,6 @@ async def get_memory_service(
         ml_runtime=runtime,
     )
 
-    # Get operation router from dependency registry
     operation_router = _registry.get_operation_router()
 
     service = MemoryService(
@@ -711,12 +730,10 @@ async def get_memory_service(
 
 
 async def get_search_service() -> SearchService:
-    """Provide the shared search service."""
     return _registry.get_search_service()
 
 
 async def get_answering_engine() -> AnsweringEngine:
-    """Provide the shared answering engine."""
     return _registry.get_answering_engine()
 
 
@@ -724,13 +741,11 @@ async def get_tools_service(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_cache),
 ) -> ToolExecutor:
-    """Provide a request-scoped tool executor."""
-    from domain.tools.hermes_compiler import HermesToolCompiler
     from services.tools.executor import ToolExecutor
     from services.tools.verification import ToolVerifier
 
-    compiler = HermesToolCompiler()
-    compiled_specs = {spec.name: spec for spec in compiler.compile_all()}
+    # Using pre-compiled singleton from Registry
+    compiled_specs = _registry.get_compiled_tool_specs()
 
     return ToolExecutor(
         db=db,
@@ -749,16 +764,9 @@ async def get_tools_service(
 # Orchestration dependencies
 # ---------------------------------------------------------------------------
 
-# Lazy checkpointer singleton - built once, reused for all orchestrator instances
 _langgraph_checkpointer: object | None = None
 
-
 async def get_langgraph_checkpointer() -> object | None:
-    """Build LangGraph Postgres checkpointer if available, otherwise None.
-
-    This enables workflow state persistence across process restarts,
-    allowing interrupted executions to resume from the last checkpoint.
-    """
     global _langgraph_checkpointer
     if _langgraph_checkpointer is not None:
         return _langgraph_checkpointer
@@ -775,15 +783,9 @@ async def get_langgraph_checkpointer() -> object | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# LangChain adapter dependencies
-# ---------------------------------------------------------------------------
-
 _langchain_model_factory: object | None = None
 
-
 def get_langchain_model_factory():
-    """LangChain model factory for provider routing."""
     global _langchain_model_factory
     if _langchain_model_factory is not None:
         return _langchain_model_factory
@@ -801,9 +803,7 @@ def get_langchain_model_factory():
 
 _butler_tool_adapter_registry: object | None = None
 
-
 def get_butler_tool_adapter_registry():
-    """Registry of Butler tools as LangChain adapters."""
     global _butler_tool_adapter_registry
     if _butler_tool_adapter_registry is not None:
         return _butler_tool_adapter_registry
@@ -821,17 +821,13 @@ def get_butler_tool_adapter_registry():
 
 _butler_memory_adapter: object | None = None
 
-
 def get_butler_memory_adapter():
-    """Butler memory as LangChain chat history."""
     global _butler_memory_adapter
     if _butler_memory_adapter is not None:
         return _butler_memory_adapter
 
     try:
         from backend.langchain.memory import ButlerMemoryAdapter
-
-        # Note: This will be wired with memory_service when called in context
         _butler_memory_adapter = ButlerMemoryAdapter
         logger.info("butler_memory_adapter_initialized")
         return _butler_memory_adapter
@@ -842,17 +838,13 @@ def get_butler_memory_adapter():
 
 _butler_search_retriever: object | None = None
 
-
 def get_butler_search_retriever():
-    """Butler search as LangChain retriever."""
     global _butler_search_retriever
     if _butler_search_retriever is not None:
         return _butler_search_retriever
 
     try:
         from backend.langchain.retrievers import ButlerSearchRetriever
-
-        # Note: This will be wired with search_service when called in context
         _butler_search_retriever = ButlerSearchRetriever
         logger.info("butler_search_retriever_initialized")
         return _butler_search_retriever
@@ -863,9 +855,7 @@ def get_butler_search_retriever():
 
 _butler_evaluator: object | None = None
 
-
 def get_butler_evaluator():
-    """Butler evaluator for LLM response metrics."""
     global _butler_evaluator
     if _butler_evaluator is not None:
         return _butler_evaluator
@@ -885,28 +875,25 @@ async def get_orchestrator_service(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_cache),
 ) -> OrchestratorService:
-    """Provide the fully wired orchestrator service."""
     from domain.orchestrator.runtime_kernel import RuntimeKernel
     from domain.orchestrator.state import TaskStateMachine
     from services.device.environment import EnvironmentService
-    from services.ml.intent import IntentClassifier
-    from services.orchestrator.backends import create_agent_backend
     from services.orchestrator.backends import (
         ButlerDeterministicExecutor,
+        create_agent_backend,
     )
 
     runtime = get_ml_runtime()
-
     environment_service = EnvironmentService(redis)
-    intent_classifier = IntentClassifier(runtime=runtime)
+    
+    # Use global Singletons for stateless ML layers
+    intent_classifier = _registry.get_intent_classifier()
+    planner = _registry.get_plan_engine()
+
     intake = IntakeProcessor(
         intent_classifier=intent_classifier,
         environment_service=environment_service,
     )
-    from services.orchestrator.planner import LLMPlannerBackend
-
-    planner_backend = LLMPlannerBackend(runtime=runtime)
-    planner = PlanEngine(planner_backend=planner_backend)
 
     memory = await get_memory_service(db, redis)
     tools = await get_tools_service(db, redis)
@@ -921,15 +908,53 @@ async def get_orchestrator_service(
 
     deterministic_backend = ButlerDeterministicExecutor(tools)
 
-    # Use create_agent_backend factory to select backend based on feature flag
     tool_specs = _registry.get_tool_specs()
+    # Filter out blocked tools before validation
+    tool_specs = [spec for spec in tool_specs if not (hasattr(spec, "blocked") and spec.blocked)]
     checkpoint_config = _registry.get_checkpoint_config()
+
+    from langchain.butler_direct_tools import get_time_tool
+    from langchain.butler_web_tools import web_search_tool
+
+    _direct_implementations: dict = {
+        "web_search": web_search_tool,
+        "get_time": get_time_tool,
+    }
+
+    from domain.tools.hermes_compiler import RiskTier
+
+    def _validate_l0_l1_tools_have_implementations(
+        tool_specs: list,
+        direct_implementations: dict,
+    ) -> None:
+        for spec in tool_specs:
+            if hasattr(spec, "risk_tier") and spec.risk_tier in (RiskTier.L0, RiskTier.L1):
+                tool_name = (
+                    spec.name
+                    if hasattr(spec, "name")
+                    else getattr(spec, "canonical_name", str(spec))
+                )
+                if tool_name not in direct_implementations:
+                    raise RuntimeError(
+                        f"L0/L1 tool '{tool_name}' is exposed but has no direct implementation."
+                    )
+
+    from domain.tools.registry import get_tool_registry
+
+    tool_registry = get_tool_registry()
+    registry_errors = tool_registry.validate_invariants()
+    if registry_errors:
+        logger.error("tool_registry_invariant_check_failed")
+        raise RuntimeError(f"Tool registry invariant check failed: {registry_errors}")
+
+    _validate_l0_l1_tools_have_implementations(tool_specs, _direct_implementations)
+
     agent_backend = create_agent_backend(
         ml_runtime=runtime,
         tools_service=tools,
         tool_specs=tool_specs,
         tool_executor=tools,
-        direct_implementations=None,  # Can be populated later
+        direct_implementations=_direct_implementations,
         checkpoint_config=checkpoint_config,
         default_tier=ReasoningTier.T2,
         stream_chunk_size=64,
@@ -1003,7 +1028,6 @@ async def get_orchestrator_service(
 async def get_cron_service(
     orchestrator: OrchestratorService = Depends(get_orchestrator_service),
 ) -> ButlerCronService:
-    """Provide the cron service and bind the orchestrator lazily."""
     service = _registry.get_cron_service()
     if getattr(service, "_orchestrator", None) is None:
         service._orchestrator = orchestrator  # noqa: SLF001
@@ -1011,12 +1035,10 @@ async def get_cron_service(
 
 
 async def get_acp_server() -> ButlerACPServer:
-    """Provide the ACP server."""
     return await _registry.get_acp_server()
 
 
 async def get_mcp_bridge() -> MCPBridgeAdapter:
-    """Provide the MCP bridge."""
     return _registry.get_mcp_bridge()
 
 
@@ -1026,32 +1048,26 @@ async def get_mcp_bridge() -> MCPBridgeAdapter:
 
 
 async def get_connection_manager() -> ConnectionManager:
-    """Provide the distributed connection manager."""
     return await _registry.get_connection_manager()
 
 
 async def get_realtime_listener() -> RealtimePubSubListener:
-    """Provide the distributed realtime listener."""
     return await _registry.get_realtime_listener()
 
 
 async def get_hermes_transport() -> HermesTransportEdge:
-    """Provide the Hermes transport edge."""
     return await _registry.get_hermes_transport()
 
 
 async def get_ws_mux() -> WebSocketMultiplexer:
-    """Provide the websocket multiplexer."""
     return _registry.get_ws_mux()
 
 
 async def get_mercury_service() -> MercuryProtocolService:
-    """Provide the Mercury protocol service."""
     return _registry.get_mercury_protocol()
 
 
 async def get_a2ui_bridge() -> A2UIBridgeService:
-    """Provide the A2UI bridge service."""
     return _registry.get_a2ui_bridge()
 
 
@@ -1065,64 +1081,52 @@ def get_rate_limiter() -> RateLimiter:
 
 
 def get_tenant_resolver() -> TenantResolver:
-    """Provide the tenant resolver service."""
     return _registry.get_tenant_resolver()
 
 
 def get_credential_broker() -> CredentialBroker:
-    """Provide the credential broker service."""
     return _registry.get_credential_broker()
 
 
 def get_tenant_crypto_service() -> TenantCryptoService:
-    """Provide the tenant crypto service."""
     return _registry.get_tenant_crypto_service()
 
 
 def get_workspace_manager() -> WorkspaceManager:
-    """Provide the workspace manager."""
     return _registry.get_workspace_manager()
 
 
 def get_egress_policy() -> EgressPolicy:
-    """Provide the egress policy."""
     return _registry.get_egress_policy()
 
 
 def get_cleanup_worker() -> CleanupWorker:
-    """Provide the cleanup worker."""
     return _registry.get_cleanup_worker()
 
 
 def get_tenant_namespace(tenant_id: str) -> TenantNamespace:
-    """Provide a tenant-specific namespace for Redis keys."""
     return TenantNamespace(tenant_id=tenant_id)
 
 
 def get_entitlement_policy(plan: str = "free") -> EntitlementPolicy:
-    """Provide the entitlement policy for a plan."""
     return get_default_policy(plan)
 
 
 def get_tenant_quota_service(plan: str = "free") -> TenantQuotaService:
-    """Provide the tenant quota service for a plan."""
     return TenantQuotaService(plan=plan)
 
 
 def get_tenant_metering_service() -> TenantMeteringService:
-    """Provide the tenant metering service."""
     return TenantMeteringService()
 
 
 def get_tenant_audit_service() -> TenantAuditService:
-    """Provide the tenant audit service."""
     return TenantAuditService()
 
 
 def get_tenant_isolation_service(
     level: str = "shared",
 ) -> TenantIsolationService:
-    """Provide the tenant isolation service."""
     return TenantIsolationService(level=level)
 
 
@@ -1132,7 +1136,6 @@ def get_tenant_isolation_service(
 
 
 def get_otel() -> Any:
-    """Provide the OpenTelemetry configuration."""
     if _registry._otel is None:
         from observability.otel import ButlerOpenTelemetry
 
@@ -1145,7 +1148,6 @@ def get_otel() -> Any:
 
 
 def get_model_monitoring() -> Any:
-    """Provide the model monitoring service."""
     if _registry._model_monitoring is None:
         from observability.model_monitoring import ButlerModelMonitoring
 
@@ -1155,7 +1157,6 @@ def get_model_monitoring() -> Any:
 
 
 def get_ab_testing() -> Any:
-    """Provide the AB testing framework."""
     if _registry._ab_testing is None:
         from observability.ab_testing import ButlerABTesting
 
@@ -1164,7 +1165,6 @@ def get_ab_testing() -> Any:
 
 
 def get_gateway_hardening() -> Any:
-    """Provide the gateway hardening service."""
     if _registry._gateway_hardening is None:
         from api.gateway.hardening import GatewayHardening
 
@@ -1175,7 +1175,6 @@ def get_gateway_hardening() -> Any:
 
 
 def get_integrations_catalog() -> Any:
-    """Provide the integrations catalog."""
     if _registry._integrations_catalog is None:
         from deployment.integrations_catalog import IntegrationsCatalog, load_default_integrations
 
@@ -1185,7 +1184,6 @@ def get_integrations_catalog() -> Any:
 
 
 def get_audit_logger() -> Any:
-    """Provide the audit logger."""
     if _registry._audit_logger is None:
         from compliance.audit import AuditLogger
 
@@ -1194,7 +1192,6 @@ def get_audit_logger() -> Any:
 
 
 def get_pii_detector() -> Any:
-    """Provide the PII detector."""
     if _registry._pii_detector is None:
         from compliance.pii import PIIDetector
 
@@ -1203,7 +1200,6 @@ def get_pii_detector() -> Any:
 
 
 def get_pii_redactor() -> Any:
-    """Provide the PII redactor."""
     if _registry._pii_redactor is None:
         from compliance.pii import PIIRedactor
 
@@ -1212,20 +1208,18 @@ def get_pii_redactor() -> Any:
 
 
 def get_memory_tier_reconciliation() -> Any:
-    """Provide the memory tier reconciliation service."""
     if _registry._memory_tier_reconciliation is None:
         from services.memory.tier_reconciliation import MemoryTierReconciliation
 
         _registry._memory_tier_reconciliation = MemoryTierReconciliation(
             redis=get_redis_sync(),
-            db=None,  # Will be provided at request scope
+            db=None, 
             turboquant=get_turboquant_backend(),
         )
     return _registry._memory_tier_reconciliation
 
 
 def get_turboquant_backend() -> Any:
-    """Provide the TurboQuant backend."""
     if _registry._turboquant_backend is None:
         from services.ml.providers.turboquant import TurboQuantBackend
 
@@ -1234,7 +1228,6 @@ def get_turboquant_backend() -> Any:
 
 
 def get_auth_hardening() -> Any:
-    """Provide the auth hardening service."""
     if _registry._auth_hardening is None:
         from services.auth.hardening import AuthHardeningService
 
@@ -1243,7 +1236,6 @@ def get_auth_hardening() -> Any:
 
 
 def get_langchain_provider_registry() -> Any:
-    """Provide the LangChain provider registry."""
     if _registry._langchain_provider_registry is None:
         from langchain.providers import ProviderRegistry
 
@@ -1252,7 +1244,6 @@ def get_langchain_provider_registry() -> Any:
 
 
 def get_skills_compiler() -> Any:
-    """Provide the Butler skill compiler for openclaw skills."""
     if _registry._skills_compiler is None:
         from langchain.skills import ButlerSkillCompiler
 
@@ -1261,7 +1252,6 @@ def get_skills_compiler() -> Any:
 
 
 def get_skills_registry() -> Any:
-    """Provide the Butler skill registry."""
     if _registry._skills_registry is None:
         from langchain.skills import ButlerSkillRegistry
 
@@ -1270,7 +1260,6 @@ def get_skills_registry() -> Any:
 
 
 def get_channel_registry() -> Any:
-    """Provide the communication channel registry."""
     if _registry._channel_registry is None:
         from services.realtime.channels import ChannelRegistry
 
@@ -1279,14 +1268,12 @@ def get_channel_registry() -> Any:
 
 
 def get_memory_host_sdk() -> Any:
-    """Provide the memory host SDK for plugin memory operations."""
     if _registry._memory_host_sdk is None:
         from services.memory.host_sdk import (
             EmbeddingModelLimits,
             MemoryBackendConfig,
         )
 
-        # Default to Redis backend config (can be overridden per tenant)
         config = MemoryBackendConfig(
             backend_type="redis",
             connection_string="redis://localhost:6379/2",

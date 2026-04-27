@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import uuid
 from collections.abc import AsyncGenerator
@@ -16,25 +17,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.deps import get_cache, get_hermes_transport, get_ws_mux
 from core.envelope import ButlerEnvelope, OrchestratorResult
-from domain.runtime import (
-    FinalResponseComposer,
-    ResponseValidator,
-    ToolResultEnvelope,
-)
 from core.resilient_client import (
     InternalRequest,
     ResilientClient,
     ResilientClientConfig,
 )
 from domain.auth.contracts import AccountContext
+from domain.runtime import (
+    FinalResponseComposer,
+    ResponseValidator,
+    ToolResultEnvelope,
+)
 from infrastructure.config import settings
 from infrastructure.database import async_session_factory
 
-# Removed direct Hermes import - Butler should own channel directory
-# from integrations.hermes.gateway.channel_directory import (
-#     format_directory_for_display,
-#     load_directory,
-# )
 from services.auth.jwt import get_jwks_manager
 from services.gateway.auth_middleware import JWTAuthMiddleware
 from services.gateway.idempotency import IdempotencyService
@@ -190,15 +186,17 @@ def _build_envelope(
         mode=req.mode,
         model=req.model,
         client={
+            "locale": request.headers.get("X-Locale") or request.headers.get("Accept-Language"),
+            "timezone": request.headers.get("X-Timezone"),
             "user_agent": request.headers.get("User-Agent"),
             "location": req.location,
         },
         gateway={
-            "assurance_level": str(account.assurance_level),
+            "assurance_level": str(getattr(account, "assurance_level", "AAL1")),
             "idempotency_key": idempotency_key,
             "rate_limit_remaining": rate_remaining,
-            "authenticated_user_id": str(account.sub),
-            "tenant_id": str(account.aid),
+            "authenticated_user_id": str(getattr(account, "sub", account.account_id)),
+            "tenant_id": str(getattr(account, "aid", account.account_id)),
             "ip_address": request.client.host if request.client else None,
         },
     )
@@ -217,7 +215,7 @@ async def _ensure_session(
         session_id=session_id,
         account_id=account.account_id,
         channel=channel,
-        assurance_level=account.assurance_level,
+        assurance_level=getattr(account, "assurance_level", "AAL1"),
         device_id=getattr(account, "device_id", None),
     )
 
@@ -227,49 +225,65 @@ def _compose_safe_response(
     locale: str = "en",
     timezone: str = "UTC",
 ) -> str:
-    """Process orchestrator result through Runtime Spine to prevent response leaks.
-
-    1. Extract tool results from orchestrator result
-    2. Wrap in ToolResultEnvelope
-    3. Compose user-facing response with FinalResponseComposer
-    4. Validate with ResponseValidator
-    """
-    # Check if content contains raw tool output patterns
-    content = result.content or ""
-
-    # If content looks like a Python dict, treat it as tool output
-    if "{" in content and "'" in content and "}" in content:
-        # Wrap in ToolResultEnvelope
-        envelope = ToolResultEnvelope.success(
-            tool_name="internal_tool",
-            summary=content,
-            data={"raw_output": content},
-            user_visible=True,
-            safe_to_quote=False,
+    """Process orchestrator result through Runtime Spine to prevent response leaks."""
+    envelopes: list[ToolResultEnvelope] = []
+    
+    for action in result.actions or []:
+        action_dict = (
+            action.model_dump()
+            if hasattr(action, "model_dump")
+            else (action if isinstance(action, dict) else {})
         )
-        # Compose user-facing response
-        composed = FinalResponseComposer.compose_from_tool_result(
-            envelope,
+        payload = action_dict.get("payload", {})
+        if not isinstance(payload, dict):
+            log.warning(
+                "gateway_action_payload_not_dict",
+                action_type=type(action).__name__,
+                action_dict=str(action_dict)[:200],
+            )
+            continue
+            
+        data = payload.get("data")
+        # Handle both boolean and string status values
+        success = payload.get("success")
+        if success is None:
+            success = payload.get("status") == "success"
+        elif isinstance(success, str):
+            success = success.lower() in ("true", "success", "completed")
+        
+        tool_name = action_dict.get("type") or payload.get("tool_name", "tool")
+        
+        if success and isinstance(data, dict) and data:
+            envelopes.append(
+                ToolResultEnvelope.success(
+                    tool_name=tool_name,
+                    data=data,
+                    user_visible=True,
+                    safe_to_quote=True,
+                )
+            )
+
+    if envelopes:
+        composed = FinalResponseComposer.compose_from_multiple_tool_results(
+            envelopes,
             locale=locale,
             timezone=timezone,
         )
-    else:
-        # Already text, use as-is but validate
-        composed = content
+        if composed:
+            return composed
 
-    # Validate before returning
+    content = result.content or ""
+
     try:
-        ResponseValidator.validate_user_facing_response(composed)
+        ResponseValidator.validate_user_facing_response(content)
+        return content
     except Exception as exc:
         log.warning(
             "response_validation_failed",
             error=str(exc),
-            content_preview=composed[:200] if composed else None,
+            content_preview=content[:200] if content else None,
         )
-        # Sanitize if validation fails
-        composed = ResponseValidator.sanitize_user_facing_response(composed)
-
-    return composed
+        return ResponseValidator.sanitize_user_facing_response(content)
 
 
 def _error_response(
@@ -305,16 +319,7 @@ async def chat(
     account: AccountContext = Depends(get_current_account),
     cache=Depends(get_cache),
 ) -> ChatResponse | JSONResponse:
-    """Primary synchronous chat endpoint.
-
-    Gateway responsibilities:
-    - auth
-    - rate limiting
-    - idempotency
-    - envelope normalization
-    - session continuity
-    - resilient forwarding to orchestrator
-    """
+    """Primary synchronous chat endpoint."""
     request_id = _request_id(request)
     idempotency_key = _idempotency_key(request)
 
@@ -323,7 +328,7 @@ async def chat(
     _apply_ratelimit_headers(response, rate_result)
 
     idempotency = IdempotencyService(redis=cache)
-    cached = await idempotency.check(idempotency_key, req.model_dump())
+    cached = await idempotency.check(idempotency_key, req.model_dump(mode="json"))
     if cached:
         return ChatResponse(**cached.body)
 
@@ -355,6 +360,23 @@ async def chat(
         )
         upstream_response = await _orchestrator_client.call(internal_request)
         result_payload = upstream_response.json()
+        
+        # Check if orchestrator returned RFC 9457 Problem Details error format
+        if "type" in result_payload and "status" in result_payload:
+            # This is an error response from orchestrator, forward it as-is
+            log.warning(
+                "orchestrator_returned_error",
+                request_id=request_id,
+                session_id=req.session_id,
+                error_type=result_payload.get("type"),
+                error_status=result_payload.get("status"),
+                error_detail=result_payload.get("detail"),
+            )
+            return JSONResponse(
+                status_code=result_payload.get("status", 502),
+                content=result_payload,
+            )
+        
         result_payload.setdefault("session_id", envelope.session_id)
         result_payload.setdefault("request_id", envelope.request_id)
         result = OrchestratorResult(**result_payload)
@@ -372,7 +394,6 @@ async def chat(
             session_id=req.session_id,
         )
 
-    # Process through Runtime Spine to prevent response leaks
     safe_response = _compose_safe_response(
         result,
         locale=request.headers.get("X-Locale", "en"),
@@ -384,14 +405,17 @@ async def chat(
         session_id=req.session_id,
         request_id=request_id,
         workflow_id=result.workflow_id,
-        actions_taken=[a.model_dump(mode="json") for a in result.actions],
+        actions_taken=[
+            a.model_dump(mode="json") if hasattr(a, "model_dump") else a
+            for a in (result.actions or [])
+        ],
         requires_approval=result.requires_approval,
         approval_id=result.approval_id,
     )
 
     await idempotency.store(
         idempotency_key,
-        req.model_dump(),
+        req.model_dump(mode="json"),
         chat_response.model_dump(mode="json"),
     )
     return chat_response
@@ -409,11 +433,7 @@ async def chat_stream(
     account: AccountContext = Depends(get_current_account),
     cache=Depends(get_cache),
 ) -> StreamingResponse:
-    """Streaming chat via SSE.
-
-    The gateway normalizes/authenticates/rate-limits, then forwards the
-    canonical envelope to the orchestrator streaming boundary.
-    """
+    """Streaming chat via SSE."""
     request_id = _request_id(request)
     idempotency_key = _idempotency_key(request)
 
@@ -442,7 +462,7 @@ async def chat_stream(
         last_event_id=last_event_id,
     )
 
-    async def _stream_generator() -> AsyncGenerator[str]:
+    async def _stream_generator() -> AsyncGenerator[str, None]:
         try:
             async with _session_scope() as db:
                 await _ensure_session(
@@ -504,7 +524,7 @@ async def stream_session(
     if raw_last_event_id and raw_last_event_id.isdigit():
         last_event_id = int(raw_last_event_id)
 
-    async def _event_tap() -> AsyncGenerator[str]:
+    async def _event_tap() -> AsyncGenerator[str, None]:
         pubsub = cache.pubsub()
         channel_key = f"butler:events:{session_id}"
         await pubsub.subscribe(channel_key)
@@ -555,11 +575,7 @@ async def websocket_chat(
     transport_edge=Depends(get_hermes_transport),
     mux=Depends(get_ws_mux),
 ) -> None:
-    """Bidirectional real-time chat channel.
-
-    Transport edge owns handshake hardening.
-    Gateway owns message normalization and routing.
-    """
+    """Bidirectional real-time chat channel."""
     token = websocket.query_params.get("token")
     init_payload: dict[str, Any] = {}
 
@@ -569,6 +585,8 @@ async def websocket_chat(
             raw = await websocket.receive_text()
             init_payload = json.loads(raw)
             token = init_payload.get("auth") or init_payload.get("token")
+        except WebSocketDisconnect:
+            return
         except Exception:
             await websocket.close(code=4000, reason="Missing auth token")
             return
@@ -621,8 +639,6 @@ async def websocket_chat(
                     continue
 
                 if "action" in payload:
-                    # Multiplexer task is the owner of subscription/control messages.
-                    # Ignore here to keep the chat path single-purpose.
                     continue
 
                 message = str(payload.get("message", "") or "").strip()
@@ -641,7 +657,7 @@ async def websocket_chat(
                     model=payload.get("model"),
                     mode=str(payload.get("mode", "auto")),
                     gateway={
-                        "assurance_level": str(account.assurance_level),
+                        "assurance_level": str(getattr(account, "assurance_level", "AAL1")),
                     },
                 )
 
@@ -654,6 +670,8 @@ async def websocket_chat(
                 event_stream = orchestrator.intake_streaming(envelope)
                 await bridge.forward_to_ws(websocket, event_stream)
 
+    except WebSocketDisconnect:
+        pass
     except Exception as exc:
         log.exception(
             "gateway_websocket_chat_failed",
@@ -717,14 +735,7 @@ async def session_bootstrap(
 async def get_channel_directory(
     account: AccountContext = Depends(get_current_account),
 ) -> dict[str, Any]:
-    """Expose the Butler channel directory to authenticated clients.
-
-    Butler-owned channel directory (P0 hardening: removed Hermes direct import).
-    For now, return empty directory until Butler-owned implementation is added.
-    """
-    # TODO: Implement Butler-owned channel directory
-    # This endpoint previously loaded Hermes directory directly
-    # P0 hardening requires Butler ownership of this data
+    """Expose the Butler channel directory to authenticated clients."""
     return {
         "directory": {},
         "display": {},
@@ -746,8 +757,6 @@ async def voice_process(
     cache=Depends(get_cache),
 ) -> VoiceProcessResponse | JSONResponse:
     """Voice over HTTP: STT -> Orchestrator -> TTS."""
-    import base64
-
     from services.audio.service import AudioService
 
     voice_limiter = RateLimiter(
@@ -788,7 +797,7 @@ async def voice_process(
             channel="voice",
             message=transcript,
             gateway={
-                "assurance_level": str(account.assurance_level),
+                "assurance_level": str(getattr(account, "assurance_level", "AAL1")),
             },
         )
 

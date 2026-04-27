@@ -110,9 +110,7 @@ class FinalResponseComposer:
         return summary
 
     @classmethod
-    def _format_data_as_text(
-        cls, data: dict[str, Any], locale: str, timezone: str
-    ) -> str:
+    def _format_data_as_text(cls, data: dict[str, Any], locale: str, timezone: str) -> str:
         """Format structured data as user-friendly text.
 
         Args:
@@ -134,9 +132,7 @@ class FinalResponseComposer:
         return cls._format_generic_data(data)
 
     @classmethod
-    def _format_time_data(
-        cls, data: dict[str, Any], locale: str, timezone: str
-    ) -> str:
+    def _format_time_data(cls, data: dict[str, Any], locale: str, timezone: str) -> str:
         """Format time-related data as user-friendly text.
 
         Args:
@@ -170,9 +166,7 @@ class FinalResponseComposer:
             return "Time information retrieved."
 
     @classmethod
-    def _format_date_data(
-        cls, data: dict[str, Any], locale: str, timezone: str
-    ) -> str:
+    def _format_date_data(cls, data: dict[str, Any], locale: str, timezone: str) -> str:
         """Format date-related data as user-friendly text.
 
         Args:
